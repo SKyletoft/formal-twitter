@@ -5,13 +5,17 @@ open import Agda.Builtin.Maybe
 open import Agda.Builtin.List
 open import Agda.Builtin.String
 
-data LoginToken : Set where
-  token : Nat → LoginToken
+record LoginToken : Set where
+  constructor token
+  field
+    t : Nat
 
-data TweetId : Set where
- tweet : Nat → TweetId
+record TweetId : Set where
+  constructor tweet
+  field
+    t : Nat
+
 -- The public API after parsing. Entirely unvalidated on purpose.
-
 data Action : Set where
   tweet        : LoginToken → String       → Action
   delete-tweet : LoginToken → TweetId      → Action
