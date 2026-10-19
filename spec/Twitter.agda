@@ -6,6 +6,7 @@ open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Data.Vec
 open import Data.Fin
+open import Function
 open import Data.Nat
 open import Data.Nat.Properties using (<-strictTotalOrder)
 open import Relation.Binary.Bundles using (StrictTotalOrder)
@@ -20,8 +21,10 @@ infixr 2 _×_
 Nat : Set
 Nat = ℕ
 
-data UserId (n : Nat): Set where
-  uid : Fin n → UserId n
+record UserId (n : Nat): Set where
+  constructor uid
+  field
+    i : Fin n
 
 LoginToken< : StrictTotalOrder _ _ _
 LoginToken< = On.strictTotalOrder <-strictTotalOrder tokenIdx
@@ -44,7 +47,7 @@ record State (user-count : Nat) (tweet-count : Nat) : Set where
   constructor state
   field
     users               : Vec (String × Privacy × List (Fin user-count)) user-count
-    tweets              : Vec (UserId user-count × String × Privacy) tweet-count
+    tweets              : Vec (UserId user-count × String × Privacy × List TweetId) tweet-count
     running-tweet-count : Nat
     active-logins       : LoginTokenMap (UserId user-count)
 
@@ -61,20 +64,39 @@ record ValidState (n : Nat) (m : Nat) : Set where
 get-id : {n m : Nat} → State n m → LoginToken → Maybe (UserId n)
 get-id (state users tweets running-tweet-count active-logins) t = TokenMap.lookup active-logins t
 
+post-tweet-helper : {n m : Nat} → State n m → (UserId n × String × Privacy × List TweetId) → State n (suc m)
+post-tweet-helper (state users tweets running-tweet-count active-logins) t
+  = state users (t ∷ tweets) (suc running-tweet-count) active-logins
+
+bounds-check : {n : Nat} → Nat → Maybe (Fin n)
+bounds-check {n} m = {!!}
+
 event-loop : {n m : Nat} → State n m → Action → Σ (Nat × Nat) (λ (n' , m') → State n' m' × Response)
-event-loop {n} {m} s@(state users tweets running-tweet-count active-logins) (tweet login-token text) with get-id s login-token
+event-loop {n} {m} s (post-tweet login-token text) with get-id s login-token
 ... | just (uid user-id) =
-  let _ , default-privacy , _ = lookup users user-id
-      tweet = (uid user-id) , text , default-privacy
-      tweets' = tweet ∷ tweets
-      state' = state users tweets' (suc running-tweet-count) active-logins
+  let _ , default-privacy , _ = lookup (State.users s) user-id
+      tweet = (uid user-id) , text , default-privacy , []
+      state' = post-tweet-helper s tweet
   in (n , suc m) , state' , ok
 ... | nothing = (n , m) , s , outdated-login-token
-event-loop s (delete-tweet x x₁) = (_ , _) , s , ok
-event-loop s (like x x₁) = (_ , _) , s , ok
-event-loop s (unlike x x₁) = (_ , _) , s , ok
-event-loop s (read x x₁) = (_ , _) , s , ok
-event-loop s (timeline x) = (_ , _) , s , ok
-event-loop s (search x x₁) = (_ , _) , s , ok
-event-loop s (login username passwd) = (_ , _) , s , ok
-event-loop s (logout login-token) = (_ , _) , s , ok
+event-loop s (delete-tweet x x₁) = {!!}
+event-loop s (like x x₁) = {!!}
+event-loop s (unlike x x₁) = {!!}
+event-loop {n} {m} s (get-tweet tk (tweet twt)) with bounds-check {m} twt
+... | just (twt) =
+  let (uid poster) , txt , privacy , replies = lookup (State.tweets s) twt
+      poster-name , _ , followers = lookup (State.users s) poster
+  in case privacy of
+      \{ everyone       → (_ , _) , s , tweet poster-name txt m replies
+       ; followers-only → {!!}
+       ; approved-only  → {!!}
+       ; removed        → {!!}
+       }
+... | nothing =
+  _ , s , permission-error -- Having an explicit not found leaks the existance of private tweets
+event-loop s (timeline x) = {!!}
+event-loop s (search x x₁) = {!!}
+event-loop s (login username passwd) = {!!}
+event-loop s (logout login-token) = {!!}
+event-loop s (signup _ _) = {!!}
+event-loop s (delete-account _) = {!!}

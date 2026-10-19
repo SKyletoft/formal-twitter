@@ -17,22 +17,25 @@ record TweetId : Set where
 
 -- The public API after parsing. Entirely unvalidated on purpose.
 data Action : Set where
-  tweet        : LoginToken → String       → Action
-  delete-tweet : LoginToken → TweetId      → Action
-  like         : LoginToken → TweetId      → Action
-  unlike       : LoginToken → TweetId      → Action
-  read         : LoginToken → TweetId      → Action
-  timeline     : LoginToken                → Action
-  search       : Maybe LoginToken → String → Action
-  login        : String → String           → Action
-  logout       : LoginToken                → Action
+  post-tweet     : LoginToken → String        → Action
+  delete-tweet   : LoginToken → TweetId       → Action
+  like           : LoginToken → TweetId       → Action
+  unlike         : LoginToken → TweetId       → Action
+  get-tweet      : Maybe LoginToken → TweetId → Action
+  timeline       : LoginToken                 → Action
+  search         : Maybe LoginToken → String  → Action
+  login          : String → String            → Action
+  logout         : LoginToken                 → Action
+  signup         : String → String            → Action
+  delete-account : LoginToken                 → Action
 
 -- Possible responses from the public API
 data Response : Set where
-  ok : Response
-  permission-error : Response
+  ok                   : Response
+  permission-error     : Response
   outdated-login-token : Response
-  tweet-id : TweetId → Response
+  tweet-id             : TweetId → Response
+  timeline             : List TweetId → Response
   tweet
     : String       -- Poster
     → String       -- Body
