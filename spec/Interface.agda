@@ -1,0 +1,37 @@
+module Interface where
+
+open import Agda.Builtin.Nat
+open import Agda.Builtin.Maybe
+open import Agda.Builtin.List
+open import Agda.Builtin.String
+
+data LoginToken : Set where
+  token : Nat → LoginToken
+
+data TweetId : Set where
+ tweet : Nat → TweetId
+-- The public API after parsing. Entirely unvalidated on purpose.
+
+data Action : Set where
+  tweet        : LoginToken → String       → Action
+  delete-tweet : LoginToken → TweetId      → Action
+  like         : LoginToken → TweetId      → Action
+  unlike       : LoginToken → TweetId      → Action
+  read         : LoginToken → TweetId      → Action
+  timeline     : LoginToken                → Action
+  search       : Maybe LoginToken → String → Action
+  login        : String → String           → Action
+  logout       : LoginToken                → Action
+
+-- Possible responses from the public API
+data Response : Set where
+  ok : Response
+  permission-error : Response
+  outdated-login-token : Response
+  tweet-id : TweetId → Response
+  tweet
+    : String       -- Poster
+    → String       -- Body
+    → Nat          -- Likes
+    → List TweetId -- Replies
+    → Response

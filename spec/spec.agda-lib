@@ -1,0 +1,3 @@
+name: spec
+include: .
+depend: standard-library
