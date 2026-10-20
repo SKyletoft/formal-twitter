@@ -11,23 +11,23 @@ record LoginToken : Set where
     t : Nat
 
 record TweetId : Set where
-  constructor tweet
+  constructor tweet-id
   field
     t : Nat
 
 -- The public API after parsing. Entirely unvalidated on purpose.
 data Action : Set where
   post-tweet     : LoginToken → String        → Action
-  delete-tweet   : LoginToken → TweetId       → Action
-  like           : LoginToken → TweetId       → Action
-  unlike         : LoginToken → TweetId       → Action
+  -- delete-tweet   : LoginToken → TweetId       → Action
+  -- like           : LoginToken → TweetId       → Action
+  -- unlike         : LoginToken → TweetId       → Action
   get-tweet      : Maybe LoginToken → TweetId → Action
-  timeline       : LoginToken                 → Action
-  search         : Maybe LoginToken → String  → Action
+  timeline       : Maybe LoginToken → Nat     → Action
+  -- search         : Maybe LoginToken → String  → Action
   login          : String → String            → Action
-  logout         : LoginToken                 → Action
+  -- logout         : LoginToken                 → Action
   signup         : String → String            → Action
-  delete-account : LoginToken                 → Action
+  -- delete-account : LoginToken                 → Action
 
 -- Possible responses from the public API
 data Response : Set where
@@ -36,6 +36,8 @@ data Response : Set where
   outdated-login-token : Response
   tweet-id             : TweetId → Response
   timeline             : List TweetId → Response
+  session-token        : LoginToken → Response
+  login-error          : Response
   tweet
     : String       -- Poster
     → String       -- Body
