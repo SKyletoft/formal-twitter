@@ -1,25 +1,29 @@
 module Twitter where
 
-open import Agda.Builtin.Sigma
 open import Agda.Builtin.Maybe
+open import Agda.Builtin.Sigma using (Σ; _,_)
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
-open import Data.String using (String)
-open import Data.Vec as Vec hiding (map)
-open import Data.Vec using (Vec; []; _∷_)
 open import Data.Fin using (Fin; zero; suc)
 open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.Any using (any?)
-open import Function using (case_of_; _$_; _∘_)
 open import Data.Nat using (ℕ; zero; suc)
 open import Data.Nat.Properties using (<-strictTotalOrder)
+open import Data.String using (String)
+open import Data.Vec as Vec hiding (map)
+open import Data.Vec using (Vec; []; _∷_)
+open import Equality
+open import Function using (case_of_; _$_; _∘_)
+open import Helpers
+open import Interface
+open import Monad as Monad_
 open import Relation.Binary.Bundles using (StrictTotalOrder)
 open import Relation.Binary.PropositionalEquality.Core using (_≡_; refl; cong)
 open import Relation.Nullary.Decidable.Core using (Dec; yes; no)
-import Relation.Binary.Construct.On as On
-open import Interface
-open import Monad as Monad_
-open import Equality
-open import Helpers
+
+import Relation.Binary.Construct.On
+import Data.String.Properties as StringProps
+import Data.Tree.AVL.Map (Relation.Binary.Construct.On.strictTotalOrder <-strictTotalOrder (LoginToken.t)) as TokenMap
+import Data.Tree.AVL.Map StringProps.<-strictTotalOrder-≈ as StringMapModule
 
 open Monad {{...}}
 open Eq {{...}}
@@ -42,23 +46,9 @@ instance
     ... | no i≢j  = no λ p → i≢j (uid-injective p)
   Eq._==_ UserId-Eq = λ where (uid i) (uid j) → i == j
 
-LoginToken< : StrictTotalOrder _ _ _
-LoginToken< = On.strictTotalOrder <-strictTotalOrder tokenIdx
-  where
-    tokenIdx : LoginToken → Nat
-    tokenIdx (token n) = n
-
-import Data.Tree.AVL.Map LoginToken< as TokenMap
 
 LoginTokenMap : Set → Set
 LoginTokenMap V = TokenMap.Map V
-
-import Data.String.Properties as StringProps
-
-String< : StrictTotalOrder _ _ _
-String< = StringProps.<-strictTotalOrder-≈
-
-import Data.Tree.AVL.Map String< as StringMapModule
 
 StringMap : Set → Set
 StringMap V = StringMapModule.Map V
@@ -154,42 +144,36 @@ event-loop {n} {m} s (get-tweet tk (tweet-id twt)) with bounds-check {m} twt
       positive-response = _ , s , tweet poster-name txt m replies
       negative-response = _ , s , permission-error
   in case privacy , get-id s =<< tk of
-      \{ (everyone , _)             → positive-response
-       ; (followers-only , just u)  → if (any? (_≟ u)) followers
+      \{ (followers-only , just u)  → if (any? (_≟ u)) followers
             then positive-response
             else negative-response
        ; (followers-only , nothing) → negative-response
+       ; (everyone , _)             → positive-response
        ; (removed , _)              → negative-response
        }
 ... | nothing =
   _ , s , permission-error -- Having an explicit not found leaks the existance of private tweets
-event-loop s (timeline tk len) =
-  case map (get-id s) tk of
-    \{ (just (just u)) →
-          let tweets
-                = Data.List.take len
-                ∘ map (tweet-id ∘ to-nat ∘ Tweet.id)
-                ∘ Data.List.filterᵇ (\{ (tweet _ _ _ everyone _ _) → true
-                                      ; (tweet _ _ _ removed _ _) → false
-                                      ; (tweet _ (uid poster) _ followers-only _ _)
-                                          → member? u
-                                          ∘ User.followers
-                                          ∘ Vec.lookup (State.users s)
-                                          $ poster
-                                     })
-                ∘ Data.Vec.toList
-                ∘ State.tweets
-                $ s
-          in _ , s , timeline tweets
-     ; nothing →
-          let tweets
-                = Data.List.take len
-                ∘ map (tweet-id ∘ to-nat ∘ Tweet.id)
-                ∘ Data.List.filter ((_≟ everyone) ∘ Tweet.visibility)
-                ∘ Data.Vec.toList
-                ∘ State.tweets
-                $ s
-          in _ , s , timeline tweets
+event-loop {n} {m} s (timeline tk len) =
+  let filter-tweets : (Tweet n m → Bool) → Σ (Nat × Nat) (λ (n' , m') → State n' m' × Response)
+      filter-tweets f =
+        let tweets
+              = Data.List.take len
+              ∘ map (tweet-id ∘ to-nat ∘ Tweet.id)
+              ∘ Data.List.filterᵇ f
+              ∘ Data.Vec.toList
+              ∘ State.tweets
+              $ s
+        in _ , s , timeline tweets
+  in case map (get-id s) tk of
+    \{ (just (just u)) → filter-tweets (\{ (tweet _ _ _ everyone _ _) → true
+                                         ; (tweet _ _ _ removed _ _) → false
+                                         ; (tweet _ (uid poster) _ followers-only _ _)
+                                            → member? u
+                                            ∘ User.followers
+                                            ∘ Vec.lookup (State.users s)
+                                            $ poster
+                                         })
+     ; nothing → filter-tweets ((_== everyone) ∘ Tweet.visibility)
      ; (just nothing) → _ , s , outdated-login-token
      }
 event-loop s (login username passwd) with StringMapModule.lookup (State.credentials s) username
