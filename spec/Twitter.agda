@@ -98,14 +98,67 @@ weaken-count-tweet : {n m : Nat} → Tweet n m → Tweet n (suc m)
 weaken-count-tweet (tweet id poster text visibility replies liked-by) =
   tweet (weaken id) poster text visibility replies liked-by
 
+weaken-user-id : {n : Nat} → UserId n → UserId (suc n)
+weaken-user-id (uid i) = uid (weaken i)
+
+weaken-user : {n : Nat} → User n → User (suc n)
+weaken-user (user name default-privacy follows followers) =
+  user name default-privacy (map weaken-user-id follows) (map weaken-user-id followers)
+
+weaken-user-count-tweet : {n m : Nat} → Tweet n m → Tweet (suc n) m
+weaken-user-count-tweet (tweet id poster text visibility replies liked-by) =
+  tweet id (weaken-user-id poster) text visibility replies (map weaken-user-id liked-by)
+
+weaken-credential : {n : Nat} → String × UserId n → String × UserId (suc n)
+weaken-credential (passwd , u) = passwd , weaken-user-id u
+
 record State (user-count : Nat) (tweet-count : Nat) : Set where
   constructor state
   field
-    users               : Vec (User user-count) user-count
-    tweets              : Vec (Tweet user-count tweet-count) tweet-count
-    running-tweet-count : Nat
-    active-logins       : LoginTokenMap (UserId user-count)
-    credentials         : StringMap (String × UserId user-count)
+    users                     : Vec (User user-count) user-count
+    tweets                    : Vec (Tweet user-count tweet-count) tweet-count
+    running-tweet-count       : Nat
+    running-login-token-count : Nat
+    active-logins             : LoginTokenMap (UserId user-count)
+    credentials               : StringMap (String × UserId user-count)
+
+_with-login-token-for_ : {n m : Nat} → State n m → UserId n → State n m × LoginToken
+s with-login-token-for u
+  = let running-login-token-count' = suc $ State.running-login-token-count s
+        new-token = token $ State.running-login-token-count s
+        active-logins' = TokenMap.insert new-token u $ State.active-logins s
+    in state (State.users s)
+             (State.tweets s)
+             (State.running-tweet-count s)
+             running-login-token-count'
+             active-logins'
+             (State.credentials s)
+       , new-token
+
+_with-user_ : {n m : Nat} → State n m → String × String → State (suc n) m × LoginToken
+_with-user_ {n} s (username , passwd)
+  = let u = user username everyone [] []
+        user = uid (to-fin n)
+        new-credentials = StringMapModule.insert username (passwd , user)
+                        ∘ StringMapModule.map weaken-credential
+                        ∘ State.credentials
+                        $ s
+        s' = state (map weaken-user (State.users s) ::: u)
+                   (map weaken-user-count-tweet $ State.tweets s)
+                   (State.running-tweet-count s)
+                   (State.running-login-token-count s)
+                   (TokenMap.map weaken-user-id $ State.active-logins s)
+                   new-credentials
+    in s' with-login-token-for user
+
+_with-tweet_ : {n m : Nat} → State n m → Tweet n (suc m) → State n (suc m)
+s with-tweet t
+  = state (State.users s)
+          (map weaken-count-tweet (State.tweets s) ::: t)
+          (suc $ State.running-tweet-count s)
+          (State.running-login-token-count s)
+          (State.active-logins s)
+          (State.credentials s)
 
 record ValidState (n : Nat) (m : Nat) : Set where
   constructor VS
@@ -118,21 +171,18 @@ record ValidState (n : Nat) (m : Nat) : Set where
     -- * All followers exist
     -- * All keys in tweets are less than tweet-count
     -- * Follows and followers are consistent
+    -- * |credentials| == n
 
 get-id : {n m : Nat} → State n m → LoginToken → Maybe (UserId n)
-get-id (state users tweets running-tweet-count active-logins _) t = TokenMap.lookup active-logins t
-
-post-tweet-helper : {n m : Nat} → State n m → Tweet n (suc m) → State n (suc m)
-post-tweet-helper (state users tweets running-tweet-count active-logins credentials) t
-  = state users (map weaken-count-tweet tweets ::: t) (suc running-tweet-count) active-logins credentials
+get-id (state _ _ _ _ active-logins _) t = TokenMap.lookup active-logins t
 
 event-loop : {n m : Nat} → State n m → Action → Σ (Nat × Nat) (λ (n' , m') → State n' m' × Response)
 event-loop {n} {m} s (post-tweet login-token text) with get-id s login-token
 ... | just (uid user-id) =
   let (user _  default-privacy  _ _) = Vec.lookup (State.users s) user-id
       tweet = tweet (to-fin m) (uid user-id) text default-privacy [] []
-      state' = post-tweet-helper s tweet
-  in (n , suc m) , state' , tweet-id (tweet-id m)
+      s' = s with-tweet tweet
+  in _ , s' , tweet-id (tweet-id m)
 ... | nothing = (n , m) , s , outdated-login-token
 -- event-loop s (delete-tweet x x₁) = {!!}
 -- event-loop s (like x x₁) = {!!}
@@ -177,10 +227,15 @@ event-loop {n} {m} s (timeline tk len) =
      ; (just nothing) → _ , s , outdated-login-token
      }
 event-loop s (login username passwd) with StringMapModule.lookup (State.credentials s) username
-... | (just (correct-passwd , u)) = if passwd ≟ correct-passwd
-        then _ , s , session-token {!!}
-        else (_ , s , login-error)
+... | (just (correct-passwd , u)) =
+        if passwd ≟ correct-passwd
+          then (let s' , new-token = s with-login-token-for u
+                in _ , s' , session-token new-token)
+          else (_ , s , login-error)
 ... | nothing = _ , s , login-error
 -- event-loop s (logout login-token) = {!!}
-event-loop s (signup _ _) = {!!}
+event-loop s (signup username passwd) with StringMapModule.member username (State.credentials s)
+... | false = (let s' , tk = s with-user (username , passwd)
+               in _ , s' , session-token tk)
+... | true = _ , s , signup-error
 -- event-loop s (delete-account _) = {!!}

@@ -38,6 +38,7 @@ data Response : Set where
   timeline             : List TweetId → Response
   session-token        : LoginToken → Response
   login-error          : Response
+  signup-error         : Response
   tweet
     : String       -- Poster
     → String       -- Body
