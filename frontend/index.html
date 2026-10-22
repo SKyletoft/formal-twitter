@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Formal Twitter</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Formal Twitter</h1>
+    <span id="session-status"></span>
+    <button id="logout-btn" hidden>Log out</button>
+  </header>
+
+  <section id="auth-panel" hidden>
+    <p id="auth-notice" class="notice"></p>
+    <div id="auth-cards">
+      <form id="login-form">
+        <h2>Log in</h2>
+        <input id="login-username" autocomplete="username" placeholder="Username" required>
+        <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" required>
+        <button type="submit">Log in</button>
+        <p class="error" id="login-error"></p>
+      </form>
+      <form id="signup-form">
+        <h2>Sign up</h2>
+        <input id="signup-username" autocomplete="username" placeholder="Username" required>
+        <input id="signup-password" type="password" autocomplete="new-password" placeholder="Password" required>
+        <button type="submit">Sign up</button>
+        <p class="error" id="signup-error"></p>
+      </form>
+    </div>
+    <div id="public-timeline">
+      <h2>Public timeline</h2>
+      <ul id="public-list" class="tweet-list"></ul>
+      <p class="error" id="public-error"></p>
+    </div>
+  </section>
+
+  <section id="app-panel" hidden>
+    <form id="compose-form">
+      <textarea id="compose-text" rows="3" placeholder="What's happening?" required></textarea>
+      <button type="submit">Post</button>
+      <p class="notice" id="compose-ok"></p>
+      <p class="error" id="compose-error"></p>
+    </form>
+
+    <section id="tweet-detail" hidden>
+      <button id="back-btn">&#8592; Back to timeline</button>
+      <div id="tweet-detail-content" class="tweet-card"></div>
+      <p class="error" id="tweet-detail-error"></p>
+    </section>
+
+    <section id="timeline-section">
+      <h2>Timeline</h2>
+      <ul id="timeline-list" class="tweet-list"></ul>
+      <p class="error" id="timeline-error"></p>
+    </section>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

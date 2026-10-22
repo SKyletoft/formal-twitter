@@ -1,0 +1,150 @@
+:root {
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --ink: #1c2733;
+  --muted: #64748b;
+  --accent: #1d9bf0;
+  --danger: #d64545;
+  --border: #dbe2ea;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.2rem;
+  margin: 0;
+}
+
+#session-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+#logout-btn,
+button {
+  font: inherit;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 1rem;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+#logout-btn { margin-left: auto; }
+
+#compose-form button { margin-left: 0; }
+#back-btn {
+  background: transparent;
+  color: var(--accent);
+  padding: 0.25rem 0;
+  margin: 0 0 0.75rem 0;
+}
+
+input,
+textarea {
+  font: inherit;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.75rem;
+}
+
+textarea { resize: vertical; }
+
+section {
+  max-width: 640px;
+  margin: 1.5rem auto;
+  padding: 0 1rem;
+}
+
+#auth-cards {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+#auth-cards form {
+  flex: 1 1 240px;
+}
+
+form {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+#compose-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+#compose-form textarea { flex: 1 1 100%; }
+
+#compose-form .notice,
+#compose-form .error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+h2 { font-size: 1.05rem; margin: 0 0 0.75rem 0; }
+
+.notice { color: #1b7a3e; }
+.error { color: var(--danger); margin: 0.25rem 0 0 0; }
+
+.tweet-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.tweet-card .meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0 0;
+}
+
+.tweet-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tweet-list button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
