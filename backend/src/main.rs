@@ -394,7 +394,18 @@ fn main() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-    let root = PathBuf::from(FRONTEND_DIR);
+    let root = {
+        let default = PathBuf::from(FRONTEND_DIR);
+        if default.exists() {
+            default
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|bin| bin.parent().and_then(|dir| dir.parent()).map(Path::to_path_buf))
+                .map(|out| out.join("frontend"))
+                .unwrap_or(default)
+        }
+    };
     let addr = format!("0.0.0.0:{}", port);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,

@@ -54,6 +54,9 @@
 						cp -r ${./frontend} ../frontend
 					'';
 					cargoLock.lockFile = "${src}/Cargo.lock";
+					postInstall = ''
+						cp -r ${./frontend} $out/frontend
+					'';
 				};
 			}
 		);
