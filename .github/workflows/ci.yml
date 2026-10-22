@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      - name: Checkout
+        run: |
+          nix shell nixpkgs#git -c sh -eu -c '
+            git config --global --add safe.directory "$PWD"
+            git init .
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+            git fetch --depth=1 origin "${{ github.sha }}"
+            git checkout --detach FETCH_HEAD
+          '
+      - run: nix build -L .#ci-agda
+      - run: nix build -L .#ci-backend

@@ -46,16 +46,28 @@
 				devShells.default = pkgs.mkShell {
 					packages = devBuildInputs;
 				};
-				packages.default = rustPlatform.buildRustPackage rec {
-					pname = "formal-twitter";
-					version = "0.0.1";
-					src = ./backend;
-					prePatch = ''
-						cp -r ${./frontend} ../frontend
-					'';
-					cargoLock.lockFile = "${src}/Cargo.lock";
-					postInstall = ''
-						cp -r ${./frontend} $out/frontend
+				packages = rec {
+					default = rustPlatform.buildRustPackage rec {
+						pname = "formal-twitter";
+						version = "0.0.1";
+						src = ./backend;
+						prePatch = ''
+							cp -r ${./frontend} ../frontend
+						'';
+						cargoLock.lockFile = "${src}/Cargo.lock";
+						postInstall = ''
+							cp -r ${./frontend} $out/frontend
+						'';
+					};
+					ci-backend = default;
+					ci-agda = pkgs.runCommand "ci-agda" {
+						nativeBuildInputs = [ custom-agda ];
+					} ''
+						cp -r ${./spec} ./spec
+						chmod -R u+w ./spec
+						cd ./spec
+						agda -i . Twitter.agda
+						mkdir -p $out
 					'';
 				};
 			}
