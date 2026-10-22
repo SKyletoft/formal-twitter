@@ -66,7 +66,7 @@
 						cp -r ${./spec} ./spec
 						chmod -R u+w ./spec
 						cd ./spec
-						agda -i . -i ${pkgs.agdaPackages.standard-library}/src Twitter.agda
+						agda -i . Twitter.agda
 						mkdir -p $out
 					'';
 				};
