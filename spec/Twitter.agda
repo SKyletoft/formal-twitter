@@ -179,7 +179,7 @@ get-id (state _ _ _ _ active-logins _) t = TokenMap.lookup active-logins t
 event-loop : {n m : Nat} → State n m → Action → Σ (Nat × Nat) (λ (n' , m') → State n' m' × Response)
 event-loop {n} {m} s (post-tweet login-token text) with get-id s login-token
 ... | just (uid user-id) =
-  let (user _  default-privacy  _ _) = Vec.lookup (State.users s) user-id
+  let default-privacy = User.default-privacy $ Vec.lookup (State.users s) user-id
       tweet = tweet (to-fin m) (uid user-id) text default-privacy [] []
       s' = s with-tweet tweet
   in _ , s' , tweet-id (tweet-id m)
@@ -208,6 +208,7 @@ event-loop {n} {m} s (timeline tk len) =
       filter-tweets f =
         let tweets
               = Data.List.take len
+              ∘ Data.List.reverse
               ∘ map (tweet-id ∘ to-nat ∘ Tweet.id)
               ∘ Data.List.filterᵇ f
               ∘ Data.Vec.toList
