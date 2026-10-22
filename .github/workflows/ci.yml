@@ -5,7 +5,89 @@ on:
   pull_request:
 
 jobs:
-  build:
+  changes:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      agda: ${{ steps.filter.outputs.agda }}
+    steps:
+      - name: Detect changed paths
+        id: filter
+        run: |
+          nix shell nixpkgs#git -c sh -eu -c '
+            git config --global --add safe.directory "$PWD"
+            git init .
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+
+            head_sha="${{ github.sha }}"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              base_sha="${{ github.event.pull_request.base.sha }}"
+              head_sha="${{ github.event.pull_request.head.sha }}"
+            else
+              base_sha="${{ github.event.before }}"
+            fi
+
+            git fetch --no-tags --depth=1 origin "$head_sha"
+
+            if [ "$base_sha" = "0000000000000000000000000000000000000000" ]; then
+              echo "backend=true" >> "$GITHUB_OUTPUT"
+              echo "agda=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git fetch --no-tags --depth=1 origin "$base_sha"; then
+              echo "backend=true" >> "$GITHUB_OUTPUT"
+              echo "agda=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            backend=false
+            agda=false
+            git diff --name-only "$base_sha" "$head_sha" > changed_paths.txt
+            while IFS= read -r path; do
+              case "$path" in
+                backend/*|frontend/*|flake.nix|flake.lock) backend=true ;;
+              esac
+              case "$path" in
+                spec/*|flake.nix|flake.lock) agda=true ;;
+              esac
+            done < changed_paths.txt
+
+            echo "backend=$backend" >> "$GITHUB_OUTPUT"
+            echo "agda=$agda" >> "$GITHUB_OUTPUT"
+          '
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+    steps:
+      - name: Checkout
+        run: |
+          nix shell nixpkgs#git -c sh -eu -c '
+            git config --global --add safe.directory "$PWD"
+            git init .
+            git remote add origin "https://github.com/${{ github.repository }}.git"
+            git fetch --depth=1 origin "${{ github.sha }}"
+            git checkout --detach FETCH_HEAD
+          '
+      - run: nix build -L .#ci-backend
+
+  agda:
+    needs: changes
+    if: needs.changes.outputs.agda == 'true'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -24,4 +106,3 @@ jobs:
             git checkout --detach FETCH_HEAD
           '
       - run: nix build -L .#ci-agda
-      - run: nix build -L .#ci-backend
