@@ -37,6 +37,16 @@ header h1 {
   font-size: 0.9rem;
 }
 
+.github-link {
+  display: inline-flex;
+  color: var(--ink);
+  margin-left: auto;
+}
+
+.github-link:hover { color: var(--accent); }
+
+.github-link svg { display: block; }
+
 #logout-btn,
 button {
   font: inherit;
