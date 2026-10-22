@@ -103,6 +103,8 @@ function buildBody(kind, args, token) {
   return [];
 }
 
+// Browsers cannot send a GET body, so get-tweet/timeline arguments
+// travel as query parameters (the backend decodes them positionally).
 function buildParams(kind, args, token) {
   const params = new URLSearchParams();
   if (kind === 'get-tweet') {
@@ -224,7 +226,28 @@ function renderTweetIdList(listEl, ids, onOpen) {
     button.addEventListener('click', () => onOpen(id));
     li.appendChild(button);
     listEl.appendChild(li);
+    hydrateTweetButton(button, id);
   }
+}
+
+// The timeline/replies endpoints only return IDs; look each tweet up
+// so the list shows author + text. Clicking still opens the detail view.
+function hydrateTweetButton(button, id) {
+  performAction('get-tweet', { id: id }, {}).then((result) => {
+    if (result.handled) return;
+    if (result.error || !result.data) {
+      button.classList.add('muted');
+      button.textContent = '#' + id + (result.message ? ' — ' + result.message : '');
+      return;
+    }
+    const t = result.data;
+    const replies = Array.isArray(t.replies) ? t.replies : [];
+    const text = String(t.text || ' ').replace(/\s+/g, ' ');
+    button.textContent =
+      '@' + (t.username || '?') + ': ' + text +
+      '  ·  ' + (t.likes || 0) + ' like' + ((t.likes || 0) === 1 ? '' : 's') +
+      (replies.length ? '  ·  ' + replies.length + ' repl' + (replies.length === 1 ? 'y' : 'ies') : '');
+  });
 }
 
 function hideTweetDetail() {

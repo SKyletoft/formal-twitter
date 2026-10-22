@@ -1,1 +1,3 @@
 Write a very basic web frontend (HTML/CSS/JS, nothing serverside) that can speak to the API described in @spec/Interface.agda and can be statically served.
+
+This never actually loads the timeline.
