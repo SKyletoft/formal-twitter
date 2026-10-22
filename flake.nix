@@ -20,6 +20,10 @@
 					extensions = [ "rust-src" "rust-analyzer" "miri" ];
 					targets = [ "x86_64-unknown-linux-gnu" ];
 				});
+				rustPlatform = pkgs.makeRustPlatform {
+					cargo = rustToolchain;
+					rustc = rustToolchain;
+				};
 
 				devBuildInputs = with pkgs; [
 					rustToolchain
@@ -41,6 +45,15 @@
 			in {
 				devShells.default = pkgs.mkShell {
 					packages = devBuildInputs;
+				};
+				packages.default = rustPlatform.buildRustPackage rec {
+					pname = "formal-twitter";
+					version = "0.0.1";
+					src = ./backend;
+					prePatch = ''
+						cp -r ${./frontend} ../frontend
+					'';
+					cargoLock.lockFile = "${src}/Cargo.lock";
 				};
 			}
 		);
