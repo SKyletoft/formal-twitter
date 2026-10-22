@@ -1,0 +1,34 @@
+name: Trigger Copilot on Agda changes
+
+on:
+  push:
+    paths:
+      - '**/*.agda'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  start-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open issue for Copilot cloud agent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prompt = "Update the implementations in backend/ and frontend/ to comply with the changes in spec/";
+            const title = `Spec sync request for ${context.sha.slice(0, 7)}`;
+            const body = [
+              `@copilot ${prompt}`,
+              "",
+              `Triggered from push: ${context.sha}`,
+              `Ref: ${context.ref}`
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body
+            });
