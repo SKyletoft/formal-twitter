@@ -14,6 +14,13 @@ jobs:
     env:
       NIX_CONFIG: experimental-features = nix-command flakes
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        run: |
+          nix shell nixpkgs#git -c sh -eu -c '
+            git init .
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+            git fetch --depth=1 origin "${{ github.sha }}"
+            git checkout --detach FETCH_HEAD
+          '
       - run: nix build -L .#ci-agda
       - run: nix build -L .#ci-backend
