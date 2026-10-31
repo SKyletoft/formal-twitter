@@ -332,6 +332,13 @@ el('signup-form').addEventListener('submit', async (ev) => {
   }
 });
 
+el('compose-text').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+    ev.preventDefault();
+    el('compose-form').requestSubmit();
+  }
+});
+
 el('compose-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const text = el('compose-text').value;
