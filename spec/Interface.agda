@@ -162,3 +162,29 @@ to-response (tweet username txt like-count replies) =
              ++ ", 'replies': [" ++ show-tweets replies
              ++ "]}")
           ∷ [])
+
+--------------------------------------------------------------------------------
+--                                 INTERFACE                                  --
+--------------------------------------------------------------------------------
+
+open import Twitter LoginToken TweetId
+
+to-output : Result → Response
+to-output success = ok
+to-output denied = permission-error
+to-output expired = outdated-login-token
+to-output login-failed = login-error
+to-output signup-failed = signup-error
+to-output (returned-timeline x) = timeline x
+to-output (issued-session x) = session-token x
+to-output (created-post x) = tweet-id x
+to-output (returned-post author txt likes replies) = tweet author txt likes replies
+
+from-input : Action → Command
+from-input (post-tweet tk txt) = publish tk txt
+from-input (get-tweet (just tk) twt) = read-post (just tk) twt
+from-input (get-tweet nothing twt) = read-post nothing twt
+from-input (timeline (just tk) n) = read-timeline (just tk) n
+from-input (timeline nothing n) = read-timeline nothing n
+from-input (login username passwd) = authenticate username passwd
+from-input (signup username passwd) = register username passwd

@@ -2,18 +2,18 @@ module Twitter
   (SessionId PostId : Set)
   where
 
-open import Interface
-
 open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
 open import Agda.Builtin.String
 
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
-open import Relation.Nullary.Negation.Core        using (¬_)
-open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Data.Empty                            using (⊥; ⊥-elim)
+open import Data.List                             using (List; take; filter)
 open import Data.Product                          using (∃-syntax)
+open import Function                              using (_∘_; _$_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
+open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
+open import Relation.Nullary.Negation.Core        using (¬_)
 
 --------------------------------------------------------------------------------
 --                               PROOF-HELPERS                                --
@@ -109,10 +109,10 @@ data Result : Set where
   issued-session    : SessionId → Result
   created-post      : PostId → Result
   returned-post :
-    String →
-    String →
-    Nat →
-    List PostId →
+    (author : String) →
+    (text : String) →
+    (likes : Nat) →
+    (replies : List PostId) →
     Result
 
 --------------------------------------------------------------------------------
@@ -137,6 +137,23 @@ record PostIsNew
   field
     was-absent : World.post-at world pid ≡ nothing
     is-present : World.post-at world pid  ≡ just new-post
+
+data CanReadPost
+    (world : World)
+    (sid : SessionId)
+    (pid : PostId) : Set₁
+  where
+  post-is-public :
+    ∀ {author txt likes replies acc user} →
+    ValidSession world sid acc user →
+    World.post-at world pid ≡ just (post author txt followers-only live likes replies) →
+    World.follows world user author →
+    CanReadPost world sid pid
+  post-is-private :
+    ∀ {author txt likes replies acc user} →
+    ValidSession world sid acc user →
+    World.post-at world pid ≡ just (post author txt everyone live likes replies) →
+    CanReadPost world sid pid
 
 --------------------------------------------------------------------------------
 --                                  HELPERS                                   --
@@ -186,6 +203,11 @@ data Step : World → Command → World → Result → Set₁ where
     World.newest-first before   ≡ World.newest-first after →
     Step before (register username passwd) after success
 
+  failed-create-account :
+    ∀ { before username passwd } →
+    World.account-at before username ≢ nothing →
+    Step before (register username passwd) before signup-failed
+
   login :
     ∀ {before after username passwd sid user} →
     World.session-at before sid      ≡ unused →
@@ -200,34 +222,45 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at before pid          ≡ World.post-at after pid →
     World.follows before u1 u2        ≡ World.follows after u1 u2 →
     World.newest-first before         ≡ World.newest-first after →
+    ValidSession after sid user username →
     Step before (authenticate username passwd) after (issued-session sid)
 
-  -- read-tweet :
-  --   ∀ {before after} →
-  --   Step before (read-post {!!} {!!}) after (returned-post {!!} {!!} {!!} {!!})
+  failed-login-1 :
+    ∀ {before username passwd} →
+    World.account-at before username ≡ nothing →
+    Step before (authenticate username passwd) before login-failed
 
-  -- cant-read-tweet :
-  --   ∀ {before after} →
-  --   Step before (read-post {!!} {!!}) after denied
+  failed-login-2 :
+    ∀ {before username passwd user} →
+    World.account-at before username ≡ just user →
+    Account.password user            ≢ passwd →
+    Step before (authenticate username passwd) before login-failed
 
---------------------------------------------------------------------------------
---                                 INTERFACE                                  --
---------------------------------------------------------------------------------
+  cant-read-post :
+    ∀ {before pid sid author txt likes replies acc user} →
+    ValidSession before sid acc user →
+    World.post-at before pid ≡ just (post author txt followers-only live likes replies) →
+    ¬ (World.follows before user author) →
+    Step before (read-post (just sid) pid) before denied
 
--- to-output : Result → Response
--- to-output success = {!!}
--- to-output denied = {!!}
--- to-output expired = {!!}
--- to-output login-failed = {!!}
--- to-output signup-failed = {!!}
--- to-output (returned-timeline x) = {!!}
--- to-output (issued-session x) = {!!}
--- to-output (created-post x) = {!!}
--- to-output (returned-post x x₁ x₂ x₃) = {!!}
+  read-post-logged-in :
+    ∀ {before pid sid author txt likes replies} →
+    CanReadPost before sid pid →
+    Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
--- from-input : Action → Command
--- from-input (post-tweet x x₁) = {!!}
--- from-input (get-tweet x x₁) = {!!}
--- from-input (timeline x x₁) = {!!}
--- from-input (login x x₁) = {!!}
--- from-input (signup x x₁) = {!!}
+  read-post-anonymously :
+    ∀ {before after pid author txt likes replies} →
+    World.post-at before pid ≡ just (post author txt everyone live likes replies) →
+    Step before (read-post nothing pid) after (returned-post author txt likes replies)
+
+  -- get-private-timeline :
+  --   ∀ {before n sid acc user} →
+  --     let response = returned-timeline (take n ∘ filter (λ where
+  --                                                           c → {!!}
+  --                                                         ) ∘ World.newest-first $ before)
+  --     in ValidSession before sid acc user →
+  --        Step before (read-timeline (just sid) n) before response
+
+  get-public-timeline :
+    ∀ {before n} →
+    Step before (read-timeline nothing n) before (returned-timeline (take n ∘ World.newest-first $ before))
