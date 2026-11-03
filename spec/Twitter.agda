@@ -9,10 +9,11 @@ open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
 open import Agda.Builtin.String
 
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Relation.Nullary.Negation.Core        using (¬_)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Data.Empty                            using (⊥; ⊥-elim)
+open import Data.Product                          using (∃-syntax)
 
 --------------------------------------------------------------------------------
 --                                  HELPERS                                   --
@@ -80,13 +81,13 @@ record World : Set₁ where
     newest-first : List PostId
 
     only-valid-sessions :
-      ∀ {sid username acc} →
+      ∀ {sid username} →
       session-at sid ≡ active username →
-      account-at username ≡ just acc
+      ∃[ acc ] account-at username ≡ just acc
     only-valid-posts :
-      ∀ {pid post} →
+      ∀ {pid} →
       pid ∈ newest-first →
-      post-at pid ≡ just post
+      ∃[ post ] post-at pid ≡ just post
 
 data Command : Set where
   publish       : SessionId       → String → Command
@@ -117,9 +118,11 @@ data Result : Set where
 
 data Step : World → Command → World → Result → Set₁ where
   successful-post :
-    ∀ {sid txt before after username user pid} →
+    ∀ {sid txt before after username user pid acc other-pids} →
     World.session-at before sid ≡ active username →
     World.account-at before username ≡ just user →
     World.post-at before pid ≡ nothing →
     World.post-at after pid ≡ just (post username txt (Account.default-visibility user) live zero []) →
+    World.account-at before acc ≡ World.account-at after acc →
+    pid ≢ other-pids → World.post-at before other-pids ≡ World.post-at after other-pids →
     Step before (publish sid txt) after success
