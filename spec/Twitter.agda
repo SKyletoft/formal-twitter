@@ -143,13 +143,13 @@ data CanReadPost
     (sid : SessionId)
     (pid : PostId) : Set₁
   where
-  post-is-public :
+  post-is-private :
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author txt followers-only live likes replies) →
     World.follows world user author →
     CanReadPost world sid pid
-  post-is-private :
+  post-is-public :
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author txt everyone live likes replies) →
