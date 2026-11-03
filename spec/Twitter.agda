@@ -25,10 +25,13 @@ length : List a → Nat
 length []       = zero
 length (_ ∷ xs) = suc (length xs)
 
-infix 4 _∈_
-data _∈_ {A : Set} (x : A) : List A → Set where
-  here  : ∀ {xs} → x ∈ (x ∷ xs)
+infix 4 _∈_ _∉_
+data _∈_ (x : a) : List a → Set where
+  here  : ∀ {xs}            → x ∈ (x ∷ xs)
   there : ∀ {y xs} → x ∈ xs → x ∈ (y ∷ xs)
+
+_∉_ : (x : a) → List a → Set
+x ∉ y = ¬ (x ∈ y)
 
 contains : {a : Set} → ((x y : a) → Dec (x ≡ y)) → (x : a) → (xs : List a) → Dec (x ∈ xs)
 contains _≟_ x [] = no λ ()
@@ -113,16 +116,46 @@ data Result : Set where
     Result
 
 --------------------------------------------------------------------------------
+--                                 PREDICATES                                 --
+--------------------------------------------------------------------------------
+
+ValidSession : World → World → SessionId → String → Set₁
+ValidSession before after sid username =
+  World.session-at before sid      ≡ World.session-at after sid →
+  World.account-at before username ≡ World.account-at after username →
+  Set
+
+PostIsNew : World → World → PostId → Post → Set₁
+PostIsNew before after pid new-post =
+  World.post-at before pid ≡ nothing →
+  World.post-at after pid  ≡ just new-post →
+  Set
+
+new-post : String → String → Account → Post
+new-post username txt user =
+  (post username txt (Account.default-visibility user) live zero [])
+
+--------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
 --------------------------------------------------------------------------------
 
 data Step : World → Command → World → Result → Set₁ where
+
   successful-post :
-    ∀ {sid txt before after username user pid acc other-pids} →
-    World.session-at before sid ≡ active username →
-    World.account-at before username ≡ just user →
-    World.post-at before pid ≡ nothing →
-    World.post-at after pid ≡ just (post username txt (Account.default-visibility user) live zero []) →
-    World.account-at before acc ≡ World.account-at after acc →
-    pid ≢ other-pids → World.post-at before other-pids ≡ World.post-at after other-pids →
+    ∀ {sid txt before after username user pid acc other-pids u1 u2 s} →
+    ValidSession before after sid username →
+    PostIsNew before after pid (new-post username txt user) →
+    -- PostId added
+    pid ∷ World.newest-first before ≡ World.newest-first after →
+    -- Everything else unchanged
+    pid ≢ other-pids →
+    World.post-at before other-pids ≡ World.post-at after other-pids →
+    World.account-at before acc     ≡ World.account-at after acc →
+    World.session-at before s       ≡ World.session-at after s →
+    World.follows before u1 u2      ≡ World.follows after u1 u2 →
     Step before (publish sid txt) after success
+
+  failed-access :
+    ∀ {before after sid username cmd} →
+    ¬ ValidSession before after sid username →
+    Step before cmd after expired
