@@ -153,12 +153,12 @@ new-post username txt user =
 data Step : World → Command → World → Result → Set₁ where
 
   successful-post :
-    ∀ {sid txt before after username user pid acc other-pids u1 u2 s} →
+    ∀ {before after sid txt username user pid acc} →
     ValidSession before sid acc username →
     PostIsNew before pid (new-post username txt user) →
-    -- PostId added
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Everything else unchanged
+    ∀ {other-pids u1 u2 s} →
     pid ≢ other-pids →
     World.post-at before other-pids ≡ World.post-at after other-pids →
     World.account-at before u1      ≡ World.account-at after u1 →
@@ -167,25 +167,48 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (publish sid txt) after (created-post pid)
 
   failed-access :
-    ∀ {before after sid username acc cmd} →
+    ∀ {before sid username acc cmd} →
     ¬ ValidSession before sid acc username →
-    Step before cmd after expired
+    Step before cmd before expired
 
   create-account :
-    ∀ {before after} →
-    Step before (register {!!} {!!}) after success
+    ∀ {before after username passwd} →
+    World.account-at before username ≡ nothing →
+    World.account-at after username  ≡ just (account passwd everyone) →
+    -- Everything else unchanged
+    ∀ {sid pid u1 u2} →
+    username ≢ u1 →
+    username ≢ u2 →
+    World.account-at before u1  ≡ World.account-at after u1 →
+    World.session-at before sid ≡ World.session-at after sid →
+    World.post-at before pid    ≡ World.post-at after pid →
+    World.follows before u1 u2  ≡ World.follows after u1 u2 →
+    World.newest-first before   ≡ World.newest-first after →
+    Step before (register username passwd) after success
 
   login :
-    ∀ {before after} →
-    Step before (authenticate {!!} {!!}) after (issued-session {!!})
+    ∀ {before after username passwd sid user} →
+    World.session-at before sid      ≡ unused →
+    World.session-at after sid       ≡ active username →
+    World.account-at before username ≡ just user →
+    Account.password user            ≡ passwd →
+    -- Everything else unchanged
+    ∀ {other-sid pid u1 u2} →
+    sid ≢ other-sid →
+    World.session-at before other-sid ≡ World.session-at after other-sid →
+    World.account-at before u1        ≡ World.account-at after u1 →
+    World.post-at before pid          ≡ World.post-at after pid →
+    World.follows before u1 u2        ≡ World.follows after u1 u2 →
+    World.newest-first before         ≡ World.newest-first after →
+    Step before (authenticate username passwd) after (issued-session sid)
 
-  read-tweet :
-    ∀ {before after} →
-    Step before (read-post {!!} {!!}) after (returned-post {!!} {!!} {!!} {!!})
+  -- read-tweet :
+  --   ∀ {before after} →
+  --   Step before (read-post {!!} {!!}) after (returned-post {!!} {!!} {!!} {!!})
 
-  cant-read-tweet :
-    ∀ {before after} →
-    Step before (read-post {!!} {!!}) after denied
+  -- cant-read-tweet :
+  --   ∀ {before after} →
+  --   Step before (read-post {!!} {!!}) after denied
 
 --------------------------------------------------------------------------------
 --                                 INTERFACE                                  --
