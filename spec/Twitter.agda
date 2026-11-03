@@ -16,10 +16,10 @@ open import Data.Empty                            using (⊥; ⊥-elim)
 open import Data.Product                          using (∃-syntax)
 
 --------------------------------------------------------------------------------
---                                  HELPERS                                   --
+--                               PROOF-HELPERS                                --
 --------------------------------------------------------------------------------
 
-variable a b c : Set
+private variable a b c : Set
 
 length : List a → Nat
 length []       = zero
@@ -33,7 +33,7 @@ data _∈_ (x : a) : List a → Set where
 _∉_ : (x : a) → List a → Set
 x ∉ y = ¬ (x ∈ y)
 
-contains : {a : Set} → ((x y : a) → Dec (x ≡ y)) → (x : a) → (xs : List a) → Dec (x ∈ xs)
+contains : ((x y : a) → Dec (x ≡ y)) → (x : a) → (xs : List a) → Dec (x ∈ xs)
 contains _≟_ x [] = no λ ()
 contains _≟_ x (y ∷ ys) with x ≟ y
 ... | yes refl = yes here
@@ -119,21 +119,32 @@ data Result : Set where
 --                                 PREDICATES                                 --
 --------------------------------------------------------------------------------
 
-ValidSession : World → World → SessionId → String → Set₁
-ValidSession before after sid username =
-  World.session-at before sid      ≡ World.session-at after sid →
-  World.account-at before username ≡ World.account-at after username →
-  Set
+record ValidSession
+    (world : World)
+    (sid : SessionId)
+    (acc : Account)
+    (user : String) : Set₁
+  where
+  field
+    session-unchanged : World.session-at world sid  ≡ active user
+    account-unchanged : World.account-at world user ≡ just acc
 
-PostIsNew : World → World → PostId → Post → Set₁
-PostIsNew before after pid new-post =
-  World.post-at before pid ≡ nothing →
-  World.post-at after pid  ≡ just new-post →
-  Set
+record PostIsNew
+    (world : World)
+    (pid : PostId)
+    (new-post : Post) : Set₁
+  where
+  field
+    was-absent : World.post-at world pid ≡ nothing
+    is-present : World.post-at world pid  ≡ just new-post
+
+--------------------------------------------------------------------------------
+--                                  HELPERS                                   --
+--------------------------------------------------------------------------------
 
 new-post : String → String → Account → Post
 new-post username txt user =
-  (post username txt (Account.default-visibility user) live zero [])
+  post username txt (Account.default-visibility user) live zero []
 
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
@@ -143,19 +154,57 @@ data Step : World → Command → World → Result → Set₁ where
 
   successful-post :
     ∀ {sid txt before after username user pid acc other-pids u1 u2 s} →
-    ValidSession before after sid username →
-    PostIsNew before after pid (new-post username txt user) →
+    ValidSession before sid acc username →
+    PostIsNew before pid (new-post username txt user) →
     -- PostId added
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Everything else unchanged
     pid ≢ other-pids →
     World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.account-at before acc     ≡ World.account-at after acc →
+    World.account-at before u1      ≡ World.account-at after u1 →
     World.session-at before s       ≡ World.session-at after s →
     World.follows before u1 u2      ≡ World.follows after u1 u2 →
-    Step before (publish sid txt) after success
+    Step before (publish sid txt) after (created-post pid)
 
   failed-access :
-    ∀ {before after sid username cmd} →
-    ¬ ValidSession before after sid username →
+    ∀ {before after sid username acc cmd} →
+    ¬ ValidSession before sid acc username →
     Step before cmd after expired
+
+  create-account :
+    ∀ {before after} →
+    Step before (register {!!} {!!}) after success
+
+  login :
+    ∀ {before after} →
+    Step before (authenticate {!!} {!!}) after (issued-session {!!})
+
+  read-tweet :
+    ∀ {before after} →
+    Step before (read-post {!!} {!!}) after (returned-post {!!} {!!} {!!} {!!})
+
+  cant-read-tweet :
+    ∀ {before after} →
+    Step before (read-post {!!} {!!}) after denied
+
+--------------------------------------------------------------------------------
+--                                 INTERFACE                                  --
+--------------------------------------------------------------------------------
+
+-- to-output : Result → Response
+-- to-output success = {!!}
+-- to-output denied = {!!}
+-- to-output expired = {!!}
+-- to-output login-failed = {!!}
+-- to-output signup-failed = {!!}
+-- to-output (returned-timeline x) = {!!}
+-- to-output (issued-session x) = {!!}
+-- to-output (created-post x) = {!!}
+-- to-output (returned-post x x₁ x₂ x₃) = {!!}
+
+-- from-input : Action → Command
+-- from-input (post-tweet x x₁) = {!!}
+-- from-input (get-tweet x x₁) = {!!}
+-- from-input (timeline x x₁) = {!!}
+-- from-input (login x x₁) = {!!}
+-- from-input (signup x x₁) = {!!}
