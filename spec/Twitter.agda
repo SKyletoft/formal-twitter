@@ -263,4 +263,4 @@ data Step : World → Command → World → Result → Set₁ where
 
   get-public-timeline :
     ∀ {before n} →
-    Step before (read-timeline nothing n) before (returned-timeline (take n ∘ World.newest-first $ before))
+    Step before (read-timeline nothing n) before (returned-timeline ∘ take n ∘ World.newest-first $ before)
