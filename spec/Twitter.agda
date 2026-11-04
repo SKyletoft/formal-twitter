@@ -132,7 +132,7 @@ record ValidSession
 record PostIsNew
     (before after : World)
     (pid : PostId)
-    (new-post : Post) : Set₁
+    (new-post : Post) : Set
   where
   field
     was-absent : World.post-at before pid ≡ nothing
