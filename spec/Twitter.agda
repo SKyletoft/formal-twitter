@@ -2,6 +2,7 @@ module Twitter
   (SessionId PostId : Set)
   where
 
+open import Agda.Builtin.Bool
 open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
@@ -80,7 +81,7 @@ record World : Set₁ where
     account-at   : (username : String) → Maybe Account
     session-at   : SessionId           → SessionStatus
     post-at      : PostId              → Maybe Post
-    follows      : String              → String → Set
+    follows      : String → String     → Bool
     newest-first : List PostId
 
     only-valid-sessions :
@@ -147,8 +148,8 @@ data CanReadPost
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author txt followers-only live likes replies) →
-    World.follows world user author →
     CanReadPost world sid pid
+    World.follows world user author ≡ true →
   post-is-public :
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
@@ -240,7 +241,7 @@ data Step : World → Command → World → Result → Set₁ where
     ∀ {before pid sid author txt likes replies acc user} →
     ValidSession before sid acc user →
     World.post-at before pid ≡ just (post author txt followers-only live likes replies) →
-    ¬ (World.follows before user author) →
+    World.follows before user author ≡ false →
     Step before (read-post (just sid) pid) before denied
 
   read-post-logged-in :
