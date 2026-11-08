@@ -249,9 +249,9 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
   read-post-anonymously :
-    ∀ {before after pid author txt likes replies} →
+    ∀ {before pid author txt likes replies} →
     World.post-at before pid ≡ just (post author txt everyone live likes replies) →
-    Step before (read-post nothing pid) after (returned-post author txt likes replies)
+    Step before (read-post nothing pid) before (returned-post author txt likes replies)
 
   -- get-private-timeline :
   --   ∀ {before n sid acc user} →
