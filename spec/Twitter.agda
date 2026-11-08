@@ -130,13 +130,13 @@ record ValidSession
     account-unchanged : World.account-at world user ≡ just acc
 
 record PostIsNew
-    (world : World)
+    (before after : World)
     (pid : PostId)
     (new-post : Post) : Set₁
   where
   field
-    was-absent : World.post-at world pid ≡ nothing
-    is-present : World.post-at world pid  ≡ just new-post
+    was-absent : World.post-at before pid ≡ nothing
+    is-present : World.post-at after pid  ≡ just new-post
 
 data CanReadPost
     (world : World)
@@ -172,7 +172,7 @@ data Step : World → Command → World → Result → Set₁ where
   successful-post :
     ∀ {before after sid txt username user pid acc} →
     ValidSession before sid acc username →
-    PostIsNew before pid (new-post username txt user) →
+    PostIsNew before after pid (new-post username txt user) →
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
