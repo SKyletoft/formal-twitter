@@ -6,13 +6,15 @@ open import Agda.Builtin.Bool
 open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
-open import Agda.Builtin.String
+open import Agda.Builtin.Sigma
 
 open import Data.Empty                            using (⊥; ⊥-elim)
 open import Data.List                             using (List; take; filter)
 open import Data.Product                          using (∃-syntax)
-open import Function                              using (_∘_; _$_)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
+open import Data.String                           using (String) renaming (_≟_ to _≟ₛ_)
+open import Function                              using (_∘_; _$_; case_of_; case_returning_of_)
+open import Relation.Binary.Definitions           using (DecidableEquality)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; cong₂; trans; sym)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
@@ -22,10 +24,6 @@ open import Relation.Nullary.Negation.Core        using (¬_)
 
 private variable a b c : Set
 
-length : List a → Nat
-length []       = zero
-length (_ ∷ xs) = suc (length xs)
-
 infix 4 _∈_ _∉_
 data _∈_ (x : a) : List a → Set where
   here  : ∀ {xs}            → x ∈ (x ∷ xs)
@@ -34,13 +32,9 @@ data _∈_ (x : a) : List a → Set where
 _∉_ : (x : a) → List a → Set
 x ∉ y = ¬ (x ∈ y)
 
-contains : ((x y : a) → Dec (x ≡ y)) → (x : a) → (xs : List a) → Dec (x ∈ xs)
-contains _≟_ x [] = no λ ()
-contains _≟_ x (y ∷ ys) with x ≟ y
-... | yes refl = yes here
-... | no x≢y with contains _≟_ x ys
-...   | yes p = yes (there p)
-...   | no x∉ys = no λ { here → x≢y refl ; (there p) → x∉ys p }
+infixr 2 _×_
+_×_ : Set → Set → Set
+a × b = Σ a (λ _ → b)
 
 --------------------------------------------------------------------------------
 --                                STATE TYPES                                 --
@@ -124,8 +118,9 @@ record ValidSession
     (world : World)
     (sid : SessionId)
     (acc : Account)
-    (user : String) : Set₁
+    (user : String) : Set
   where
+  constructor valid-session
   field
     session-unchanged : World.session-at world sid  ≡ active user
     account-unchanged : World.account-at world user ≡ just acc
@@ -135,6 +130,7 @@ record PostIsNew
     (pid : PostId)
     (new-post : Post) : Set
   where
+  constructor post-is-new
   field
     was-absent : World.post-at before pid ≡ nothing
     is-present : World.post-at after pid  ≡ just new-post
@@ -163,6 +159,62 @@ data CanReadPost
 new-post : String → String → Account → Post
 new-post username txt user =
   post username txt (Account.default-visibility user) live zero []
+
+_≟ᵥ_ : DecidableEquality Visibility
+everyone       ≟ᵥ everyone       = yes refl
+everyone       ≟ᵥ followers-only = no λ ()
+followers-only ≟ᵥ everyone       = no λ ()
+followers-only ≟ᵥ followers-only = yes refl
+
+_≟ₐ_ : DecidableEquality Account
+account password vis ≟ₐ account password₁ vis₁ with password ≟ₛ password₁ with vis ≟ᵥ vis₁
+... | yes p | yes v = yes (cong₂ account p v)
+... | yes p | no  v = no (λ eq → v (cong Account.default-visibility eq))
+... | no  p | yes v = no (λ eq → p (cong Account.password eq))
+... | no  p | no  v = no (λ eq → p (cong Account.password eq))
+
+_≟active_ : (s : SessionStatus) (u : String) → Dec (s ≡ active u)
+unused  ≟active _ = no λ ()
+revoked ≟active _ = no λ ()
+active v ≟active u with v ≟ₛ u
+... | yes refl = yes refl
+... | no  v≢u  = no $ v≢u ∘ λ {refl → refl}
+
+_≟just_ : (m : Maybe Account) (acc : Account) → Dec (m ≡ just acc)
+nothing  ≟just _ = no λ ()
+just a   ≟just acc with a ≟ₐ acc
+... | yes refl = yes refl
+... | no a≢acc = no $ a≢acc ∘ λ {refl → refl}
+
+is-valid-session :
+  (w : World) →
+  (sid : SessionId) →
+  (acc : Account) →
+  (user : String) →
+  Dec (ValidSession w sid acc user)
+is-valid-session w sid acc user
+  with World.session-at w sid ≟active user
+     | World.account-at w user ≟just acc
+... | yes s | yes a = yes $ valid-session s a
+... | yes _ | no a  = no  $ a ∘ ValidSession.account-unchanged
+... | no s  | _     = no  $ s ∘ ValidSession.session-unchanged
+
+can-have-valid-session :
+  (w : World) (sid : SessionId) (pid : PostId) →
+  Dec (∃[ acc ] ∃[ user ] ValidSession w sid acc user)
+can-have-valid-session w sid pid
+  with World.session-at w sid in p
+... | unused  = no $ (λ ()) ∘ trans (sym p) ∘ ValidSession.session-unchanged ∘ snd ∘ snd
+... | revoked = no $ (λ ()) ∘ trans (sym p) ∘ ValidSession.session-unchanged ∘ snd ∘ snd
+... | active user
+  with World.account-at w user in q
+... | just acc = yes (acc , user , valid-session p q)
+... | nothing  = no λ _ →
+      let r = snd ∘ World.only-valid-sessions w $ p
+      in (λ ()) $ trans (sym r) q
+
+can-read-post : (w : World) (sid : SessionId) (pid : PostId) → Dec (CanReadPost w sid pid)
+can-read-post w sid pid = {!!}
 
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
