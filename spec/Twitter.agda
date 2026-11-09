@@ -162,16 +162,18 @@ new-post username txt user =
 
 _≟ᵥ_ : DecidableEquality Visibility
 everyone       ≟ᵥ everyone       = yes refl
+followers-only ≟ᵥ followers-only = yes refl
 everyone       ≟ᵥ followers-only = no λ ()
 followers-only ≟ᵥ everyone       = no λ ()
-followers-only ≟ᵥ followers-only = yes refl
 
 _≟ₐ_ : DecidableEquality Account
-account password vis ≟ₐ account password₁ vis₁ with password ≟ₛ password₁ with vis ≟ᵥ vis₁
-... | yes p | yes v = yes (cong₂ account p v)
-... | yes p | no  v = no (λ eq → v (cong Account.default-visibility eq))
-... | no  p | yes v = no (λ eq → p (cong Account.password eq))
-... | no  p | no  v = no (λ eq → p (cong Account.password eq))
+account password vis ≟ₐ account password₁ vis₁
+  with password ≟ₛ password₁
+     | vis      ≟ᵥ vis₁
+... | yes p | yes v = yes $ cong₂ account p v
+... | yes p | no  v = no $ v ∘ cong Account.default-visibility
+... | no  p | yes v = no $ p ∘ cong Account.password
+... | no  p | no  v = no $ p ∘ cong Account.password
 
 _≟active_ : (s : SessionStatus) (u : String) → Dec (s ≡ active u)
 unused  ≟active _ = no λ ()
@@ -186,6 +188,9 @@ just a   ≟just acc with a ≟ₐ acc
 ... | yes refl = yes refl
 ... | no a≢acc = no $ a≢acc ∘ λ {refl → refl}
 
+just-injective   : ∀ {x y : a} → just x ≡ just y → x ≡ y ; just-injective refl = refl
+active-injective : ∀ {u v} → active u ≡ active v → u ≡ v ; active-injective refl = refl
+
 is-valid-session :
   (w : World) →
   (sid : SessionId) →
@@ -193,8 +198,8 @@ is-valid-session :
   (user : String) →
   Dec (ValidSession w sid acc user)
 is-valid-session w sid acc user
-  with World.session-at w sid ≟active user
-     | World.account-at w user ≟just acc
+  with World.session-at w sid  ≟active user
+     | World.account-at w user ≟just   acc
 ... | yes s | yes a = yes $ valid-session s a
 ... | yes _ | no a  = no  $ a ∘ ValidSession.account-unchanged
 ... | no s  | _     = no  $ s ∘ ValidSession.session-unchanged
@@ -209,12 +214,48 @@ can-have-valid-session w sid pid
 ... | active user
   with World.account-at w user in q
 ... | just acc = yes (acc , user , valid-session p q)
-... | nothing  = no λ _ →
+... | nothing  = no $ λ _ →
       let r = snd ∘ World.only-valid-sessions w $ p
       in (λ ()) $ trans (sym r) q
 
+cant-read-post-without-valid-session :
+  ∀ {w sid pid} →
+  ¬ (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
+  ¬ CanReadPost w sid pid
+cant-read-post-without-valid-session ¬vs (post-is-private vs _ _) = ¬vs (_ , _ , vs)
+cant-read-post-without-valid-session ¬vs (post-is-public vs _)    = ¬vs (_ , _ , vs)
+
 can-read-post : (w : World) (sid : SessionId) (pid : PostId) → Dec (CanReadPost w sid pid)
-can-read-post w sid pid = {!!}
+can-read-post w sid pid with can-have-valid-session w sid pid
+... | no ¬vs = no $ cant-read-post-without-valid-session ¬vs
+... | yes (_ , user , vs)
+  with World.post-at w pid in p
+... | nothing = no λ
+        { (post-is-private _ r _) → (λ ()) ∘ trans (sym r) $ p
+        ; (post-is-public _ r)    → (λ ()) ∘ trans (sym r) $ p
+        }
+... | just (post _ _ _ deleted _ _) = no λ
+        { (post-is-private _ r _) → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
+        ; (post-is-public _ r)    → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
+        }
+... | just (post author text everyone live likes replies) = yes $ post-is-public vs p
+... | just (post author text followers-only live likes replies)
+  with World.follows w user author in q
+... | true  = yes $ post-is-private vs p q
+... | false = no λ
+        { (post-is-private {author} vs' r f) →
+            let e1 = cong (λ u → World.follows w u author)
+                   ∘ active-injective
+                   ∘ trans (sym (ValidSession.session-unchanged vs'))
+                   ∘ ValidSession.session-unchanged
+                   $ vs
+                e2 = cong (World.follows w user ∘ Post.author)
+                   ∘ just-injective
+                   ∘ trans (sym r)
+                   $ p
+            in (λ ()) ∘ trans (sym q) ∘ trans (sym e2) ∘ trans (sym e1) $ f
+        ; (post-is-public _ r) → (λ ()) ∘ cong Post.visibility ∘ just-injective ∘ trans (sym r) $ p
+        }
 
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
@@ -306,13 +347,15 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at before pid ≡ just (post author txt everyone live likes replies) →
     Step before (read-post nothing pid) before (returned-post author txt likes replies)
 
-  -- get-private-timeline :
-  --   ∀ {before n sid acc user} →
-  --     let response = returned-timeline (take n ∘ filter (λ where
-  --                                                           c → {!!}
-  --                                                         ) ∘ World.newest-first $ before)
-  --     in ValidSession before sid acc user →
-  --        Step before (read-timeline (just sid) n) before response
+  get-private-timeline :
+    ∀ {before n sid acc user} →
+    ValidSession before sid acc user →
+    Step before (read-timeline (just sid) n) before
+      ∘ returned-timeline
+      ∘ take n
+      ∘ filter (can-read-post before sid)
+      ∘ World.newest-first
+      $ before
 
   get-public-timeline :
     ∀ {before n} →
