@@ -218,16 +218,12 @@ can-have-valid-session w sid pid
       let r = snd ∘ World.only-valid-sessions w $ p
       in (λ ()) $ trans (sym r) q
 
-cant-read-post-without-valid-session :
-  ∀ {w sid pid} →
-  ¬ (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
-  ¬ CanReadPost w sid pid
-cant-read-post-without-valid-session ¬vs (post-is-private vs _ _) = ¬vs (_ , _ , vs)
-cant-read-post-without-valid-session ¬vs (post-is-public vs _)    = ¬vs (_ , _ , vs)
-
 can-read-post : (w : World) (sid : SessionId) (pid : PostId) → Dec (CanReadPost w sid pid)
 can-read-post w sid pid with can-have-valid-session w sid pid
-... | no ¬vs = no $ cant-read-post-without-valid-session ¬vs
+... | no ¬vs = no λ
+        { (post-is-private vs _ _) → ¬vs (_ , _ , vs)
+        ; (post-is-public vs _)    → ¬vs (_ , _ , vs)
+        }
 ... | yes (_ , user , vs)
   with World.post-at w pid in p
 ... | nothing = no λ
