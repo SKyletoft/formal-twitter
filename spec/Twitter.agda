@@ -148,8 +148,8 @@ data CanReadPost
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author txt followers-only live likes replies) →
-    CanReadPost world sid pid
     World.follows world user author ≡ true →
+    CanReadPost world sid pid
   post-is-public :
     ∀ {author txt likes replies acc user} →
     ValidSession world sid acc user →
