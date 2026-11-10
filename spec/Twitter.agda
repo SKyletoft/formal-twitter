@@ -385,6 +385,7 @@ data Step : World → Command → World → Result → Set₁ where
 
   failed-access :
     ∀ {before sid username acc cmd} →
+    extract-sid cmd ≡ just sid →
     ¬ ValidSession before sid acc username →
     Step before cmd before expired
 
