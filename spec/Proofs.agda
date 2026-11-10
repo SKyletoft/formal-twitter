@@ -13,11 +13,11 @@ open import Function                              using (_∘_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; cong; refl; sym; trans)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
-private variable a b : Set
-
 --------------------------------------------------------------------------------
 --                               PROOF-HELPERS                                --
 --------------------------------------------------------------------------------
+
+private variable a b : Set
 
 infixr 2 _∧_
 _∧_ : Set → Set → Set
