@@ -181,7 +181,7 @@ to-output (created-post x) = tweet-id x
 to-output (returned-post author txt likes replies) = tweet author txt likes replies
 
 from-input : Action → Command
-from-input (post-tweet tk txt) = publish tk txt
+from-input (post-tweet tk txt) = publish tk txt nothing
 from-input (get-tweet (just tk) twt) = read-post (just tk) twt
 from-input (get-tweet nothing twt) = read-post nothing twt
 from-input (timeline (just tk) n) = read-timeline (just tk) n

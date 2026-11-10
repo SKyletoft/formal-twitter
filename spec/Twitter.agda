@@ -63,6 +63,7 @@ record Post : Set where
     status     : PostStatus
     likes      : Nat
     replies    : List PostId
+    parent     : Maybe PostId
 
 data SessionStatus : Set where
   unused  : SessionStatus
@@ -86,13 +87,24 @@ record World : Set₁ where
       ∀ {pid} →
       pid ∈ newest-first →
       ∃[ post ] post-at pid ≡ just post
+    only-valid-replies :
+      ∀ {parent child pauthor ptxt pvis pstatus plikes preplies pparent cauthor ctxt cvis cstatus clikes creplies} →
+      child ∈ preplies →
+      post-at parent ≡ just (post pauthor ptxt pvis pstatus plikes preplies pparent) →
+      post-at child ≡ just (post cauthor ctxt cvis cstatus clikes creplies (just parent)) →
+      Set
 
 data Command : Set where
-  publish       : SessionId       → String → Command
+  publish       : SessionId       → String → Maybe PostId → Command
+  delete        : SessionId       → PostId → Command
   read-post     : Maybe SessionId → PostId → Command
   read-timeline : Maybe SessionId → Nat    → Command
   authenticate  : String          → String → Command
   register      : String          → String → Command
+  follow        : SessionId       → String → Command
+  unfollow      : SessionId       → String → Command
+  like          : SessionId       → PostId → Command
+  unlike        : SessionId       → PostId → Command
 
 data Result : Set where
   success           : Result
@@ -141,15 +153,15 @@ data CanReadPost
     (pid : PostId) : Set₁
   where
   post-is-private :
-    ∀ {author txt likes replies acc user} →
+    ∀ {author txt likes replies acc user parent} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author txt followers-only live likes replies) →
+    World.post-at world pid ≡ just (post author txt followers-only live likes replies parent) →
     World.follows world user author ≡ true →
     CanReadPost world sid pid
   post-is-public :
-    ∀ {author txt likes replies acc user} →
+    ∀ {author txt likes replies acc user parent} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author txt everyone live likes replies) →
+    World.post-at world pid ≡ just (post author txt everyone live likes replies parent) →
     CanReadPost world sid pid
 
 --------------------------------------------------------------------------------
@@ -158,7 +170,13 @@ data CanReadPost
 
 new-post : String → String → Account → Post
 new-post username txt user =
-  post username txt (Account.default-visibility user) live zero []
+  post username txt (Account.default-visibility user) live zero [] nothing
+
+new-reply : String → String → Account → PostId → Post → Post
+new-reply username txt user parent-id (post _ _ everyone _ _ _ _) =
+  post username txt (Account.default-visibility user) live zero [] (just parent-id)
+new-reply username txt user parent-id (post _ _ followers-only _ _ _ _) =
+  post username txt followers-only live zero [] (just parent-id)
 
 _≟ᵥ_ : DecidableEquality Visibility
 everyone       ≟ᵥ everyone       = yes refl
@@ -230,12 +248,12 @@ can-read-post w sid pid with can-have-valid-session w sid pid
         { (post-is-private _ r _) → (λ ()) ∘ trans (sym r) $ p
         ; (post-is-public _ r)    → (λ ()) ∘ trans (sym r) $ p
         }
-... | just (post _ _ _ deleted _ _) = no λ
+... | just (post _ _ _ deleted _ _ _) = no λ
         { (post-is-private _ r _) → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
         ; (post-is-public _ r)    → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
         }
-... | just (post author text everyone live likes replies) = yes $ post-is-public vs p
-... | just (post author text followers-only live likes replies)
+... | just (post author text everyone live likes replies parent) = yes $ post-is-public vs p
+... | just (post author text followers-only live likes replies parent)
   with World.follows w user author in q
 ... | true  = yes $ post-is-private vs p q
 ... | false = no λ
@@ -271,7 +289,29 @@ data Step : World → Command → World → Result → Set₁ where
     World.account-at before u1      ≡ World.account-at after u1 →
     World.session-at before s       ≡ World.session-at after s →
     World.follows before u1 u2      ≡ World.follows after u1 u2 →
-    Step before (publish sid txt) after (created-post pid)
+    Step before (publish sid txt nothing) after (created-post pid)
+
+  successful-reply :
+    ∀ {before after sid txt username user pid acc ppid ppost} →
+    ValidSession before sid acc username →
+    PostIsNew before after pid (new-reply username txt user ppid ppost) →
+    pid ∷ World.newest-first before ≡ World.newest-first after →
+    -- Parent tweet has a new reply
+    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent} →
+    CanReadPost before sid ppid →
+    ppost ≡ (post pauthor ptxt pvisibility live plikes preplies pparent) →
+    World.post-at before ppid ≡ just ppost →
+    World.post-at after  ppid ≡ just (post pauthor ptxt pvisibility live plikes (pid ∷ preplies) pparent) →
+    -- Everything else unchanged
+    ∀ {other-pids u1 u2 s} →
+    pid ≢ other-pids →
+    pid ≢ ppid →
+    ppid ≢ other-pids →
+    World.post-at before other-pids ≡ World.post-at after other-pids →
+    World.account-at before u1      ≡ World.account-at after u1 →
+    World.session-at before s       ≡ World.session-at after s →
+    World.follows before u1 u2      ≡ World.follows after u1 u2 →
+    Step before (publish sid txt (just ppid)) after (created-post pid)
 
   failed-access :
     ∀ {before sid username acc cmd} →
@@ -327,9 +367,9 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (authenticate username passwd) before login-failed
 
   cant-read-post :
-    ∀ {before pid sid author txt likes replies acc user} →
+    ∀ {before pid sid author txt likes replies acc user parent} →
     ValidSession before sid acc user →
-    World.post-at before pid ≡ just (post author txt followers-only live likes replies) →
+    World.post-at before pid ≡ just (post author txt followers-only live likes replies parent) →
     World.follows before user author ≡ false →
     Step before (read-post (just sid) pid) before denied
 
@@ -339,8 +379,8 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
   read-post-anonymously :
-    ∀ {before pid author txt likes replies} →
-    World.post-at before pid ≡ just (post author txt everyone live likes replies) →
+    ∀ {before pid author txt likes replies parent} →
+    World.post-at before pid ≡ just (post author txt everyone live likes replies parent) →
     Step before (read-post nothing pid) before (returned-post author txt likes replies)
 
   get-private-timeline :
