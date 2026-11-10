@@ -347,6 +347,26 @@ can-read-post w sid pid with can-have-valid-session w sid pid
                                $ p
         }
 
+is-post-public :
+  (w : World) →
+  (pid : PostId) →
+  Dec (∃[ author ] ∃[ txt ] ∃[ likes ] ∃[ replies ] ∃[ parent ]
+       World.post-at w pid ≡ just (post author
+                                         txt
+                                         everyone
+                                         live
+                                         likes
+                                         replies
+                                         parent))
+is-post-public w pid with World.post-at w pid in p
+... | just (post author text everyone live likes replies parent) =
+        yes (author , text , likes , replies , parent , refl)
+... | just (post _ _ followers-only _ _ _ _) = no $
+        (λ ()) ∘ cong Post.visibility ∘ just-injective ∘ sixth
+... | just (post _ _ _ deleted _ _ _) = no $
+        (λ ()) ∘ cong Post.status ∘ just-injective ∘ sixth
+... | nothing = no $ (λ ()) ∘ sixth
+
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
 --------------------------------------------------------------------------------
@@ -478,4 +498,9 @@ data Step : World → Command → World → Result → Set₁ where
 
   get-public-timeline :
     ∀ {before n} →
-    Step before (read-timeline nothing n) before (returned-timeline ∘ take n ∘ World.newest-first $ before)
+    Step before (read-timeline nothing n) before
+      ∘ returned-timeline
+      ∘ take n
+      ∘ filter (is-post-public before)
+      ∘ World.newest-first
+      $ before
