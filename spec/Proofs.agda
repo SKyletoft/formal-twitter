@@ -10,7 +10,7 @@ open import Agda.Builtin.String
 
 open import Data.Product                          using (∃-syntax)
 open import Function                              using (_∘_)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; sym; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; cong; refl; sym; trans)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
 private variable a b : Set
@@ -21,6 +21,19 @@ a ∧ b = Σ a (λ _ → b)
 
 nothing≢just : {x : a} → nothing ≢ just x
 nothing≢just ()
+
+deleted≢live : deleted ≢ live
+deleted≢live ()
+
+everyone≢followers-only : everyone ≢ followers-only
+everyone≢followers-only ()
+
+new-reply-private :
+  ∀ {username txt user parent-id ppost} →
+  Post.visibility ppost ≡ followers-only →
+  Post.visibility (new-reply username txt user parent-id ppost) ≡ followers-only
+new-reply-private {ppost = record { visibility = everyone }} ()
+new-reply-private {ppost = record { visibility = followers-only }} refl = refl
 
 post-doesnt-exist-before-posting :
   {sid : SessionId} {txt : String} {pid : PostId} {before after : World} {parent : Maybe PostId} →
@@ -36,13 +49,19 @@ cant-reply-to-deleted-tweet :
   World.post-at before parent ≡ just post →
   Post.status post            ≡ deleted →
   ¬ Step before (publish sid txt (just parent)) after (created-post pid)
-cant-reply-to-deleted-tweet = {!!}
+cant-reply-to-deleted-tweet post-at-del status-del
+  (successful-reply _ _ _ _ ppost≡ post-at-ppost _ _ _ _ _ _ _ _) with ppost≡
+... | refl =
+  deleted≢live (trans (sym status-del)
+    (cong Post.status
+      (just-injective (trans (sym post-at-del) post-at-ppost))))
 
 cant-reply-to-tweet-you-cant-read :
   ∀ {before after sid pid txt parent} →
   ¬ CanReadPost before sid parent →
   ¬ Step before (publish sid txt (just parent)) after (created-post pid)
-cant-reply-to-tweet-you-cant-read = {!!}
+cant-reply-to-tweet-you-cant-read ¬can-read
+  (successful-reply _ _ _ can-read _ _ _ _ _ _ _ _ _ _) = ¬can-read can-read
 
 cant-make-public-reply-to-private-parent :
   ∀ {before after pid sid txt parent post parent-post} →
@@ -50,8 +69,19 @@ cant-make-public-reply-to-private-parent :
   World.post-at after pid     ≡ just post →
   Post.visibility parent-post ≡ followers-only →
   Post.visibility post        ≡ everyone →
-  Step before (publish sid txt (just parent)) after (created-post pid)
-cant-make-public-reply-to-private-parent = {!!}
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-make-public-reply-to-private-parent
+  post-at-before post-at-after parent-vis post-vis
+  (successful-reply {ppost = ppost} _ is-new _ _ _ post-at-ppost _ _ _ _ _ _ _ _) =
+  let post≡new = just-injective
+        (trans (sym post-at-after) (PostIsNew.is-present is-new))
+      vis≡ = cong Post.visibility post≡new
+      ppost≡parent = just-injective
+        (trans (sym post-at-ppost) post-at-before)
+      ppost-vis = trans (cong Post.visibility ppost≡parent) parent-vis
+  in everyone≢followers-only
+       (trans (sym post-vis)
+         (trans vis≡ (new-reply-private ppost-vis)))
 
 -- step-exists :
 --   ∀ (before : World) (cmd : Command) →
