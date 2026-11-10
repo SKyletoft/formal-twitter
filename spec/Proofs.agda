@@ -9,7 +9,7 @@ open import Agda.Builtin.Sigma
 open import Agda.Builtin.String
 
 open import Data.Product                          using (∃-syntax)
-open import Function                              using (_∘_)
+open import Function                              using (_∘_; _$_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; cong; refl; sym; trans)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
@@ -81,33 +81,32 @@ new-reply-private {ppost = record { visibility = followers-only }} refl = refl
 --------------------------------------------------------------------------------
 
 post-doesnt-exist-before-posting : PostDoesntExistBeforePosting
-post-doesnt-exist-before-posting {before = before} (successful-post _ record {was-absent = absent} _ _ _ _ _ _) =
-  nothing≢just ∘ trans (sym absent) ∘ snd ∘ World.only-valid-posts before , absent
-post-doesnt-exist-before-posting {before = before} (successful-reply _ record {was-absent = absent} _ _ _ _ _ _ _ _ _ _ _ _) =
-  nothing≢just ∘ trans (sym absent) ∘ snd ∘ World.only-valid-posts before , absent
+post-doesnt-exist-before-posting {before}
+    (successful-post _ (post-is-new wa _) _ _ _ _ _ _) =
+  nothing≢just ∘ trans (sym wa) ∘ snd ∘ World.only-valid-posts before , wa
+post-doesnt-exist-before-posting {before}
+    (successful-reply _ (post-is-new wa _) _ _ _ _ _ _ _ _ _ _ _ _) =
+  nothing≢just ∘ trans (sym wa) ∘ snd ∘ World.only-valid-posts before , wa
 
 cant-reply-to-deleted-tweet : CantReplyToDeletedTweet
-cant-reply-to-deleted-tweet post-at-del status-del
-  (successful-reply _ _ _ _ ppost≡ post-at-ppost _ _ _ _ _ _ _ _) with ppost≡
-... | refl =
-  deleted≢live (trans (sym status-del)
-    (cong Post.status
-      (just-injective (trans (sym post-at-del) post-at-ppost))))
+cant-reply-to-deleted-tweet pa st
+    (successful-reply _ _ _ _ pe pb _ _ _ _ _ _ _ _)
+  = deleted≢live
+  ∘ trans (sym st)
+  ∘ trans (cong Post.status ∘ just-injective ∘ trans (sym pa) $ pb)
+  ∘ cong Post.status
+  $ pe
 
 cant-reply-to-tweet-you-cant-read : CantReplyToTweetYouCantRead
-cant-reply-to-tweet-you-cant-read ¬can-read
-  (successful-reply _ _ _ can-read _ _ _ _ _ _ _ _ _ _) = ¬can-read can-read
+cant-reply-to-tweet-you-cant-read ¬cr
+    (successful-reply _ _ _ cr _ _ _ _ _ _ _ _ _ _) = ¬cr cr
 
 cant-make-public-reply-to-private-parent : CantMakePublicReplyToPrivateParent
-cant-make-public-reply-to-private-parent
-  post-at-before post-at-after parent-vis post-vis
-  (successful-reply {ppost = ppost} _ is-new _ _ _ post-at-ppost _ _ _ _ _ _ _ _) =
-  let post≡new = just-injective
-        (trans (sym post-at-after) (PostIsNew.is-present is-new))
-      vis≡ = cong Post.visibility post≡new
-      ppost≡parent = just-injective
-        (trans (sym post-at-ppost) post-at-before)
-      ppost-vis = trans (cong Post.visibility ppost≡parent) parent-vis
-  in everyone≢followers-only
-       (trans (sym post-vis)
-         (trans vis≡ (new-reply-private ppost-vis)))
+cant-make-public-reply-to-private-parent h1 h2 h3 h4
+    (successful-reply _ (post-is-new _ ip) _ _ _ pb _ _ _ _ _ _ _ _)
+  = everyone≢followers-only
+  ∘ trans (sym h4)
+  ∘ trans (cong Post.visibility ∘ just-injective ∘ trans (sym h2) $ ip)
+  ∘ new-reply-private
+  ∘ trans (sym ∘ cong Post.visibility ∘ just-injective ∘ trans (sym h1) $ pb)
+  $ h3
