@@ -2,13 +2,16 @@ module Proofs (SessionId PostId : Set) where
 
 open import Twitter SessionId PostId
 
+open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
-open import Agda.Builtin.String
+open import Agda.Builtin.Nat
 open import Agda.Builtin.Sigma
+open import Agda.Builtin.String
 
 open import Data.Product                          using (∃-syntax)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; sym; trans)
 open import Function                              using (_∘_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; sym; trans)
+open import Relation.Nullary.Negation.Core        using (¬_)
 
 private variable a b : Set
 
@@ -28,20 +31,30 @@ post-doesnt-exist-before-posting {before = before} (successful-post _ record {wa
 post-doesnt-exist-before-posting {before = before} (successful-reply _ record {was-absent = absent} _ _ _ _ _ _ _ _ _ _ _ _) =
   nothing≢just ∘ trans (sym absent) ∘ snd ∘ World.only-valid-posts before , absent
 
--- cant-reply-to-deleted-tweet
+cant-reply-to-deleted-tweet :
+  ∀ {before after sid txt parent pid post} →
+  World.post-at before parent ≡ just post →
+  Post.status post            ≡ deleted →
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-reply-to-deleted-tweet = {!!}
 
--- cant-reply-to-tweet-you-cant-read
+cant-reply-to-tweet-you-cant-read :
+  ∀ {before after sid pid txt parent} →
+  ¬ CanReadPost before sid parent →
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-reply-to-tweet-you-cant-read = {!!}
 
--- cant-make-public-reply-to-private-parent
+cant-make-public-reply-to-private-parent :
+  ∀ {before after pid sid txt parent post parent-post} →
+  World.post-at before parent ≡ just parent-post →
+  World.post-at after pid     ≡ just post →
+  Post.visibility parent-post ≡ followers-only →
+  Post.visibility post        ≡ everyone →
+  Step before (publish sid txt (just parent)) after (created-post pid)
+cant-make-public-reply-to-private-parent = {!!}
 
--- cant-make-public-reply-to-private-parent-trans
-
-step-exists :
-  ∀ (before : World) (cmd : Command) →
-  ∃[ after ] ∃[ result ]
-  Step before cmd after result
-step-exists w (publish x x₁ x₂) = {!!}
-step-exists w (read-post x x₁) = {!!}
-step-exists w (read-timeline x x₁) = {!!}
-step-exists w (authenticate x x₁) = {!!}
-step-exists w (register x x₁) = {!!}
+-- step-exists :
+--   ∀ (before : World) (cmd : Command) →
+--   ∃[ after ] ∃[ result ]
+--   Step before cmd after result
+-- step-exists w cmd = {!!}
