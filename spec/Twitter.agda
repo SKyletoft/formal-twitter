@@ -11,10 +11,12 @@ open import Agda.Builtin.Sigma
 open import Data.Empty                            using (⊥; ⊥-elim)
 open import Data.List                             using (List; take; filter)
 open import Data.Product                          using (∃-syntax)
-open import Data.String                           using (String) renaming (_≟_ to _≟ₛ_)
-open import Function                              using (_∘_; _$_; case_of_; case_returning_of_)
+open import Data.String                           using (String)
+                                                  renaming (_≟_ to _≟ₛ_)
+open import Function                              using (_∘_; _$_)
 open import Relation.Binary.Definitions           using (DecidableEquality)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; cong₂; trans; sym)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
+                                                         cong₂; trans; sym)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
@@ -88,10 +90,23 @@ record World : Set₁ where
       pid ∈ newest-first →
       ∃[ post ] post-at pid ≡ just post
     only-valid-replies :
-      ∀ {parent child pauthor ptxt pvis pstatus plikes preplies pparent cauthor ctxt cvis cstatus clikes creplies} →
+      ∀ {parent child pauthor ptxt pvis pstatus plikes preplies pparent} →
+      ∀ {cauthor ctxt cvis cstatus clikes creplies} →
       child ∈ preplies →
-      post-at parent ≡ just (post pauthor ptxt pvis pstatus plikes preplies pparent) →
-      post-at child ≡ just (post cauthor ctxt cvis cstatus clikes creplies (just parent)) →
+      post-at parent ≡ just (post pauthor
+                                  ptxt
+                                  pvis
+                                  pstatus
+                                  plikes
+                                  preplies
+                                  pparent) →
+      post-at child  ≡ just (post cauthor
+                                  ctxt
+                                  cvis
+                                  cstatus
+                                  clikes
+                                  creplies
+                                  (just parent)) →
       Set
 
 data Command : Set where
@@ -155,18 +170,42 @@ data CanReadPost
   post-is-private :
     ∀ {author txt likes replies acc user parent} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author txt followers-only live likes replies parent) →
+    World.post-at world pid ≡ just (post author
+                                         txt
+                                         followers-only
+                                         live
+                                         likes
+                                         replies
+                                         parent) →
     World.follows world user author ≡ true →
     CanReadPost world sid pid
   post-is-public :
     ∀ {author txt likes replies acc user parent} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author txt everyone live likes replies parent) →
+    World.post-at world pid ≡ just (post author
+                                         txt
+                                         everyone
+                                         live
+                                         likes
+                                         replies
+                                         parent) →
     CanReadPost world sid pid
 
 --------------------------------------------------------------------------------
 --                                  HELPERS                                   --
 --------------------------------------------------------------------------------
+
+extract-sid : Command → Maybe SessionId
+extract-sid (publish sid _ _)      = just sid
+extract-sid (delete sid _)         = just sid
+extract-sid (read-post msid _)     = msid
+extract-sid (read-timeline msid _) = msid
+extract-sid (authenticate _ _)     = nothing
+extract-sid (register _ _)         = nothing
+extract-sid (follow sid _)         = just sid
+extract-sid (unfollow sid _)       = just sid
+extract-sid (like sid _)           = just sid
+extract-sid (unlike sid _)         = just sid
 
 new-post : String → String → Account → Post
 new-post username txt user =
@@ -227,8 +266,16 @@ can-have-valid-session :
   Dec (∃[ acc ] ∃[ user ] ValidSession w sid acc user)
 can-have-valid-session w sid pid
   with World.session-at w sid in p
-... | unused  = no $ (λ ()) ∘ trans (sym p) ∘ ValidSession.session-unchanged ∘ snd ∘ snd
-... | revoked = no $ (λ ()) ∘ trans (sym p) ∘ ValidSession.session-unchanged ∘ snd ∘ snd
+... | unused  = no $ (λ ())
+                   ∘ trans (sym p)
+                   ∘ ValidSession.session-unchanged
+                   ∘ snd
+                   ∘ snd
+... | revoked = no $ (λ ())
+                   ∘ trans (sym p)
+                   ∘ ValidSession.session-unchanged
+                   ∘ snd
+                   ∘ snd
 ... | active user
   with World.account-at w user in q
 ... | just acc = yes (acc , user , valid-session p q)
@@ -236,7 +283,11 @@ can-have-valid-session w sid pid
       let r = snd ∘ World.only-valid-sessions w $ p
       in (λ ()) $ trans (sym r) q
 
-can-read-post : (w : World) (sid : SessionId) (pid : PostId) → Dec (CanReadPost w sid pid)
+can-read-post :
+  (w : World) →
+  (sid : SessionId) →
+  (pid : PostId) →
+  Dec (CanReadPost w sid pid)
 can-read-post w sid pid with can-have-valid-session w sid pid
 ... | no ¬vs = no λ
         { (post-is-private vs _ _) → ¬vs (_ , _ , vs)
@@ -249,10 +300,19 @@ can-read-post w sid pid with can-have-valid-session w sid pid
         ; (post-is-public _ r)    → (λ ()) ∘ trans (sym r) $ p
         }
 ... | just (post _ _ _ deleted _ _ _) = no λ
-        { (post-is-private _ r _) → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
-        ; (post-is-public _ r)    → (λ ()) ∘ cong Post.status ∘ just-injective ∘ trans (sym r) $ p
+        { (post-is-private _ r _) → (λ ())
+                                  ∘ cong Post.status
+                                  ∘ just-injective
+                                  ∘ trans (sym r)
+                                  $ p
+        ; (post-is-public _ r)    → (λ ())
+                                  ∘ cong Post.status
+                                  ∘ just-injective
+                                  ∘ trans (sym r)
+                                  $ p
         }
-... | just (post author text everyone live likes replies parent) = yes $ post-is-public vs p
+... | just (post author text everyone live likes replies parent) =
+        yes $ post-is-public vs p
 ... | just (post author text followers-only live likes replies parent)
   with World.follows w user author in q
 ... | true  = yes $ post-is-private vs p q
@@ -268,7 +328,11 @@ can-read-post w sid pid with can-have-valid-session w sid pid
                    ∘ trans (sym r)
                    $ p
             in (λ ()) ∘ trans (sym q) ∘ trans (sym e2) ∘ trans (sym e1) $ f
-        ; (post-is-public _ r) → (λ ()) ∘ cong Post.visibility ∘ just-injective ∘ trans (sym r) $ p
+        ; (post-is-public _ r) → (λ ())
+                               ∘ cong Post.visibility
+                               ∘ just-injective
+                               ∘ trans (sym r)
+                               $ p
         }
 
 --------------------------------------------------------------------------------
@@ -301,7 +365,13 @@ data Step : World → Command → World → Result → Set₁ where
     CanReadPost before sid ppid →
     ppost ≡ (post pauthor ptxt pvisibility live plikes preplies pparent) →
     World.post-at before ppid ≡ just ppost →
-    World.post-at after  ppid ≡ just (post pauthor ptxt pvisibility live plikes (pid ∷ preplies) pparent) →
+    World.post-at after  ppid ≡ just (post pauthor
+                                           ptxt
+                                           pvisibility
+                                           live
+                                           plikes
+                                           (pid ∷ preplies)
+                                           pparent) →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
     pid ≢ other-pids →
