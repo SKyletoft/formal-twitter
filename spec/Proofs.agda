@@ -15,9 +15,50 @@ open import Relation.Nullary.Negation.Core        using (¬_)
 
 private variable a b : Set
 
+--------------------------------------------------------------------------------
+--                               PROOF-HELPERS                                --
+--------------------------------------------------------------------------------
+
 infixr 2 _∧_
 _∧_ : Set → Set → Set
 a ∧ b = Σ a (λ _ → b)
+
+--------------------------------------------------------------------------------
+--                                PROOF-TYPES                                 --
+--------------------------------------------------------------------------------
+
+PostDoesntExistBeforePosting =
+  ∀ {before after sid pid txt parent} →
+  Step before (publish sid txt parent) after (created-post pid) →
+  (pid ∉ World.newest-first before) ∧ (World.post-at before pid ≡ nothing)
+
+CantReplyToDeletedTweet =
+  ∀ {before after sid txt parent pid post} →
+  World.post-at before parent ≡ just post →
+  Post.status post            ≡ deleted →
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+
+CantReplyToTweetYouCantRead =
+  ∀ {before after sid pid txt parent} →
+  ¬ CanReadPost before sid parent →
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+
+CantMakePublicReplyToPrivateParent =
+  ∀ {before after pid sid txt parent post parent-post} →
+  World.post-at before parent ≡ just parent-post →
+  World.post-at after pid     ≡ just post →
+  Post.visibility parent-post ≡ followers-only →
+  Post.visibility post        ≡ everyone →
+  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+
+StepExists =
+  ∀ (before : World) (cmd : Command) →
+  ∃[ after ] ∃[ result ]
+  Step before cmd after result
+
+--------------------------------------------------------------------------------
+--                                  HELPERS                                   --
+--------------------------------------------------------------------------------
 
 nothing≢just : {x : a} → nothing ≢ just x
 nothing≢just ()
@@ -35,20 +76,17 @@ new-reply-private :
 new-reply-private {ppost = record { visibility = everyone }} ()
 new-reply-private {ppost = record { visibility = followers-only }} refl = refl
 
-post-doesnt-exist-before-posting :
-  {sid : SessionId} {txt : String} {pid : PostId} {before after : World} {parent : Maybe PostId} →
-  Step before (publish sid txt parent) after (created-post pid) →
-  (pid ∉ World.newest-first before) ∧ (World.post-at before pid ≡ nothing)
+--------------------------------------------------------------------------------
+--                                   PROOFS                                   --
+--------------------------------------------------------------------------------
+
+post-doesnt-exist-before-posting : PostDoesntExistBeforePosting
 post-doesnt-exist-before-posting {before = before} (successful-post _ record {was-absent = absent} _ _ _ _ _ _) =
   nothing≢just ∘ trans (sym absent) ∘ snd ∘ World.only-valid-posts before , absent
 post-doesnt-exist-before-posting {before = before} (successful-reply _ record {was-absent = absent} _ _ _ _ _ _ _ _ _ _ _ _) =
   nothing≢just ∘ trans (sym absent) ∘ snd ∘ World.only-valid-posts before , absent
 
-cant-reply-to-deleted-tweet :
-  ∀ {before after sid txt parent pid post} →
-  World.post-at before parent ≡ just post →
-  Post.status post            ≡ deleted →
-  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-reply-to-deleted-tweet : CantReplyToDeletedTweet
 cant-reply-to-deleted-tweet post-at-del status-del
   (successful-reply _ _ _ _ ppost≡ post-at-ppost _ _ _ _ _ _ _ _) with ppost≡
 ... | refl =
@@ -56,20 +94,11 @@ cant-reply-to-deleted-tweet post-at-del status-del
     (cong Post.status
       (just-injective (trans (sym post-at-del) post-at-ppost))))
 
-cant-reply-to-tweet-you-cant-read :
-  ∀ {before after sid pid txt parent} →
-  ¬ CanReadPost before sid parent →
-  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-reply-to-tweet-you-cant-read : CantReplyToTweetYouCantRead
 cant-reply-to-tweet-you-cant-read ¬can-read
   (successful-reply _ _ _ can-read _ _ _ _ _ _ _ _ _ _) = ¬can-read can-read
 
-cant-make-public-reply-to-private-parent :
-  ∀ {before after pid sid txt parent post parent-post} →
-  World.post-at before parent ≡ just parent-post →
-  World.post-at after pid     ≡ just post →
-  Post.visibility parent-post ≡ followers-only →
-  Post.visibility post        ≡ everyone →
-  ¬ Step before (publish sid txt (just parent)) after (created-post pid)
+cant-make-public-reply-to-private-parent : CantMakePublicReplyToPrivateParent
 cant-make-public-reply-to-private-parent
   post-at-before post-at-after parent-vis post-vis
   (successful-reply {ppost = ppost} _ is-new _ _ _ post-at-ppost _ _ _ _ _ _ _ _) =
@@ -82,9 +111,3 @@ cant-make-public-reply-to-private-parent
   in everyone≢followers-only
        (trans (sym post-vis)
          (trans vis≡ (new-reply-private ppost-vis)))
-
--- step-exists :
---   ∀ (before : World) (cmd : Command) →
---   ∃[ after ] ∃[ result ]
---   Step before cmd after result
--- step-exists w cmd = {!!}
