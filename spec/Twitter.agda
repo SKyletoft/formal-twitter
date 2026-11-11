@@ -416,7 +416,23 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (publish sid txt (just ppid)) after (created-post pid)
 
   delete-post :
-    ∀ {before after pid sid} →
+    ∀ {before after pid sid post post'} →
+    World.post-at before pid ≡ just post →
+    World.post-at after pid  ≡ just post' →
+    Post.author post         ≡ Post.author post' →
+    Post.text post           ≡ Post.text post' →
+    Post.status post         ≡ Post.status post' →
+    Post.likes post          ≡ Post.likes post' →
+    Post.replies post        ≡ Post.replies post' →
+    Post.status post         ≡ live →
+    Post.status post'        ≡ deleted →
+    -- Everything else unchanged
+    ∀ {other-pids u1 u2 s} →
+    pid ≢ other-pids →
+    World.post-at before other-pids ≡ World.post-at after other-pids →
+    World.account-at before u1      ≡ World.account-at after u1 →
+    World.session-at before s       ≡ World.session-at after s →
+    World.follows before u1 u2      ≡ World.follows after u1 u2 →
     Step before (delete sid pid) after success
 
   failed-access :

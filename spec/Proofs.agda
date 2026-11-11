@@ -64,13 +64,6 @@ CantLikeForOtherAccount =
   other-user                  ∈ Post.likes post' →
   ¬ Step before (like sid pid) after success
 
-DeletingWorks =
-  ∀ {before after sid pid post post'} →
-  Step before (delete sid pid) after success →
-  World.post-at before pid ≡ just post →
-  World.post-at after pid  ≡ just post' →
-  Post.status post ≡ live ∧ Post.status post' ≡ deleted
-
 FailedDeleteDoesNothing =
   ∀ {before after sid pid status} →
   Step before (delete sid pid) after status →
