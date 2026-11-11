@@ -8,7 +8,8 @@ open import Agda.Builtin.Nat
 open import Agda.Builtin.Sigma
 
 open import Data.Empty                            using (⊥; ⊥-elim)
-open import Data.List                             using (List; []; _∷_; length; take; filter)
+open import Data.List                             using (List; []; _∷_; length;
+                                                         take; filter; filterᵇ)
 open import Data.Product                          using (∃-syntax)
 open import Data.String                           using (String)
                                                   renaming (_≟_ to _≟ₛ_)
@@ -109,17 +110,18 @@ record World : Set₁ where
       Post.parent child-post ≡ just parent-pid
 
 data Command : Set where
-  publish       : SessionId       → String → Maybe PostId → Command
-  delete        : SessionId       → PostId → Command
-  read-post     : Maybe SessionId → PostId → Command
-  read-timeline : Maybe SessionId → Nat    → Command
-  authenticate  : String          → String → Command
-  register      : String          → String → Command
-  follow        : SessionId       → String → Command
-  unfollow      : SessionId       → String → Command
-  like          : SessionId       → PostId → Command
-  unlike        : SessionId       → PostId → Command
-  time-passes   :                            Command
+  publish                : SessionId       → String → Maybe PostId → Command
+  delete                 : SessionId       → PostId → Command
+  read-post              : Maybe SessionId → PostId → Command
+  read-personal-timeline : SessionId       → Nat    → Command
+  read-global-timeline   : Maybe SessionId → Nat    → Command
+  authenticate           : String          → String → Command
+  register               : String          → String → Command
+  follow                 : SessionId       → String → Command
+  unfollow               : SessionId       → String → Command
+  like                   : SessionId       → PostId → Command
+  unlike                 : SessionId       → PostId → Command
+  time-passes            :                            Command
 
 data Result : Set where
   success           : Result
@@ -201,7 +203,8 @@ extract-sid : Command → Maybe SessionId
 extract-sid (publish sid _ _)      = just sid
 extract-sid (delete sid _)         = just sid
 extract-sid (read-post msid _)     = msid
-extract-sid (read-timeline msid _) = msid
+extract-sid (read-personal-timeline sid _) = just sid
+extract-sid (read-global-timeline msid _) = msid
 extract-sid (authenticate _ _)     = nothing
 extract-sid (register _ _)         = nothing
 extract-sid (follow sid _)         = just sid
@@ -366,6 +369,11 @@ is-post-public w pid with World.post-at w pid in p
 ... | nothing = no λ
         { (_ , _ , _ , _ , _ , _ , eq) → (λ ()) $ eq }
 
+follows-post-author : World → String → PostId → Bool
+follows-post-author w user pid with World.post-at w pid
+... | just p  = World.follows w user ∘ Post.author $ p
+... | nothing = false
+
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
 --------------------------------------------------------------------------------
@@ -506,19 +514,30 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at before pid ≡ just (post author txt everyone live likes replies parent uniq-likes) →
     Step before (read-post nothing pid) before (returned-post author txt (length likes) replies)
 
-  get-private-timeline :
+  get-personal-timeline :
     ∀ {before n sid acc user} →
     ValidSession before sid acc user →
-    Step before (read-timeline (just sid) n) before
+    Step before (read-personal-timeline sid n) before
+      ∘ returned-timeline
+      ∘ take n
+      ∘ filterᵇ (follows-post-author before user)
+      ∘ filter (can-read-post before sid)
+      ∘ World.newest-first
+      $ before
+
+  get-private-global-timeline :
+    ∀ {before n sid acc user} →
+    ValidSession before sid acc user →
+    Step before (read-global-timeline (just sid) n) before
       ∘ returned-timeline
       ∘ take n
       ∘ filter (can-read-post before sid)
       ∘ World.newest-first
       $ before
 
-  get-public-timeline :
+  get-public-global-timeline :
     ∀ {before n} →
-    Step before (read-timeline nothing n) before
+    Step before (read-global-timeline nothing n) before
       ∘ returned-timeline
       ∘ take n
       ∘ filter (is-post-public before)
