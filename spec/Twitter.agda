@@ -90,24 +90,11 @@ record World : Set₁ where
       pid ∈ newest-first →
       ∃[ post ] post-at pid ≡ just post
     only-valid-replies :
-      ∀ {parent child pauthor ptxt pvis pstatus plikes preplies pparent} →
-      ∀ {cauthor ctxt cvis cstatus clikes creplies} →
-      child ∈ preplies →
-      post-at parent ≡ just (post pauthor
-                                  ptxt
-                                  pvis
-                                  pstatus
-                                  plikes
-                                  preplies
-                                  pparent) →
-      post-at child  ≡ just (post cauthor
-                                  ctxt
-                                  cvis
-                                  cstatus
-                                  clikes
-                                  creplies
-                                  (just parent)) →
-      Set
+      ∀ {parent-pid parent-post child-pid child-post} →
+      child-pid ∈ Post.replies parent-post →
+      post-at parent-pid     ≡ just parent-post →
+      post-at child-pid      ≡ just child-post →
+      Post.parent child-post ≡ just parent-pid
 
 data Command : Set where
   publish       : SessionId       → String → Maybe PostId → Command
