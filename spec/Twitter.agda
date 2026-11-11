@@ -170,29 +170,19 @@ data CanReadPost
     (pid : PostId) : Set₁
   where
   post-is-private :
-    ∀ {author txt likes replies uniq-likes acc user parent} →
+    ∀ {acc user post} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author
-                                         txt
-                                         followers-only
-                                         live
-                                         likes
-                                         replies
-                                         parent
-                                         uniq-likes) →
-    World.follows world user author ≡ true →
+    World.post-at world pid ≡ just post →
+    Post.visibility post    ≡ followers-only →
+    Post.status post        ≡ live →
+    World.follows world user (Post.author post) ≡ true →
     CanReadPost world sid pid
   post-is-public :
-    ∀ {author txt likes replies uniq-likes acc user parent} →
+    ∀ {acc user post} →
     ValidSession world sid acc user →
-    World.post-at world pid ≡ just (post author
-                                         txt
-                                         everyone
-                                         live
-                                         likes
-                                         replies
-                                         parent
-                                         uniq-likes) →
+    World.post-at world pid ≡ just post →
+    Post.visibility post    ≡ everyone →
+    Post.status post        ≡ live →
     CanReadPost world sid pid
 
 --------------------------------------------------------------------------------
@@ -300,35 +290,37 @@ can-read-post :
   Dec (CanReadPost w sid pid)
 can-read-post w sid pid with can-have-valid-session w sid pid
 ... | no ¬vs = no λ
-        { (post-is-private vs _ _) → ¬vs (_ , _ , vs)
-        ; (post-is-public vs _)    → ¬vs (_ , _ , vs)
+        { (post-is-private vs _ _ _ _) → ¬vs (_ , _ , vs)
+        ; (post-is-public vs _ _ _)    → ¬vs (_ , _ , vs)
         }
 ... | yes (_ , user , vs)
   with World.post-at w pid in p
 ... | nothing = no λ
-        { (post-is-private _ r _) → (λ ()) ∘ trans (sym r) $ p
-        ; (post-is-public _ r)    → (λ ()) ∘ trans (sym r) $ p
+        { (post-is-private _ r _ _ _) → (λ ()) ∘ trans (sym r) $ p
+        ; (post-is-public _ r _ _)    → (λ ()) ∘ trans (sym r) $ p
         }
 ... | just (post _ _ _ deleted _ _ _ _) = no λ
-        { (post-is-private _ r _) → (λ ())
-                                  ∘ cong Post.status
-                                  ∘ just-injective
-                                  ∘ trans (sym r)
-                                  $ p
-        ; (post-is-public _ r)    → (λ ())
-                                  ∘ cong Post.status
-                                  ∘ just-injective
-                                  ∘ trans (sym r)
-                                  $ p
+        { (post-is-private _ r _ s _) → (λ ())
+                                        ∘ trans (sym s)
+                                        ∘ cong Post.status
+                                        ∘ just-injective
+                                        ∘ trans (sym r)
+                                        $ p
+        ; (post-is-public _ r _ s) → (λ ())
+                                     ∘ trans (sym s)
+                                     ∘ cong Post.status
+                                     ∘ just-injective
+                                     ∘ trans (sym r)
+                                     $ p
         }
 ... | just (post _ _ everyone live _ _ _ _) =
-        yes $ post-is-public vs p
+        yes $ post-is-public vs p refl refl
 ... | just (post author text followers-only live likes replies parent _)
   with World.follows w user author in q
-... | true  = yes $ post-is-private vs p q
+... | true  = yes $ post-is-private vs p refl refl q
 ... | false = no λ
-        { (post-is-private {author} vs' r f) →
-            let e1 = cong (λ u → World.follows w u author)
+        { (post-is-private {post = pst} vs' r _ _ f) →
+            let e1 = cong (λ u → World.follows w u (Post.author pst))
                    ∘ active-injective
                    ∘ trans (sym (ValidSession.session-unchanged vs'))
                    ∘ ValidSession.session-unchanged
@@ -338,36 +330,37 @@ can-read-post w sid pid with can-have-valid-session w sid pid
                    ∘ trans (sym r)
                    $ p
             in (λ ()) ∘ trans (sym q) ∘ trans (sym e2) ∘ trans (sym e1) $ f
-        ; (post-is-public _ r) → (λ ())
-                               ∘ cong Post.visibility
-                               ∘ just-injective
-                               ∘ trans (sym r)
-                               $ p
+        ; (post-is-public _ r v _) →
+              (λ ())
+              ∘ trans (sym v)
+              ∘ cong Post.visibility
+              ∘ just-injective
+              ∘ trans (sym r)
+              $ p
         }
 
 is-post-public :
   (w : World) →
   (pid : PostId) →
-  Dec (∃[ author ] ∃[ txt ] ∃[ likes ] ∃[ replies ] ∃[ parent ] ∃[ uniq-likes ]
-       World.post-at w pid ≡ just (post author
-                                         txt
-                                         everyone
-                                         live
-                                         likes
-                                         replies
-                                         parent
-                                         uniq-likes))
+  Dec (∃[ post ]
+       World.post-at w pid    ≡ just post
+       ∧ Post.visibility post ≡ everyone
+       ∧ Post.status post     ≡ live)
 is-post-public w pid with World.post-at w pid in p
-... | just (post author text everyone live likes replies parent uniq-likes) =
-        yes (author , text , likes , replies , parent , uniq-likes , refl)
+... | just (post author text everyone live likes replies parent uniq) =
+        yes (post author text everyone live likes replies parent uniq , refl , refl , refl)
 ... | just (post _ _ followers-only _ _ _ _ _) = no λ
-        { (_ , _ , _ , _ , _ , _ , eq) →
-            (λ ()) ∘ cong Post.visibility ∘ just-injective $ eq }
+        { (pst , eq , vis , _) → (λ ()) $
+            trans (cong Post.visibility (just-injective eq)) vis }
 ... | just (post _ _ _ deleted _ _ _ _) = no λ
-        { (_ , _ , _ , _ , _ , _ , eq) →
-            (λ ()) ∘ cong Post.status ∘ just-injective $ eq }
+        { (pst , eq , _ , sts) → (λ ()) $
+            trans (cong Post.status (just-injective eq)) sts }
 ... | nothing = no λ
-        { (_ , _ , _ , _ , _ , _ , eq) → (λ ()) $ eq }
+        { (pst , eq , _ , _) → (λ ()) $ eq }
+
+return-post : Post → Result
+return-post (post author txt _ _ likes replies _ _) =
+  returned-post author txt (length likes) replies
 
 follows-post-author : World → String → PostId → Bool
 follows-post-author w user pid with World.post-at w pid
@@ -400,18 +393,12 @@ data Step : World → Command → World → Result → Set₁ where
     PostIsNew before after pid (new-reply username txt user ppid ppost) →
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Parent tweet has a new reply
-    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent puniq-likes} →
+    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent puniq-likes ppost'} →
     CanReadPost before sid ppid →
-    ppost ≡ (post pauthor ptxt pvisibility live plikes preplies pparent puniq-likes) →
+    ppost  ≡ post pauthor ptxt pvisibility live plikes preplies         pparent puniq-likes →
+    ppost' ≡ post pauthor ptxt pvisibility live plikes (pid ∷ preplies) pparent puniq-likes →
     World.post-at before ppid ≡ just ppost →
-    World.post-at after  ppid ≡ just (post pauthor
-                                           ptxt
-                                           pvisibility
-                                           live
-                                           plikes
-                                           (pid ∷ preplies)
-                                           pparent
-                                           puniq-likes) →
+    World.post-at after  ppid ≡ just ppost' →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
     pid ≢ other-pids →
@@ -498,9 +485,11 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (authenticate username passwd) before login-failed
 
   cant-read-post :
-    ∀ {before pid sid author txt likes replies uniq-likes acc user parent} →
+    ∀ {before pid sid author acc user p} →
     ValidSession before sid acc user →
-    World.post-at before pid ≡ just (post author txt followers-only live likes replies parent uniq-likes) →
+    World.post-at before pid         ≡ just p →
+    Post.visibility p                ≡ followers-only →
+    Post.status p                    ≡ live →
     World.follows before user author ≡ false →
     Step before (read-post (just sid) pid) before denied
 
@@ -510,9 +499,11 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
   read-post-anonymously :
-    ∀ {before pid author txt likes replies uniq-likes parent} →
-    World.post-at before pid ≡ just (post author txt everyone live likes replies parent uniq-likes) →
-    Step before (read-post nothing pid) before (returned-post author txt (length likes) replies)
+    ∀ {before pid p} →
+    World.post-at before pid ≡ just p →
+    Post.visibility p        ≡ everyone →
+    Post.status p            ≡ live →
+    Step before (read-post nothing pid) before (return-post p)
 
   get-personal-timeline :
     ∀ {before n sid acc user} →

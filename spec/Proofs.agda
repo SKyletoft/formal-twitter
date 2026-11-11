@@ -10,7 +10,8 @@ open import Agda.Builtin.String
 
 open import Data.Product                          using (∃-syntax)
 open import Function                              using (_∘_; _$_)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; cong; refl; sym; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
+                                                         sym; trans)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
 --------------------------------------------------------------------------------
@@ -146,12 +147,12 @@ post-doesnt-exist-before-posting {before}
     (successful-post _ (post-is-new wa _) _ _ _ _ _ _) =
   nothing≢just ∘ trans (sym wa) ∘ snd ∘ World.only-valid-posts before , wa
 post-doesnt-exist-before-posting {before}
-    (successful-reply _ (post-is-new wa _) _ _ _ _ _ _ _ _ _ _ _ _) =
+    (successful-reply _ (post-is-new wa _) _ _ _ _ _ _ _ _ _ _ _ _ _) =
   nothing≢just ∘ trans (sym wa) ∘ snd ∘ World.only-valid-posts before , wa
 
 cant-reply-to-deleted-tweet : CantReplyToDeletedTweet
 cant-reply-to-deleted-tweet pa st
-    (successful-reply _ _ _ _ pe pb _ _ _ _ _ _ _ _)
+    (successful-reply _ _ _ _ pe _ pb _ _ _ _ _ _ _ _)
   = deleted≢live
   ∘ trans (sym st)
   ∘ trans (cong Post.status ∘ just-injective ∘ trans (sym pa) $ pb)
@@ -160,11 +161,11 @@ cant-reply-to-deleted-tweet pa st
 
 cant-reply-to-tweet-you-cant-read : CantReplyToTweetYouCantRead
 cant-reply-to-tweet-you-cant-read ¬cr
-    (successful-reply _ _ _ cr _ _ _ _ _ _ _ _ _ _) = ¬cr cr
+    (successful-reply _ _ _ cr _ _ _ _ _ _ _ _ _ _ _) = ¬cr cr
 
 cant-make-public-reply-to-private-parent : CantMakePublicReplyToPrivateParent
 cant-make-public-reply-to-private-parent h1 h2 h3 h4
-    (successful-reply _ (post-is-new _ ip) _ _ _ pb _ _ _ _ _ _ _ _)
+    (successful-reply _ (post-is-new _ ip) _ _ _ _ pb _ _ _ _ _ _ _ _)
   = everyone≢followers-only
   ∘ trans (sym h4)
   ∘ trans (cong Post.visibility ∘ just-injective ∘ trans (sym h2) $ ip)
