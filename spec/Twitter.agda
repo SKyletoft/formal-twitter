@@ -116,6 +116,7 @@ data Command : Set where
   unfollow      : SessionId       → String → Command
   like          : SessionId       → PostId → Command
   unlike        : SessionId       → PostId → Command
+  time-passes   :                            Command
 
 data Result : Set where
   success           : Result
@@ -204,6 +205,7 @@ extract-sid (follow sid _)         = just sid
 extract-sid (unfollow sid _)       = just sid
 extract-sid (like sid _)           = just sid
 extract-sid (unlike sid _)         = just sid
+extract-sid time-passes            = nothing
 
 new-post : String → String → Account → Post
 new-post username txt user =
@@ -503,3 +505,9 @@ data Step : World → Command → World → Result → Set₁ where
       ∘ filter (is-post-public before)
       ∘ World.newest-first
       $ before
+
+  session-timeout :
+    ∀ {before after sid user} →
+    World.session-at before sid ≡ active user →
+    World.session-at after sid  ≡ revoked →
+    Step before time-passes after success
