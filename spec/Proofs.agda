@@ -51,6 +51,69 @@ CantMakePublicReplyToPrivateParent =
   Post.visibility post        ≡ everyone →
   ¬ Step before (publish sid txt (just parent)) after (created-post pid)
 
+CantDeleteOthersTweets =
+  ∀ {before after sid pid post user deleted-post} →
+  World.session-at before sid ≡ active user →
+  World.post-at before pid    ≡ just post →
+  Post.author post            ≢ user →
+  Post.status post            ≡ live →
+  World.post-at after pid     ≡ just deleted-post →
+  Post.status deleted-post    ≡ deleted →
+  ¬ Step before (delete sid pid) after success
+
+CantLikeForOtherAccount =
+  ∀ {before after pid sid post post' user other-user} →
+  user                        ≢ other-user →
+  World.session-at before sid ≡ active user →
+  World.post-at before pid    ≡ just post →
+  other-user                  ∉ Post.likes post →
+  World.post-at after pid     ≡ just post' →
+  other-user                  ∈ Post.likes post' →
+  ¬ Step before (like sid pid) after success
+
+DeletingWorks =
+  ∀ {before after sid pid post post'} →
+  Step before (delete sid pid) after success →
+  World.post-at before pid ≡ just post →
+  World.post-at after pid  ≡ just post' →
+  Post.status post ≡ live ∧ Post.status post' ≡ deleted
+
+FailedDeleteDoesNothing =
+  ∀ {before after sid pid status} →
+  Step before (delete sid pid) after status →
+  status ≢ success →
+  before ≡ after
+
+FailedPostDoesNothing =
+  ∀ {before after sid pid txt parent status} →
+  Step before (publish sid txt parent) after status →
+  status ≢ created-post pid →
+  before ≡ after
+
+FailedLikeDoesNothing =
+  ∀ {before after sid pid status} →
+  Step before (like sid pid) after status →
+  status ≢ success →
+  before ≡ after
+
+FailedUnlikeDoesNothing =
+  ∀ {before after sid pid status} →
+  Step before (unlike sid pid) after status →
+  status ≢ success →
+  before ≡ after
+
+FailedUnfollowDoesNothing =
+  ∀ {before after sid status user} →
+  Step before (unfollow sid user) after status →
+  status ≢ success →
+  before ≡ after
+
+FailedLoginDoesNothing =
+  ∀ {before after sid status user passwd} →
+  Step before (authenticate user passwd) after status →
+  status ≢ issued-session sid →
+  before ≡ after
+
 StepExists =
   ∀ (before : World) (cmd : Command) →
   ∃[ after ] ∃[ result ]
