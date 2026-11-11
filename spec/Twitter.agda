@@ -8,10 +8,11 @@ open import Agda.Builtin.Nat
 open import Agda.Builtin.Sigma
 
 open import Data.Empty                            using (⊥; ⊥-elim)
-open import Data.List                             using (List; take; filter; []; _∷_)
+open import Data.List                             using (List; []; _∷_; length; take; filter)
 open import Data.Product                          using (∃-syntax)
 open import Data.String                           using (String)
                                                   renaming (_≟_ to _≟ₛ_)
+open import Data.Unit                             using (⊤)
 open import Function                              using (_∘_; _$_)
 open import Relation.Binary.Definitions           using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
@@ -36,6 +37,13 @@ x ∉ y = ¬ (x ∈ y)
 infixr 2 _×_
 _×_ : Set → Set → Set
 a × b = Σ a (λ _ → b)
+
+uniq : List a → Set
+uniq []       = ⊤
+uniq (x ∷ xs) = (x ∉ xs) × uniq xs
+
+uniq-nil : uniq {String} []
+uniq-nil = record {}
 
 --------------------------------------------------------------------------------
 --                                STATE TYPES                                 --
@@ -62,9 +70,11 @@ record Post : Set where
     text       : String
     visibility : Visibility
     status     : PostStatus
-    likes      : Nat
+    likes      : List String
     replies    : List PostId
     parent     : Maybe PostId
+
+    no-duplicate-likes : uniq likes
 
 data SessionStatus : Set where
   unused  : SessionStatus
@@ -154,7 +164,7 @@ data CanReadPost
     (pid : PostId) : Set₁
   where
   post-is-private :
-    ∀ {author txt likes replies acc user parent} →
+    ∀ {author txt likes replies uniq-likes acc user parent} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author
                                          txt
@@ -162,11 +172,12 @@ data CanReadPost
                                          live
                                          likes
                                          replies
-                                         parent) →
+                                         parent
+                                         uniq-likes) →
     World.follows world user author ≡ true →
     CanReadPost world sid pid
   post-is-public :
-    ∀ {author txt likes replies acc user parent} →
+    ∀ {author txt likes replies uniq-likes acc user parent} →
     ValidSession world sid acc user →
     World.post-at world pid ≡ just (post author
                                          txt
@@ -174,7 +185,8 @@ data CanReadPost
                                          live
                                          likes
                                          replies
-                                         parent) →
+                                         parent
+                                         uniq-likes) →
     CanReadPost world sid pid
 
 --------------------------------------------------------------------------------
@@ -195,13 +207,13 @@ extract-sid (unlike sid _)         = just sid
 
 new-post : String → String → Account → Post
 new-post username txt user =
-  post username txt (Account.default-visibility user) live zero [] nothing
+  post username txt (Account.default-visibility user) live [] [] nothing uniq-nil
 
 new-reply : String → String → Account → PostId → Post → Post
-new-reply username txt user parent-id (post _ _ everyone _ _ _ _) =
-  post username txt (Account.default-visibility user) live zero [] (just parent-id)
-new-reply username txt user parent-id (post _ _ followers-only _ _ _ _) =
-  post username txt followers-only live zero [] (just parent-id)
+new-reply username txt user parent-id (post _ _ everyone _ _ _ _ _) =
+  post username txt (Account.default-visibility user) live [] [] (just parent-id) uniq-nil
+new-reply username txt user parent-id (post _ _ followers-only _ _ _ _ _) =
+  post username txt followers-only live [] [] (just parent-id) uniq-nil
 
 _≟ᵥ_ : DecidableEquality Visibility
 everyone       ≟ᵥ everyone       = yes refl
@@ -239,14 +251,6 @@ third :
   (p : Σ A λ x → Σ B λ y → C x y) →
   C (fst p) (fst (snd p))
 third = snd ∘ snd
-
-sixth :
-  ∀ {a b c d e f} {A : Set a} {B : Set b} {C : Set c} {D : Set d} {E : Set e}
-    {F : A → B → C → D → E → Set f} →
-  (p : ∃[ x ] ∃[ y ] ∃[ z ] ∃[ u ] ∃[ v ] F x y z u v) →
-  F (fst p) (fst (snd p)) (fst (snd (snd p)))
-    (fst (snd (snd (snd p)))) (fst (snd (snd (snd (snd p)))))
-sixth = snd ∘ snd ∘ snd ∘ snd ∘ snd
 
 is-valid-session :
   (w : World) →
@@ -297,7 +301,7 @@ can-read-post w sid pid with can-have-valid-session w sid pid
         { (post-is-private _ r _) → (λ ()) ∘ trans (sym r) $ p
         ; (post-is-public _ r)    → (λ ()) ∘ trans (sym r) $ p
         }
-... | just (post _ _ _ deleted _ _ _) = no λ
+... | just (post _ _ _ deleted _ _ _ _) = no λ
         { (post-is-private _ r _) → (λ ())
                                   ∘ cong Post.status
                                   ∘ just-injective
@@ -309,9 +313,9 @@ can-read-post w sid pid with can-have-valid-session w sid pid
                                   ∘ trans (sym r)
                                   $ p
         }
-... | just (post author text everyone live likes replies parent) =
+... | just (post _ _ everyone live _ _ _ _) =
         yes $ post-is-public vs p
-... | just (post author text followers-only live likes replies parent)
+... | just (post author text followers-only live likes replies parent _)
   with World.follows w user author in q
 ... | true  = yes $ post-is-private vs p q
 ... | false = no λ
@@ -336,22 +340,26 @@ can-read-post w sid pid with can-have-valid-session w sid pid
 is-post-public :
   (w : World) →
   (pid : PostId) →
-  Dec (∃[ author ] ∃[ txt ] ∃[ likes ] ∃[ replies ] ∃[ parent ]
+  Dec (∃[ author ] ∃[ txt ] ∃[ likes ] ∃[ replies ] ∃[ parent ] ∃[ uniq-likes ]
        World.post-at w pid ≡ just (post author
                                          txt
                                          everyone
                                          live
                                          likes
                                          replies
-                                         parent))
+                                         parent
+                                         uniq-likes))
 is-post-public w pid with World.post-at w pid in p
-... | just (post author text everyone live likes replies parent) =
-        yes (author , text , likes , replies , parent , refl)
-... | just (post _ _ followers-only _ _ _ _) = no $
-        (λ ()) ∘ cong Post.visibility ∘ just-injective ∘ sixth
-... | just (post _ _ _ deleted _ _ _) = no $
-        (λ ()) ∘ cong Post.status ∘ just-injective ∘ sixth
-... | nothing = no $ (λ ()) ∘ sixth
+... | just (post author text everyone live likes replies parent uniq-likes) =
+        yes (author , text , likes , replies , parent , uniq-likes , refl)
+... | just (post _ _ followers-only _ _ _ _ _) = no λ
+        { (_ , _ , _ , _ , _ , _ , eq) →
+            (λ ()) ∘ cong Post.visibility ∘ just-injective $ eq }
+... | just (post _ _ _ deleted _ _ _ _) = no λ
+        { (_ , _ , _ , _ , _ , _ , eq) →
+            (λ ()) ∘ cong Post.status ∘ just-injective $ eq }
+... | nothing = no λ
+        { (_ , _ , _ , _ , _ , _ , eq) → (λ ()) $ eq }
 
 --------------------------------------------------------------------------------
 --                                TRANSITIONS                                 --
@@ -379,9 +387,9 @@ data Step : World → Command → World → Result → Set₁ where
     PostIsNew before after pid (new-reply username txt user ppid ppost) →
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Parent tweet has a new reply
-    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent} →
+    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent puniq-likes} →
     CanReadPost before sid ppid →
-    ppost ≡ (post pauthor ptxt pvisibility live plikes preplies pparent) →
+    ppost ≡ (post pauthor ptxt pvisibility live plikes preplies pparent puniq-likes) →
     World.post-at before ppid ≡ just ppost →
     World.post-at after  ppid ≡ just (post pauthor
                                            ptxt
@@ -389,7 +397,8 @@ data Step : World → Command → World → Result → Set₁ where
                                            live
                                            plikes
                                            (pid ∷ preplies)
-                                           pparent) →
+                                           pparent
+                                           puniq-likes) →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
     pid ≢ other-pids →
@@ -400,6 +409,10 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before s       ≡ World.session-at after s →
     World.follows before u1 u2      ≡ World.follows after u1 u2 →
     Step before (publish sid txt (just ppid)) after (created-post pid)
+
+  delete-post :
+    ∀ {before after pid sid} →
+    Step before (delete sid pid) after success
 
   failed-access :
     ∀ {before sid username acc cmd} →
@@ -456,9 +469,9 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (authenticate username passwd) before login-failed
 
   cant-read-post :
-    ∀ {before pid sid author txt likes replies acc user parent} →
+    ∀ {before pid sid author txt likes replies uniq-likes acc user parent} →
     ValidSession before sid acc user →
-    World.post-at before pid ≡ just (post author txt followers-only live likes replies parent) →
+    World.post-at before pid ≡ just (post author txt followers-only live likes replies parent uniq-likes) →
     World.follows before user author ≡ false →
     Step before (read-post (just sid) pid) before denied
 
@@ -468,9 +481,9 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
   read-post-anonymously :
-    ∀ {before pid author txt likes replies parent} →
-    World.post-at before pid ≡ just (post author txt everyone live likes replies parent) →
-    Step before (read-post nothing pid) before (returned-post author txt likes replies)
+    ∀ {before pid author txt likes replies uniq-likes parent} →
+    World.post-at before pid ≡ just (post author txt everyone live likes replies parent uniq-likes) →
+    Step before (read-post nothing pid) before (returned-post author txt (length likes) replies)
 
   get-private-timeline :
     ∀ {before n sid acc user} →
