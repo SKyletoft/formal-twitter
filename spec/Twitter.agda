@@ -3,13 +3,12 @@ module Twitter
   where
 
 open import Agda.Builtin.Bool
-open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
 open import Agda.Builtin.Sigma
 
 open import Data.Empty                            using (⊥; ⊥-elim)
-open import Data.List                             using (List; take; filter)
+open import Data.List                             using (List; take; filter; []; _∷_)
 open import Data.Product                          using (∃-syntax)
 open import Data.String                           using (String)
                                                   renaming (_≟_ to _≟ₛ_)
