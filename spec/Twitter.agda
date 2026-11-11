@@ -190,18 +190,18 @@ data CanReadPost
 --------------------------------------------------------------------------------
 
 extract-sid : Command → Maybe SessionId
-extract-sid (publish sid _ _)      = just sid
-extract-sid (delete sid _)         = just sid
-extract-sid (read-post msid _)     = msid
+extract-sid (publish sid _ _)              = just sid
+extract-sid (delete sid _)                 = just sid
+extract-sid (read-post msid _)             = msid
 extract-sid (read-personal-timeline sid _) = just sid
-extract-sid (read-global-timeline msid _) = msid
-extract-sid (authenticate _ _)     = nothing
-extract-sid (register _ _)         = nothing
-extract-sid (follow sid _)         = just sid
-extract-sid (unfollow sid _)       = just sid
-extract-sid (like sid _)           = just sid
-extract-sid (unlike sid _)         = just sid
-extract-sid time-passes            = nothing
+extract-sid (read-global-timeline msid _)  = msid
+extract-sid (authenticate _ _)             = nothing
+extract-sid (register _ _)                 = nothing
+extract-sid (follow sid _)                 = just sid
+extract-sid (unfollow sid _)               = just sid
+extract-sid (like sid _)                   = just sid
+extract-sid (unlike sid _)                 = just sid
+extract-sid time-passes                    = nothing
 
 new-post : String → String → Account → Post
 new-post username txt user =
