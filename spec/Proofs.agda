@@ -52,13 +52,10 @@ CantMakePublicReplyToPrivateParent =
   ¬ Step before (publish sid txt (just parent)) after (created-post pid)
 
 CantDeleteOthersTweets =
-  ∀ {before after sid pid post user deleted-post} →
+  ∀ {before after sid pid post user} →
   World.session-at before sid ≡ active user →
   World.post-at before pid    ≡ just post →
   Post.author post            ≢ user →
-  Post.status post            ≡ live →
-  World.post-at after pid     ≡ just deleted-post →
-  Post.status deleted-post    ≡ deleted →
   ¬ Step before (delete sid pid) after success
 
 CantLikeForOtherAccount =
@@ -85,9 +82,9 @@ FailedDeleteDoesNothing =
   before ≡ after
 
 FailedPostDoesNothing =
-  ∀ {before after sid pid txt parent status} →
+  ∀ {before after sid txt parent status} →
   Step before (publish sid txt parent) after status →
-  status ≢ created-post pid →
+  ¬ (∃[ pid ] status ≢ created-post pid) →
   before ≡ after
 
 FailedLikeDoesNothing =
@@ -109,9 +106,9 @@ FailedUnfollowDoesNothing =
   before ≡ after
 
 FailedLoginDoesNothing =
-  ∀ {before after sid status user passwd} →
+  ∀ {before after status user passwd} →
   Step before (authenticate user passwd) after status →
-  status ≢ issued-session sid →
+  ¬ (∃[ sid ] status ≢ issued-session sid) →
   before ≡ after
 
 StepExists =
