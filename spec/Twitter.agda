@@ -34,9 +34,12 @@ data _∈_ (x : a) : List a → Set where
 _∉_ : (x : a) → List a → Set
 x ∉ y = ¬ (x ∈ y)
 
-infixr 2 _×_
+infixr 2 _×_ _∧_
 _×_ : Set → Set → Set
 a × b = Σ a (λ _ → b)
+
+_∧_ : Set → Set → Set
+a ∧ b = Σ a (λ _ → b)
 
 uniq : List a → Set
 uniq []       = ⊤

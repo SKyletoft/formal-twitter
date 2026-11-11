@@ -19,10 +19,6 @@ open import Relation.Nullary.Negation.Core        using (¬_)
 
 private variable a b : Set
 
-infixr 2 _∧_
-_∧_ : Set → Set → Set
-a ∧ b = Σ a (λ _ → b)
-
 --------------------------------------------------------------------------------
 --                                PROOF-TYPES                                 --
 --------------------------------------------------------------------------------
