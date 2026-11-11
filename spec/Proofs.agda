@@ -88,9 +88,21 @@ FailedUnlikeDoesNothing =
   status ≢ success →
   before ≡ after
 
+FailedFollowDoesNothing =
+  ∀ {before after sid status user} →
+  Step before (follow sid user) after status →
+  status ≢ success →
+  before ≡ after
+
 FailedUnfollowDoesNothing =
   ∀ {before after sid status user} →
   Step before (unfollow sid user) after status →
+  status ≢ success →
+  before ≡ after
+
+FailedRegisterDoesNothing =
+  ∀ {before after status user passwd} →
+  Step before (register user passwd) after status →
   status ≢ success →
   before ≡ after
 
