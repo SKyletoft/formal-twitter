@@ -78,8 +78,6 @@ record Post : Set where
     replies    : List PostId
     parent     : Maybe PostId
 
-    no-duplicate-likes : uniq likes
-
 data SessionStatus : Set where
   unused  : SessionStatus
   active  : (username : String) → SessionStatus
@@ -103,11 +101,22 @@ record World : Set₁ where
       pid ∈ newest-first →
       ∃[ post ] post-at pid ≡ just post
     only-valid-replies :
-      ∀ {parent-pid parent-post child-pid child-post} →
+      ∀ {parent-pid parent-post child-pid} →
       child-pid ∈ Post.replies parent-post →
-      post-at parent-pid     ≡ just parent-post →
-      post-at child-pid      ≡ just child-post →
-      Post.parent child-post ≡ just parent-pid
+      post-at parent-pid ≡ just parent-post →
+      ∃[ child-post ]
+        post-at child-pid        ≡ just child-post
+        ∧ Post.parent child-post ≡ just parent-pid
+    no-duplicate-replies :
+      ∀ {pid post} →
+      post-at pid ≡ just post →
+      uniq (Post.replies post)
+    no-duplicate-likes :
+      ∀ {pid post} →
+      post-at pid ≡ just post →
+      uniq (Post.likes post)
+    no-duplicate-posts :
+      uniq newest-first
 
 data Command : Set where
   publish                : SessionId       → String → Maybe PostId → Command
@@ -205,13 +214,13 @@ extract-sid time-passes                    = nothing
 
 new-post : String → String → Account → Post
 new-post username txt user =
-  post username txt (Account.default-visibility user) live [] [] nothing uniq-nil
+  post username txt (Account.default-visibility user) live [] [] nothing
 
 new-reply : String → String → Account → PostId → Post → Post
-new-reply username txt user parent-id (post _ _ everyone _ _ _ _ _) =
-  post username txt (Account.default-visibility user) live [] [] (just parent-id) uniq-nil
-new-reply username txt user parent-id (post _ _ followers-only _ _ _ _ _) =
-  post username txt followers-only live [] [] (just parent-id) uniq-nil
+new-reply username txt user parent-id (post _ _ everyone _ _ _ _) =
+  post username txt (Account.default-visibility user) live [] [] (just parent-id)
+new-reply username txt user parent-id (post _ _ followers-only _ _ _ _) =
+  post username txt followers-only live [] [] (just parent-id)
 
 _≟ᵥ_ : DecidableEquality Visibility
 everyone       ≟ᵥ everyone       = yes refl
@@ -295,7 +304,7 @@ can-read-post w sid pid with can-have-valid-session w sid pid
         { (post-is-private _ r _ _ _) → (λ ()) ∘ trans (sym r) $ p
         ; (post-is-public _ r _ _)    → (λ ()) ∘ trans (sym r) $ p
         }
-... | just (post _ _ _ deleted _ _ _ _) = no λ
+... | just (post _ _ _ deleted _ _ _) = no λ
         { (post-is-private _ r _ s _) → (λ ())
                                         ∘ trans (sym s)
                                         ∘ cong Post.status
@@ -309,9 +318,9 @@ can-read-post w sid pid with can-have-valid-session w sid pid
                                      ∘ trans (sym r)
                                      $ p
         }
-... | just (post _ _ everyone live _ _ _ _) =
+... | just (post _ _ everyone live _ _ _) =
         yes $ post-is-public vs p refl refl
-... | just (post author text followers-only live likes replies parent _)
+... | just (post author text followers-only live likes replies parent)
   with World.follows w user author in q
 ... | true  = yes $ post-is-private vs p refl refl q
 ... | false = no λ
@@ -343,19 +352,17 @@ is-post-public :
        ∧ Post.visibility post ≡ everyone
        ∧ Post.status post     ≡ live)
 is-post-public w pid with World.post-at w pid in p
-... | just (post author text everyone live likes replies parent uniq) =
-        yes (post author text everyone live likes replies parent uniq , refl , refl , refl)
-... | just (post _ _ followers-only _ _ _ _ _) = no λ
-        { (pst , eq , vis , _) → (λ ()) $
-            trans (cong Post.visibility (just-injective eq)) vis }
-... | just (post _ _ _ deleted _ _ _ _) = no λ
-        { (pst , eq , _ , sts) → (λ ()) $
-            trans (cong Post.status (just-injective eq)) sts }
+... | just (post author text everyone live likes replies parent) =
+        yes (post author text everyone live likes replies parent , refl , refl , refl)
+... | just (post _ _ followers-only _ _ _ _) = no λ
+        { (pst , eq , vis , _) → (λ ()) ∘ trans (cong Post.visibility ∘ just-injective $ eq) $ vis }
+... | just (post _ _ _ deleted _ _ _) = no λ
+        { (pst , eq , _ , sts) → (λ ()) ∘ trans (cong Post.status ∘ just-injective $ eq) $ sts }
 ... | nothing = no λ
         { (pst , eq , _ , _) → (λ ()) $ eq }
 
 return-post : Post → Result
-return-post (post author txt _ _ likes replies _ _) =
+return-post (post author txt _ _ likes replies _) =
   returned-post author txt (length likes) replies
 
 follows-post-author : World → String → PostId → Bool
@@ -389,10 +396,10 @@ data Step : World → Command → World → Result → Set₁ where
     PostIsNew before after pid (new-reply username txt user ppid ppost) →
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Parent tweet has a new reply
-    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent puniq-likes ppost'} →
+    ∀ {ppid ptxt pauthor pvisibility plikes preplies pparent ppost'} →
     CanReadPost before sid ppid →
-    ppost  ≡ post pauthor ptxt pvisibility live plikes preplies         pparent puniq-likes →
-    ppost' ≡ post pauthor ptxt pvisibility live plikes (pid ∷ preplies) pparent puniq-likes →
+    ppost  ≡ post pauthor ptxt pvisibility live plikes preplies         pparent →
+    ppost' ≡ post pauthor ptxt pvisibility live plikes (pid ∷ preplies) pparent →
     World.post-at before ppid ≡ just ppost →
     World.post-at after  ppid ≡ just ppost' →
     -- Everything else unchanged
