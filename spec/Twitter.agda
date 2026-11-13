@@ -362,8 +362,8 @@ is-post-public w pid with World.post-at w pid in p
 ... | nothing = no λ
         { (pst , eq , _ , _) → (λ ()) $ eq }
 
-is-alive : {p : Post} → (w : World) → (pid : PostId) → {World.post-at w pid ≡ just p} → Dec (Post.status p ≡ live)
-is-alive = {!!}
+-- is-alive : {p : Post} → (w : World) → (pid : PostId) → {World.post-at w pid ≡ just p} → Dec (Post.status p ≡ live)
+-- is-alive = {!!}
 
 return-post : Post → Result
 return-post (post author txt _ _ likes replies _) =
@@ -685,20 +685,20 @@ data Step : World → Command → World → Result → Set₁ where
     World.newest-first before         ≡ World.newest-first after →
     Step before time-passes after success
 
-  reap-tombstones :
-    ∀ {before after pid other-pid post other-post} →
-    World.post-at before pid      ≡ just post →
-    Post.status post              ≡ deleted →
-    World.post-at after pid       ≡ nothing →
-    World.post-at after other-pid ≡ just other-post →
-    Post.status other-post        ≢ deleted →
-    World.newest-first after      ≡ (filter (λ mpid → is-alive before mpid {{!!}}) ∘ World.newest-first $ before) →
-    -- Everything else unchanged
-    ∀ {live-pid live-post} →
-    World.post-at before live-pid ≡ just live-post →
-    Post.status live-post         ≡ live →
-    World.post-at after live-pid  ≡ just live-post →
-    World.account-at before       ≡ World.account-at after →
-    World.session-at before       ≡ World.session-at after →
-    World.follows before          ≡ World.follows after →
-    Step before collect-dead-posts after success
+  -- reap-tombstones :
+  --   ∀ {before after pid other-pid post other-post} →
+  --   World.post-at before pid      ≡ just post →
+  --   Post.status post              ≡ deleted →
+  --   World.post-at after pid       ≡ nothing →
+  --   World.post-at after other-pid ≡ just other-post →
+  --   Post.status other-post        ≢ deleted →
+  --   World.newest-first after      ≡ (filter (λ mpid → is-alive before mpid {{!!}}) ∘ World.newest-first $ before) →
+  --   -- Everything else unchanged
+  --   ∀ {live-pid live-post} →
+  --   World.post-at before live-pid ≡ just live-post →
+  --   Post.status live-post         ≡ live →
+  --   World.post-at after live-pid  ≡ just live-post →
+  --   World.account-at before       ≡ World.account-at after →
+  --   World.session-at before       ≡ World.session-at after →
+  --   World.follows before          ≡ World.follows after →
+  --   Step before collect-dead-posts after success
