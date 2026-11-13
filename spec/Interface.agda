@@ -23,17 +23,21 @@ record TweetId : Set where
 
 -- The public API after parsing. Entirely unvalidated on purpose.
 data Action : Set where
-  post-tweet     : LoginToken → String        → Action
-  -- delete-tweet   : LoginToken → TweetId       → Action
-  -- like           : LoginToken → TweetId       → Action
-  -- unlike         : LoginToken → TweetId       → Action
-  get-tweet      : Maybe LoginToken → TweetId → Action
-  timeline       : Maybe LoginToken → Nat     → Action
-  -- search         : Maybe LoginToken → String  → Action
-  login          : String → String            → Action
-  -- logout         : LoginToken                 → Action
-  signup         : String → String            → Action
-  -- delete-account : LoginToken                 → Action
+  post-tweet       : LoginToken → String        → Action
+  delete-tweet     : LoginToken → TweetId       → Action
+  like             : LoginToken → TweetId       → Action
+  unlike           : LoginToken → TweetId       → Action
+  follow           : LoginToken → String        → Action
+  unfollow         : LoginToken → String        → Action
+  get-tweet        : Maybe LoginToken → TweetId → Action
+  global-timeline  : Maybe LoginToken → Nat     → Action
+  private-timeline : LoginToken → Nat           → Action
+  login            : String → String            → Action
+  logout           : LoginToken                 → Action
+  signup           : String → String            → Action
+
+-- The model has no way to forget an account, so this is not an endpoint yet.
+-- delete-account : LoginToken                 → Action
 
 to-request : Action → String
 to-request (post-tweet (token tk) txt) =
@@ -42,6 +46,41 @@ to-request (post-tweet (token tk) txt) =
           ∷ ""
           ∷ show tk
           ∷ txt
+          ∷ [])
+to-request (delete-tweet (token tk) (tweet-id twt)) =
+  unlines ("POST /api/delete-tweet 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ show twt
+          ∷ [])
+to-request (like (token tk) (tweet-id twt)) =
+  unlines ("POST /api/like-tweet 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ show twt
+          ∷ [])
+to-request (unlike (token tk) (tweet-id twt)) =
+  unlines ("POST /api/unlike-tweet 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ show twt
+          ∷ [])
+to-request (follow (token tk) username) =
+  unlines ("POST /api/follow-user 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ username
+          ∷ [])
+to-request (unfollow (token tk) username) =
+  unlines ("POST /api/unfollow-user 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ username
           ∷ [])
 to-request (get-tweet (just (token tk)) (tweet-id twt)) =
   unlines ("GET /api/get-tweet 1.1"
@@ -56,18 +95,31 @@ to-request (get-tweet nothing (tweet-id twt)) =
           ∷ ""
           ∷ show twt
           ∷ [])
-to-request (timeline (just (token tk)) len) =
-  unlines ("GET /api/timeline 1.1"
+to-request (global-timeline (just (token tk)) len) =
+  unlines ("GET /api/global-timeline 1.1"
           ∷ "Content-Type: text/plain"
           ∷ ""
           ∷ show tk
           ∷ show len
           ∷ [])
-to-request (timeline nothing len) =
+to-request (global-timeline nothing len) =
   unlines ("GET /api/timeline 1.1"
           ∷ "Content-Type: text/plain"
           ∷ ""
           ∷ show len
+          ∷ [])
+to-request (private-timeline (token tk) len) =
+  unlines ("GET /api/private-timeline 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ show len
+          ∷ [])
+to-request (logout (token tk)) =
+  unlines ("POST /api/logout 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
           ∷ [])
 to-request (login username passwd) =
   unlines ("POST /api/login 1.1"
@@ -170,21 +222,28 @@ to-response (tweet username txt like-count replies) =
 open import Twitter LoginToken TweetId
 
 to-output : Result → Response
-to-output success = ok
-to-output denied = permission-error
-to-output expired = outdated-login-token
-to-output login-failed = login-error
-to-output signup-failed = signup-error
-to-output (returned-timeline x) = timeline x
-to-output (issued-session x) = session-token x
-to-output (created-post x) = tweet-id x
+to-output success                                  = ok
+to-output denied                                   = permission-error
+to-output expired                                  = outdated-login-token
+to-output login-failed                             = login-error
+to-output signup-failed                            = signup-error
+to-output (returned-timeline x)                    = timeline x
+to-output (issued-session x)                       = session-token x
+to-output (created-post x)                         = tweet-id x
 to-output (returned-post author txt likes replies) = tweet author txt likes replies
 
 from-input : Action → Command
-from-input (post-tweet tk txt) = publish tk txt nothing
-from-input (get-tweet (just tk) twt) = read-post (just tk) twt
-from-input (get-tweet nothing twt) = read-post nothing twt
-from-input (timeline (just tk) n) = read-timeline (just tk) n
-from-input (timeline nothing n) = read-timeline nothing n
-from-input (login username passwd) = authenticate username passwd
-from-input (signup username passwd) = register username passwd
+from-input (post-tweet tk txt)           = publish tk txt nothing
+from-input (get-tweet (just tk) twt)     = read-post (just tk) twt
+from-input (get-tweet nothing twt)       = read-post nothing twt
+from-input (global-timeline (just tk) n) = read-global-timeline (just tk) n
+from-input (global-timeline nothing n)   = read-global-timeline nothing n
+from-input (private-timeline tk n)       = read-personal-timeline tk n
+from-input (login username passwd)       = authenticate username passwd
+from-input (signup username passwd)      = register username passwd
+from-input (delete-tweet tk twt)         = delete tk twt
+from-input (like tk twt)                 = like tk twt
+from-input (unlike tk twt)               = unlike tk twt
+from-input (follow tk username)          = follow tk username
+from-input (unfollow tk username)        = unfollow tk username
+from-input (logout tk)                   = revoke-token tk
