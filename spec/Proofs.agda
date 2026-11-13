@@ -8,10 +8,11 @@ open import Agda.Builtin.Nat
 open import Agda.Builtin.Sigma
 open import Agda.Builtin.String
 
+open import Data.Empty                            using (⊥-elim)
 open import Data.Product                          using (∃-syntax)
 open import Function                              using (_∘_; _$_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
-                                                         sym; trans)
+                                                         sym; trans; subst)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
 --------------------------------------------------------------------------------
@@ -56,7 +57,8 @@ CantDeleteOthersTweets =
   ¬ Step before (delete sid pid) after success
 
 CantLikeForOtherAccount =
-  ∀ {before after pid sid post post' user other-user} →
+  ∀ {before after pid sid acc post post' user other-user} →
+  ValidSession before sid acc user →
   user                        ≢ other-user →
   World.session-at before sid ≡ active user →
   World.post-at before pid    ≡ just post →
@@ -74,7 +76,7 @@ FailedDeleteDoesNothing =
 FailedPostDoesNothing =
   ∀ {before after sid txt parent status} →
   Step before (publish sid txt parent) after status →
-  ¬ (∃[ pid ] status ≢ created-post pid) →
+  ¬ (∃[ pid ] status ≡ created-post pid) →
   before ≡ after
 
 FailedLikeDoesNothing =
@@ -110,7 +112,7 @@ FailedRegisterDoesNothing =
 FailedLoginDoesNothing =
   ∀ {before after status user passwd} →
   Step before (authenticate user passwd) after status →
-  ¬ (∃[ sid ] status ≢ issued-session sid) →
+  ¬ (∃[ sid ] status ≡ issued-session sid) →
   before ≡ after
 
 StepExists =
@@ -138,6 +140,12 @@ new-reply-private :
 new-reply-private {ppost = record { visibility = everyone }} ()
 new-reply-private {ppost = record { visibility = followers-only }} refl = refl
 
+active-inj : {x y : String} → active x ≡ active y → x ≡ y
+active-inj refl = refl
+
+id : Set → Set
+id x = x
+
 --------------------------------------------------------------------------------
 --                                   PROOFS                                   --
 --------------------------------------------------------------------------------
@@ -152,7 +160,7 @@ post-doesnt-exist-before-posting {before}
 
 cant-reply-to-deleted-tweet : CantReplyToDeletedTweet
 cant-reply-to-deleted-tweet pa st
-    (successful-reply _ _ _ _ pe pb _ _ _ _ _ _ _ _ _)
+    (successful-reply _ _ _ _ pe _ pb _ _ _ _ _ _ _ _)
   = deleted≢live
   ∘ trans (sym st)
   ∘ trans (cong Post.status ∘ just-injective ∘ trans (sym pa) $ pb)
@@ -165,7 +173,7 @@ cant-reply-to-tweet-you-cant-read ¬cr
 
 cant-make-public-reply-to-private-parent : CantMakePublicReplyToPrivateParent
 cant-make-public-reply-to-private-parent h1 h2 h3 h4
-    (successful-reply _ (post-is-new _ ip) _ _ _ pb _ _ _ _ _ _ _ _ _)
+    (successful-reply _ (post-is-new _ ip) _ _ _ _ pb _ _ _ _ _ _ _ _)
   = everyone≢followers-only
   ∘ trans (sym h4)
   ∘ trans (cong Post.visibility ∘ just-injective ∘ trans (sym h2) $ ip)
@@ -174,34 +182,74 @@ cant-make-public-reply-to-private-parent h1 h2 h3 h4
   $ h3
 
 cant-delete-others-tweets : CantDeleteOthersTweets
-cant-delete-others-tweets = ?
+cant-delete-others-tweets h1 h2 ne
+    (delete-post vs pb _ au _ _ _ _ _ _ _ _ _ _) =
+  ne (trans (trans (cong Post.author (just-injective (trans (sym h2) pb))) au)
+             (active-inj (trans (sym (ValidSession.session-unchanged vs)) h1)))
 
 cant-like-for-other-account : CantLikeForOtherAccount
-cant-like-for-other-account = ?
+cant-like-for-other-account {user = user} {other-user = other-user}
+    vs u≢ou _ pb ∉before pa ∈after
+    (like-post vs' _ pb' pa' _ _ _ _ _ _ _ inj _ _ _ _ _ _) =
+  let
+    eq-user  = active-inj ∘ trans (sym ∘ ValidSession.session-unchanged $ vs') ∘ ValidSession.session-unchanged $ vs
+    u≢ou'    = u≢ou ∘ trans (sym eq-user)
+    eq-post  = just-injective ∘ trans (sym pb') $ pb
+    eq-post' = just-injective ∘ trans (sym pa') $ pa
+    (eq∈ , eq∉) = inj {user' = other-user} u≢ou'
+    ∉before' = subst ((other-user ∉_) ∘ Post.likes) (sym eq-post) ∉before
+    ∈after'  = subst ((other-user ∈_) ∘ Post.likes) (sym eq-post') ∈after
+  in subst id eq∉ ∉before' ∈after'
 
 failed-delete-does-nothing : FailedDeleteDoesNothing
-failed-delete-does-nothing = ?
+failed-delete-does-nothing (delete-post _ _ _ _ _ _ _ _ _ _ _ _ _ _) h = ⊥-elim (h refl)
+failed-delete-does-nothing (failed-access _) _ = refl
+failed-delete-does-nothing (failed-delete-non-existant-post _ _) _ = refl
+failed-delete-does-nothing (failed-delete-not-author _ _ _) _ = refl
 
 failed-post-does-nothing : FailedPostDoesNothing
-failed-post-does-nothing = ?
+failed-post-does-nothing
+    (successful-post _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h (_ , refl))
+failed-post-does-nothing
+    (successful-reply _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h (_ , refl))
+failed-post-does-nothing (failed-access _) _ = refl
 
 failed-like-does-nothing : FailedLikeDoesNothing
-failed-like-does-nothing = ?
+failed-like-does-nothing (like-post _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h refl)
+failed-like-does-nothing (failed-like-post _ _) _ = refl
+failed-like-does-nothing (failed-access _) _ = refl
 
 failed-unlike-does-nothing : FailedUnlikeDoesNothing
-failed-unlike-does-nothing = ?
+failed-unlike-does-nothing (unlike-post _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h refl)
+failed-unlike-does-nothing (failed-unlike-post _ _) _ = refl
+failed-unlike-does-nothing (failed-access _) _ = refl
 
 failed-follow-does-nothing : FailedFollowDoesNothing
-failed-follow-does-nothing = ?
+failed-follow-does-nothing (follow-user _ _ _ _ _ _) h
+  = ⊥-elim (h refl)
+failed-follow-does-nothing (failed-access _) _ = refl
 
 failed-unfollow-does-nothing : FailedUnfollowDoesNothing
-failed-unfollow-does-nothing = ?
+failed-unfollow-does-nothing (unfollow-user _ _ _ _ _ _) h
+  = ⊥-elim (h refl)
+failed-unfollow-does-nothing (failed-access _) _ = refl
 
 failed-register-does-nothing : FailedRegisterDoesNothing
-failed-register-does-nothing = ?
+failed-register-does-nothing (failed-access _) _ = refl
+failed-register-does-nothing (create-account _ _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h refl)
+failed-register-does-nothing (failed-create-account _) _ = refl
 
 failed-login-does-nothing : FailedLoginDoesNothing
-failed-login-does-nothing = ?
+failed-login-does-nothing (failed-access _) _ = refl
+failed-login-does-nothing (login _ _ _ _ _ _ _ _ _ _ _) h
+  = ⊥-elim (h (_ , refl))
+failed-login-does-nothing (failed-login-1 _) _ = refl
+failed-login-does-nothing (failed-login-2 _ _) _ = refl
 
 step-exists : StepExists
-step-exists = ?
+step-exists = {!!}
