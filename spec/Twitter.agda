@@ -129,6 +129,7 @@ data Command : Set where
   like                   : SessionId       → PostId → Command
   unlike                 : SessionId       → PostId → Command
   time-passes            :                            Command
+  collect-dead-posts     :                            Command
 
 data Result : Set where
   success           : Result
@@ -210,6 +211,7 @@ extract-sid (unfollow sid _)               = just sid
 extract-sid (like sid _)                   = just sid
 extract-sid (unlike sid _)                 = just sid
 extract-sid time-passes                    = nothing
+extract-sid collect-dead-posts             = nothing
 
 new-post : String → String → Account → Post
 new-post username txt user =
@@ -548,3 +550,12 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before sid ≡ active user →
     World.session-at after sid  ≡ revoked →
     Step before time-passes after success
+
+  reap-tombstones :
+    ∀ {before after pid other-pid post other-post} →
+    World.post-at before pid      ≡ just post →
+    Post.status post              ≡ deleted →
+    World.post-at after pid       ≡ nothing →
+    World.post-at after other-pid ≡ just other-post →
+    Post.status other-post        ≢ deleted →
+    Step before collect-dead-posts after success
