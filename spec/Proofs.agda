@@ -152,7 +152,7 @@ post-doesnt-exist-before-posting {before}
 
 cant-reply-to-deleted-tweet : CantReplyToDeletedTweet
 cant-reply-to-deleted-tweet pa st
-    (successful-reply _ _ _ _ pe _ pb _ _ _ _ _ _ _ _)
+    (successful-reply _ _ _ _ pe pb _ _ _ _ _ _ _ _ _)
   = deleted≢live
   ∘ trans (sym st)
   ∘ trans (cong Post.status ∘ just-injective ∘ trans (sym pa) $ pb)
@@ -165,10 +165,43 @@ cant-reply-to-tweet-you-cant-read ¬cr
 
 cant-make-public-reply-to-private-parent : CantMakePublicReplyToPrivateParent
 cant-make-public-reply-to-private-parent h1 h2 h3 h4
-    (successful-reply _ (post-is-new _ ip) _ _ _ _ pb _ _ _ _ _ _ _ _)
+    (successful-reply _ (post-is-new _ ip) _ _ _ pb _ _ _ _ _ _ _ _ _)
   = everyone≢followers-only
   ∘ trans (sym h4)
   ∘ trans (cong Post.visibility ∘ just-injective ∘ trans (sym h2) $ ip)
   ∘ new-reply-private
   ∘ trans (sym ∘ cong Post.visibility ∘ just-injective ∘ trans (sym h1) $ pb)
   $ h3
+
+cant-delete-others-tweets : CantDeleteOthersTweets
+cant-delete-others-tweets = ?
+
+cant-like-for-other-account : CantLikeForOtherAccount
+cant-like-for-other-account = ?
+
+failed-delete-does-nothing : FailedDeleteDoesNothing
+failed-delete-does-nothing = ?
+
+failed-post-does-nothing : FailedPostDoesNothing
+failed-post-does-nothing = ?
+
+failed-like-does-nothing : FailedLikeDoesNothing
+failed-like-does-nothing = ?
+
+failed-unlike-does-nothing : FailedUnlikeDoesNothing
+failed-unlike-does-nothing = ?
+
+failed-follow-does-nothing : FailedFollowDoesNothing
+failed-follow-does-nothing = ?
+
+failed-unfollow-does-nothing : FailedUnfollowDoesNothing
+failed-unfollow-does-nothing = ?
+
+failed-register-does-nothing : FailedRegisterDoesNothing
+failed-register-does-nothing = ?
+
+failed-login-does-nothing : FailedLoginDoesNothing
+failed-login-does-nothing = ?
+
+step-exists : StepExists
+step-exists = ?
