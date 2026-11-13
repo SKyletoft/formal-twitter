@@ -486,13 +486,19 @@ data Step : World → Command → World → Result → Set₁ where
     Account.password user            ≢ passwd →
     Step before (authenticate username passwd) before login-failed
 
-  cant-read-post :
-    ∀ {before pid sid author acc user p} →
+  cant-read-post-private :
+    ∀ {before pid sid author acc user post} →
     ValidSession before sid acc user →
-    World.post-at before pid         ≡ just p →
-    Post.visibility p                ≡ followers-only →
-    Post.status p                    ≡ live →
+    World.post-at before pid         ≡ just post →
+    Post.visibility post             ≡ followers-only →
     World.follows before user author ≡ false →
+    Step before (read-post (just sid) pid) before denied
+
+  cant-read-post-private-deleted :
+    ∀ {before pid sid acc user post} →
+    ValidSession before sid acc user →
+    World.post-at before pid ≡ just post →
+    Post.status post         ≡ deleted →
     Step before (read-post (just sid) pid) before denied
 
   read-post-logged-in :
