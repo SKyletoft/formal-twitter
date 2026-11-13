@@ -244,12 +244,6 @@ just a   ≟just acc with a ≟ₐ acc
 just-injective   : ∀ {x y : a} → just x ≡ just y → x ≡ y ; just-injective refl = refl
 active-injective : ∀ {u v} → active u ≡ active v → u ≡ v ; active-injective refl = refl
 
-third :
-  ∀ {a b c} {A : Set a} {B : Set b} {C : A → B → Set c} →
-  (p : Σ A λ x → Σ B λ y → C x y) →
-  C (fst p) (fst (snd p))
-third = snd ∘ snd
-
 is-valid-session :
   (w : World) →
   (sid : SessionId) →
@@ -271,11 +265,13 @@ can-have-valid-session w sid pid
 ... | unused  = no $ (λ ())
                    ∘ trans (sym p)
                    ∘ ValidSession.session-unchanged
-                   ∘ third
+                   ∘ snd
+                   ∘ snd
 ... | revoked = no $ (λ ())
                    ∘ trans (sym p)
                    ∘ ValidSession.session-unchanged
-                   ∘ third
+                   ∘ snd
+                   ∘ snd
 ... | active user
   with World.account-at w user in q
 ... | just acc = yes (acc , user , valid-session p q)
@@ -401,8 +397,8 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at after  ppid ≡ just ppost' →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
-    pid ≢ other-pids →
-    pid ≢ ppid →
+    pid  ≢ other-pids →
+    pid  ≢ ppid →
     ppid ≢ other-pids →
     World.post-at before other-pids ≡ World.post-at after other-pids →
     World.account-at before u1      ≡ World.account-at after u1 →
