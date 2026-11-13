@@ -40,7 +40,7 @@ _×_ : Set → Set → Set
 a × b = Σ a (λ _ → b)
 
 _∧_ : Set → Set → Set
-a ∧ b = Σ a (λ _ → b)
+_∧_ = _×_
 
 uniq : List a → Set
 uniq []       = ⊤
