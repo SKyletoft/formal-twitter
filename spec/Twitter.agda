@@ -125,6 +125,7 @@ data Command : Set where
   read-personal-timeline : SessionId       → Nat    → Command
   read-global-timeline   : Maybe SessionId → Nat    → Command
   authenticate           : String          → String → Command
+  revoke-token           : SessionId                → Command
   register               : String          → String → Command
   follow                 : SessionId       → String → Command
   unfollow               : SessionId       → String → Command
@@ -205,6 +206,7 @@ extract-sid (read-post msid _)             = msid
 extract-sid (read-personal-timeline sid _) = just sid
 extract-sid (read-global-timeline msid _)  = msid
 extract-sid (authenticate _ _)             = nothing
+extract-sid (revoke-token sid)             = just sid
 extract-sid (register _ _)                 = nothing
 extract-sid (follow sid _)                 = just sid
 extract-sid (unfollow sid _)               = just sid
