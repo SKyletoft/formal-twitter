@@ -20,7 +20,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; con
                                                          cong₂; trans; sym)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Relation.Nullary.Negation.Core        using (¬_)
-
+open import Level                                 using (_⊔_)
 --------------------------------------------------------------------------------
 --                               PROOF-HELPERS                                --
 --------------------------------------------------------------------------------
@@ -36,10 +36,9 @@ _∉_ : (x : a) → List a → Set
 x ∉ y = ¬ (x ∈ y)
 
 infixr 2 _×_ _∧_
-_×_ : Set → Set → Set
+_×_ : ∀ {ℓ₁ ℓ₂} → Set ℓ₁ → Set ℓ₂ → Set (ℓ₁ ⊔ ℓ₂)
 a × b = Σ a (λ _ → b)
 
-_∧_ : Set → Set → Set
 _∧_ = _×_
 
 uniq : List a → Set
@@ -129,7 +128,7 @@ data Command : Set where
   like                   : SessionId       → PostId → Command
   unlike                 : SessionId       → PostId → Command
   time-passes            :                            Command
-  collect-dead-posts     :                            Command
+  -- collect-dead-posts     :                            Command
 
 data Result : Set where
   success           : Result
@@ -211,7 +210,7 @@ extract-sid (unfollow sid _)               = just sid
 extract-sid (like sid _)                   = just sid
 extract-sid (unlike sid _)                 = just sid
 extract-sid time-passes                    = nothing
-extract-sid collect-dead-posts             = nothing
+-- extract-sid collect-dead-posts             = nothing
 
 new-post : String → String → Account → Post
 new-post username txt user =
@@ -428,14 +427,16 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (publish sid txt (just ppid)) after (created-post pid)
 
   delete-post :
-    ∀ {before after pid sid post post'} →
+    ∀ {before after pid sid acc user post post'} →
+    ValidSession before sid acc user →
     World.post-at before pid ≡ just post →
     World.post-at after pid  ≡ just post' →
+    Post.author post         ≡ user →
+    -- Rest of post unchanged
     Post.author post         ≡ Post.author post' →
     Post.text post           ≡ Post.text post' →
     Post.likes post          ≡ Post.likes post' →
     Post.replies post        ≡ Post.replies post' →
-    Post.status post         ≡ live →
     Post.status post'        ≡ deleted →
     -- Everything else unchanged
     ∀ {other-pids u1 u2 s} →
@@ -446,10 +447,23 @@ data Step : World → Command → World → Result → Set₁ where
     World.follows before u1 u2      ≡ World.follows after u1 u2 →
     Step before (delete sid pid) after success
 
+  failed-delete-non-existant-post :
+    ∀ {before pid sid acc user} →
+    ValidSession before sid acc user →
+    World.post-at before pid ≡ nothing →
+    Step before (delete sid pid) before denied
+
+  failed-delete-not-author :
+    ∀ {before pid sid acc user post} →
+    ValidSession before sid acc user →
+    World.post-at before pid ≡ just post →
+    Post.author post         ≢ user →
+    Step before (delete sid pid) before denied
+
   failed-access :
-    ∀ {before sid cmd} →
-    extract-sid cmd ≡ just sid →
-    ¬ (∃[ acc ] ∃[ username ] ValidSession before sid acc username) →
+    ∀ {before cmd} →
+    (∀ {sid} → extract-sid cmd ≡ just sid →
+      ¬ (∃[ acc ] ∃[ username ] ValidSession before sid acc username)) →
     Step before cmd before expired
 
   create-account :
@@ -583,9 +597,10 @@ data Step : World → Command → World → Result → Set₁ where
     Post.status post     ≡ Post.status post' →
     Post.replies post    ≡ Post.replies post' →
     Post.parent post     ≡ Post.parent post' →
-    ∀ {user'} →
-    user ≢ user' →
-    (user' ∈ Post.likes post) ≡ (user' ∈ Post.likes post') →
+    (∀ {user'} → user ≢ user' →
+      ((user' ∈ Post.likes post) ≡ (user' ∈ Post.likes post')) ∧
+        ((user' ∉ Post.likes post) ≡ (user' ∉ Post.likes post'))
+    ) →
     -- Everything else unchanged
     ∀ {other-pids} →
     pid ≢ other-pids →
@@ -672,17 +687,16 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (revoke-token sid) after success
 
   session-timeout :
-    ∀ {before after sid user} →
-    World.session-at before sid ≡ active user →
-    World.session-at after sid  ≡ revoked →
+    ∀ {before after} →
+    (∀ {sid user} → World.session-at before sid ≡ active user →
+    World.session-at after sid  ≡ revoked) →
     -- Everything else unchanged
-    ∀ {other-sid} →
-    sid ≢ other-sid →
-    World.session-at before other-sid ≡ World.session-at after other-sid →
-    World.account-at before           ≡ World.account-at after →
-    World.post-at before              ≡ World.post-at after →
-    World.follows before              ≡ World.follows after →
-    World.newest-first before         ≡ World.newest-first after →
+    (∀ {sid} →
+      World.session-at before sid ≡ World.session-at after sid →
+      World.account-at before     ≡ World.account-at after →
+      World.post-at before        ≡ World.post-at after →
+      World.follows before        ≡ World.follows after →
+      World.newest-first before   ≡ World.newest-first after) →
     Step before time-passes after success
 
   -- reap-tombstones :
