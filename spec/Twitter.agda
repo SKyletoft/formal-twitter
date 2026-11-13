@@ -362,6 +362,9 @@ is-post-public w pid with World.post-at w pid in p
 ... | nothing = no λ
         { (pst , eq , _ , _) → (λ ()) $ eq }
 
+is-alive : {p : Post} → (w : World) → (pid : PostId) → {World.post-at w pid ≡ just p} → Dec (Post.status p ≡ live)
+is-alive = {!!}
+
 return-post : Post → Result
 return-post (post author txt _ _ likes replies _) =
   returned-post author txt (length likes) replies
@@ -430,7 +433,6 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at after pid  ≡ just post' →
     Post.author post         ≡ Post.author post' →
     Post.text post           ≡ Post.text post' →
-    Post.status post         ≡ Post.status post' →
     Post.likes post          ≡ Post.likes post' →
     Post.replies post        ≡ Post.replies post' →
     Post.status post         ≡ live →
@@ -445,9 +447,9 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (delete sid pid) after success
 
   failed-access :
-    ∀ {before sid username acc cmd} →
+    ∀ {before sid cmd} →
     extract-sid cmd ≡ just sid →
-    ¬ ValidSession before sid acc username →
+    ¬ (∃[ acc ] ∃[ username ] ValidSession before sid acc username) →
     Step before cmd before expired
 
   create-account :
@@ -498,11 +500,18 @@ data Step : World → Command → World → Result → Set₁ where
     Account.password user            ≢ passwd →
     Step before (authenticate username passwd) before login-failed
 
+  cant-read-post-public :
+    ∀ {before pid sid acc user} →
+    ValidSession before sid acc user →
+    World.post-at before pid ≡ nothing →
+    Step before (read-post (just sid) pid) before denied
+
   cant-read-post-private :
     ∀ {before pid sid author acc user post} →
     ValidSession before sid acc user →
     World.post-at before pid         ≡ just post →
     Post.visibility post             ≡ followers-only →
+    Post.author post                 ≡ author →
     World.follows before user author ≡ false →
     Step before (read-post (just sid) pid) before denied
 
@@ -514,8 +523,13 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (read-post (just sid) pid) before denied
 
   read-post-logged-in :
-    ∀ {before pid sid author txt likes replies} →
+    ∀ {before pid sid post author txt likes replies} →
     CanReadPost before sid pid →
+    World.post-at before pid ≡ just post →
+    Post.author post         ≡ author →
+    Post.text post           ≡ txt →
+    length (Post.likes post) ≡ likes →
+    Post.replies post        ≡ replies →
     Step before (read-post (just sid) pid) before (returned-post author txt likes replies)
 
   read-post-anonymously :
@@ -583,21 +597,41 @@ data Step : World → Command → World → Result → Set₁ where
     Step before (like sid pid) after success
 
   failed-like-post :
-    ∀ {before sid pid} →
+    ∀ {before sid pid acc user} →
+    ValidSession before sid acc user →
     ¬ CanReadPost before sid pid →
     Step before (like sid pid) before denied
 
   unlike-post :
-    ∀ {before after sid pid acc user post} →
+    ∀ {before after sid pid acc user post post'} →
     ValidSession before sid acc user →
     CanReadPost before sid pid →
-    World.post-at after pid ≡ just post →
+    World.post-at before pid ≡ just post' →
+    World.post-at after pid  ≡ just post →
     user ∉ Post.likes post →
+    -- Rest of post unchanged
+    Post.author post'     ≡ Post.author post →
+    Post.text post'       ≡ Post.text post →
+    Post.visibility post' ≡ Post.visibility post →
+    Post.status post'     ≡ Post.status post →
+    Post.replies post'    ≡ Post.replies post →
+    Post.parent post'     ≡ Post.parent post →
+    ∀ {user'} →
+    user ≢ user' →
+    (user' ∈ Post.likes post') ≡ (user' ∈ Post.likes post) →
     -- Everything else unchanged
+    ∀ {other-pids} →
+    pid ≢ other-pids →
+    World.post-at before other-pids ≡ World.post-at after other-pids →
+    World.account-at before         ≡ World.account-at after →
+    World.session-at before         ≡ World.session-at after  →
+    World.follows before            ≡ World.follows after →
+    World.newest-first before       ≡ World.newest-first after →
     Step before (unlike sid pid) after success
 
   failed-unlike-post :
-    ∀ {before sid pid} →
+    ∀ {before sid pid acc user} →
+    ValidSession before sid acc user →
     ¬ CanReadPost before sid pid →
     Step before (unlike sid pid) before denied
 
@@ -606,6 +640,10 @@ data Step : World → Command → World → Result → Set₁ where
     ValidSession before sid acc follower →
     World.follows after ≡ add-follower (World.follows before) follower followee →
     -- Everything else unchanged
+    World.account-at before   ≡ World.account-at after →
+    World.session-at before   ≡ World.session-at after →
+    World.post-at before      ≡ World.post-at after →
+    World.newest-first before ≡ World.newest-first after →
     Step before (follow sid followee) after success
 
   unfollow-user :
@@ -613,6 +651,10 @@ data Step : World → Command → World → Result → Set₁ where
     ValidSession before sid acc follower →
     World.follows after ≡ remove-follower (World.follows before) follower followee →
     -- Everything else unchanged
+    World.account-at before   ≡ World.account-at after →
+    World.session-at before   ≡ World.session-at after →
+    World.post-at before      ≡ World.post-at after →
+    World.newest-first before ≡ World.newest-first after →
     Step before (unfollow sid followee) after success
 
   logout :
@@ -620,6 +662,13 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before sid ≡ active user →
     World.session-at after sid  ≡ revoked →
     -- Everything else unchanged
+    ∀ {other-sid} →
+    sid ≢ other-sid →
+    World.session-at before other-sid ≡ World.session-at after other-sid →
+    World.account-at before           ≡ World.account-at after →
+    World.post-at before              ≡ World.post-at after →
+    World.follows before              ≡ World.follows after →
+    World.newest-first before         ≡ World.newest-first after →
     Step before (revoke-token sid) after success
 
   session-timeout :
@@ -627,6 +676,13 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before sid ≡ active user →
     World.session-at after sid  ≡ revoked →
     -- Everything else unchanged
+    ∀ {other-sid} →
+    sid ≢ other-sid →
+    World.session-at before other-sid ≡ World.session-at after other-sid →
+    World.account-at before           ≡ World.account-at after →
+    World.post-at before              ≡ World.post-at after →
+    World.follows before              ≡ World.follows after →
+    World.newest-first before         ≡ World.newest-first after →
     Step before time-passes after success
 
   reap-tombstones :
@@ -636,5 +692,13 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at after pid       ≡ nothing →
     World.post-at after other-pid ≡ just other-post →
     Post.status other-post        ≢ deleted →
+    World.newest-first after      ≡ (filter (λ mpid → is-alive before mpid {{!!}}) ∘ World.newest-first $ before) →
     -- Everything else unchanged
+    ∀ {live-pid live-post} →
+    World.post-at before live-pid ≡ just live-post →
+    Post.status live-post         ≡ live →
+    World.post-at after live-pid  ≡ just live-post →
+    World.account-at before       ≡ World.account-at after →
+    World.session-at before       ≡ World.session-at after →
+    World.follows before          ≡ World.follows after →
     Step before collect-dead-posts after success
