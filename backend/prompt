@@ -1,5 +1,6 @@
 You are building a rust implementation of the spec described in @spec/Twitter.agda and @spec/Interface.agda.
 
 All tests must have an associated proof in @backend/ImplProofs.agda.
+Write your tests with QuickCheck over any forall in Agda.
 
 Keep track of your work in @backend/todo.md.
