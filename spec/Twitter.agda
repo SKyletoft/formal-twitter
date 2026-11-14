@@ -71,6 +71,16 @@ record World : Set₁ where
     follows      : String → String     → Bool
     newest-first : List PostId
 
+    used-post-ids : List PostId
+    used-session-ids : List SessionId
+    only-used-pids :
+      ∀ {pid} →
+      (pid ∈ used-post-ids → post-at pid ≢ nothing)
+      ∧ (pid ∉ used-post-ids → post-at pid ≡ nothing)
+    only-used-sids :
+      ∀ {sid} →
+      (sid ∈ used-session-ids → session-at sid ≢ unused)
+      ∧ (sid ∉ used-session-ids → session-at sid ≡ unused)
     only-valid-sessions :
       ∀ {sid username} →
       session-at sid ≡ active username →
@@ -408,6 +418,12 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before s       ≡ World.session-at after s →
     World.follows before u1 u2      ≡ World.follows after u1 u2 →
     Step before (publish sid txt (just ppid)) after (created-post pid)
+
+  failed-reply :
+    ∀ {before sid txt ppid acc user} →
+    ValidSession before sid acc user →
+    ¬ CanReadPost before sid ppid →
+    Step before (publish sid txt (just ppid)) before denied
 
   delete-post :
     ∀ {before after pid sid acc user post post'} →
