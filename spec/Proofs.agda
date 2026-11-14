@@ -1,7 +1,4 @@
-module Proofs (SessionId PostId : Set) where
-
-open import Twitter SessionId PostId
-
+open import Agda.Builtin.Bool
 open import Agda.Builtin.List
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
@@ -9,17 +6,26 @@ open import Agda.Builtin.Sigma
 open import Agda.Builtin.String
 
 open import Data.Empty                            using (⊥-elim)
+open import Data.List                             using (take; filter; filterᵇ)
 open import Data.Product                          using (∃-syntax)
+open import Data.String                           using (_≟_)
 open import Function                              using (_∘_; _$_)
+open import Relation.Binary.Definitions           using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
                                                          sym; trans; subst)
+open import Relation.Nullary.Decidable.Core       using (yes; no)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
---------------------------------------------------------------------------------
---                               PROOF-HELPERS                                --
---------------------------------------------------------------------------------
+open import Helpers
 
-private variable a b : Set
+module Proofs
+  (SessionId PostId : Set)
+  (new-sid : CreateNew SessionId)
+  (new-pid : CreateNew PostId)
+  (_≟ₚ_ : DecidableEquality PostId)
+  (_≟ₛᵢ_ : DecidableEquality SessionId)
+  where
+open import Twitter SessionId PostId new-sid new-pid _≟ₚ_ _≟ₛᵢ_
 
 --------------------------------------------------------------------------------
 --                                PROOF-TYPES                                 --
@@ -116,7 +122,8 @@ FailedLoginDoesNothing =
   before ≡ after
 
 StepExists =
-  ∀ (before : World) (cmd : Command) →
+  (before : World) →
+  (cmd : Command) →
   ∃[ after ] ∃[ result ]
   Step before cmd after result
 
@@ -143,8 +150,6 @@ new-reply-private {ppost = record { visibility = followers-only }} refl = refl
 active-inj : {x y : String} → active x ≡ active y → x ≡ y
 active-inj refl = refl
 
-id : Set → Set
-id x = x
 
 --------------------------------------------------------------------------------
 --                                   PROOFS                                   --

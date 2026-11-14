@@ -219,7 +219,15 @@ to-response (tweet username txt like-count replies) =
 --                                 INTERFACE                                  --
 --------------------------------------------------------------------------------
 
-open import Twitter LoginToken TweetId
+open import Helpers
+
+-- Don't formalise creation of cryptographic tokens. Implementations
+-- should use a crypto library + a set to avoid repeats.
+postulate
+  new-pid : CreateNew TweetId
+  new-sid : CreateNew LoginToken
+
+open import Twitter LoginToken TweetId new-sid new-pid
 
 to-output : Result → Response
 to-output success                                  = ok

@@ -1,7 +1,3 @@
-module Twitter
-  (SessionId PostId : Set)
-  where
-
 open import Agda.Builtin.Bool
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat
@@ -10,40 +6,27 @@ open import Agda.Builtin.Sigma
 open import Data.Empty                            using (⊥; ⊥-elim)
 open import Data.List                             using (List; []; _∷_; length;
                                                          take; filter; filterᵇ)
-open import Data.Product                          using (∃-syntax)
+open import Data.Product                          using (∃-syntax; proj₁; proj₂)
 open import Data.String                           using (String)
                                                   renaming (_≟_ to _≟ₛ_)
-open import Data.Unit                             using (⊤)
+open import Data.Unit                             using (⊤; tt)
 open import Function                              using (_∘_; _$_)
+open import Level                                 using (_⊔_)
 open import Relation.Binary.Definitions           using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
                                                          cong₂; trans; sym)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 open import Relation.Nullary.Negation.Core        using (¬_)
-open import Level                                 using (_⊔_)
---------------------------------------------------------------------------------
---                               PROOF-HELPERS                                --
---------------------------------------------------------------------------------
 
-private variable a b c : Set
+open import Helpers
 
-infix 4 _∈_ _∉_
-data _∈_ (x : a) : List a → Set where
-  here  : ∀ {xs}            → x ∈ (x ∷ xs)
-  there : ∀ {y xs} → x ∈ xs → x ∈ (y ∷ xs)
-
-_∉_ : (x : a) → List a → Set
-x ∉ y = ¬ (x ∈ y)
-
-infixr 2 _×_ _∧_
-_×_ : ∀ {ℓ₁ ℓ₂} → Set ℓ₁ → Set ℓ₂ → Set (ℓ₁ ⊔ ℓ₂)
-a × b = Σ a (λ _ → b)
-
-_∧_ = _×_
-
-uniq : List a → Set
-uniq []       = ⊤
-uniq (x ∷ xs) = (x ∉ xs) × uniq xs
+module Twitter
+  (SessionId PostId : Set)
+  (new-sid : CreateNew SessionId)
+  (new-pid : CreateNew PostId)
+  (_≟ₚ_ : DecidableEquality PostId)
+  (_≟ₛᵢ_ : DecidableEquality SessionId)
+  where
 
 --------------------------------------------------------------------------------
 --                                STATE TYPES                                 --
@@ -267,9 +250,9 @@ is-valid-session w sid acc user
 ... | no s  | _     = no  $ s ∘ ValidSession.session-unchanged
 
 can-have-valid-session :
-  (w : World) (sid : SessionId) (pid : PostId) →
+  (w : World) (sid : SessionId) →
   Dec (∃[ acc ] ∃[ user ] ValidSession w sid acc user)
-can-have-valid-session w sid pid
+can-have-valid-session w sid
   with World.session-at w sid in p
 ... | unused  = no $ (λ ())
                    ∘ trans (sym p)
@@ -293,7 +276,7 @@ can-read-post :
   (sid : SessionId) →
   (pid : PostId) →
   Dec (CanReadPost w sid pid)
-can-read-post w sid pid with can-have-valid-session w sid pid
+can-read-post w sid pid with can-have-valid-session w sid
 ... | no ¬vs = no λ
         { (post-is-private vs _ _ _ _) → ¬vs (_ , _ , vs)
         ; (post-is-public vs _ _ _)    → ¬vs (_ , _ , vs)
