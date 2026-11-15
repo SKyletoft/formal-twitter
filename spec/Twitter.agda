@@ -96,6 +96,7 @@ record World : Set₁ where
       ∃[ child-post ]
         post-at child-pid        ≡ just child-post
         ∧ Post.parent child-post ≡ just parent-pid
+        ∧ child-pid              ≢ parent-pid
     no-duplicate-replies :
       ∀ {pid post} →
       post-at pid ≡ just post →
