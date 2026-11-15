@@ -132,14 +132,13 @@ StepExists =
 --                                  HELPERS                                   --
 --------------------------------------------------------------------------------
 
-nothing≢just : {x : a} → nothing ≢ just x
-nothing≢just ()
-
-deleted≢live : deleted ≢ live
-deleted≢live ()
-
-everyone≢followers-only : everyone ≢ followers-only
-everyone≢followers-only ()
+nothing≢just            : {x : a} → nothing ≢ just x       ; nothing≢just ()
+deleted≢live            : deleted ≢ live                   ; deleted≢live ()
+everyone≢followers-only : everyone ≢ followers-only        ; everyone≢followers-only ()
+active≢unused           : ∀ {user} → active user ≢ unused  ; active≢unused ()
+unused≢active           : ∀ {user} → unused ≢ active user  ; unused≢active ()
+revoked≢active          : ∀ {user} → revoked ≢ active user ; revoked≢active ()
+revoked≢unused          : revoked ≢ unused                 ; revoked≢unused ()
 
 new-reply-private :
   ∀ {username txt user parent-id ppost} →
@@ -530,6 +529,225 @@ make-new-reply
                    (add-post-prop² p (reply-to ppost pid) uniq-of-new-likes (no-duplicate-likes pb) no-duplicate-likes)
                    (uniq-cons pid newest-first pid∉newest no-duplicate-posts)
 
+add-post-present : ∀ {xs : List PostId} {f : PostId → Maybe Post} {pid : PostId} {p : Post} →
+  (∀ {z} → z ∈ xs → ∃[ post ] f z ≡ just post) →
+  ∀ {z} → z ∈ xs → ∃[ post ] add-post f pid p z ≡ just post
+add-post-present {f = f} {pid = pid} {p = p} F {z} m =
+  Dec-elim (pid ≟ₚ z)
+    (λ e → p , add-post-at e)
+    (λ ne → let post′ , eq = F m in post′ , trans (add-post-no ne) eq)
+
+add-post-replies-keep :
+  ∀ {f : PostId → Maybe Post} {pid : PostId} {ppost ppost′ : Post} →
+  f pid ≡ just ppost →
+  Post.replies ppost′ ≡ Post.replies ppost →
+  Post.parent ppost′ ≡ Post.parent ppost →
+  (∀ {parent-pid parent-post child-pid} →
+      child-pid ∈ Post.replies parent-post →
+      f parent-pid ≡ just parent-post →
+      ∃[ child-post ] f child-pid ≡ just child-post
+                      ∧ Post.parent child-post ≡ just parent-pid
+                      ∧ child-pid ≢ parent-pid) →
+  ∀ {parent-pid parent-post child-pid} →
+  child-pid ∈ Post.replies parent-post →
+  add-post f pid ppost′ parent-pid ≡ just parent-post →
+  ∃[ child-post ] add-post f pid ppost′ child-pid ≡ just child-post
+                  ∧ Post.parent child-post ≡ just parent-pid
+                  ∧ child-pid ≢ parent-pid
+add-post-replies-keep {f = f} {pid = pid} {ppost = ppost} {ppost′ = ppost′}
+                      fppid reeq par′eq Fold
+  {parent-pid} {parent-post} {child-pid} child∈ peq =
+  Dec-elim (pid ≟ₚ parent-pid)
+    (λ e →
+      let pe : parent-post ≡ ppost′
+          pe = just-injective
+                (trans (sym (subst (λ z → add-post f pid ppost′ z ≡ just parent-post)
+                                   (sym e) peq))
+                       (add-post-same {p = ppost′}))
+          ce∈ : child-pid ∈ Post.replies ppost
+          ce∈ = subst (λ rl → child-pid ∈ rl) reeq
+                (subst (λ pp → child-pid ∈ Post.replies pp) pe child∈)
+          fpp : f parent-pid ≡ just ppost
+          fpp = subst (λ z → f z ≡ just ppost) e fppid
+          c , ceq , cpar , cne = Fold ce∈ fpp
+          ne-pid : pid ≢ child-pid
+          ne-pid eqz = cne (trans (sym eqz) e)
+        in c , trans (add-post-no ne-pid) ceq , cpar , cne)
+    (λ ne →
+      let fpar : f parent-pid ≡ just parent-post
+          fpar = trans (sym (add-post-no ne)) peq
+          c , ceq , cpar , cne = Fold child∈ fpar
+        in Dec-elim (child-pid ≟ₚ pid)
+          (λ e2 →
+            let c≡ : c ≡ ppost
+                c≡ = just-injective
+                      (trans (sym ceq)
+                             (subst (λ z → f z ≡ just ppost) (sym e2) fppid))
+            in ppost′ , add-post-at (sym e2) ,
+               trans par′eq
+                 (subst (λ cc → Post.parent cc ≡ just parent-pid) c≡ cpar) , cne)
+          (λ ne2 → c , trans (add-post-no (λ eqz → ne2 (sym eqz))) ceq , cpar , cne))
+
+add-session-at : (SessionId → SessionStatus) → SessionId → SessionStatus → SessionId → SessionStatus
+add-session-at s sid st sid′ with sid ≟ₛᵢ sid′
+... | yes _ = st
+... | no  _ = s sid′
+
+add-session-same : ∀ {s : SessionId → SessionStatus} {sid : SessionId} {st : SessionStatus} →
+  add-session-at s sid st sid ≡ st
+add-session-same {sid = sid} with sid ≟ₛᵢ sid
+... | yes _  = refl
+... | no ne = ⊥-elim (ne refl)
+
+add-session-no : ∀ {s : SessionId → SessionStatus} {sid : SessionId} {st : SessionStatus} {sid′ : SessionId} →
+  sid ≢ sid′ → add-session-at s sid st sid′ ≡ s sid′
+add-session-no {sid = sid} {sid′ = sid′} ne with sid ≟ₛᵢ sid′
+... | yes eq = ⊥-elim (ne eq)
+... | no _   = refl
+
+add-session-no-¬ : ∀ {s : SessionId → SessionStatus} {sid : SessionId} {st : SessionStatus} {sid′ : SessionId} →
+  sid ≢ sid′ → s sid′ ≢ unused → add-session-at s sid st sid′ ≢ unused
+add-session-no-¬ {s = s} {sid = sid} {st = st} {sid′ = sid′} ne nu eq = nu (trans (sym (add-session-no ne)) eq)
+
+add-session-used : ∀ {us : List SessionId} {s : SessionId → SessionStatus} {sid : SessionId} (user : String) →
+  sid ∉ us →
+  (∀ {z} → (z ∈ us → s z ≢ unused) ∧ (z ∉ us → s z ≡ unused)) →
+  ∀ {sid′} →
+  (sid′ ∈ sid ∷ us → add-session-at s sid (active user) sid′ ≢ unused) ∧
+  (sid′ ∉ sid ∷ us → add-session-at s sid (active user) sid′ ≡ unused)
+add-session-used {us = us} {s = s} {sid = sid} user ∉w fs {sid′} = F′ , S′
+  where
+    ne-tail : sid′ ∈ us → sid ≢ sid′
+    ne-tail m e = ∉w (∈-sym e m)
+
+    F′ : sid′ ∈ sid ∷ us → add-session-at s sid (active user) sid′ ≢ unused
+    F′ here      = λ eq → active≢unused (sym (trans (sym eq) add-session-same))
+    F′ (there m) = λ eq → fst (fs {sid′}) m (trans (sym (add-session-no (ne-tail m))) eq)
+
+    S′ : sid′ ∉ sid ∷ us → add-session-at s sid (active user) sid′ ≡ unused
+    S′ nm = trans (add-session-no (∉-head nm ∘ sym)) (snd (fs {sid′}) (∉-tail nm))
+
+add-session-used-keep : ∀ {us : List SessionId} {s : SessionId → SessionStatus} {sid : SessionId} {user} →
+  s sid ≡ active user →
+  (∀ {z} → (z ∈ us → s z ≢ unused) ∧ (z ∉ us → s z ≡ unused)) →
+  ∀ {sid′} →
+  (sid′ ∈ us → add-session-at s sid revoked sid′ ≢ unused) ∧
+  (sid′ ∉ us → add-session-at s sid revoked sid′ ≡ unused)
+add-session-used-keep {us = us} {s = s} {sid = sid} {user = user} sapp fs {sid′} = F′ , S′
+  where
+    ne : sid′ ∉ us → sid ≢ sid′
+    ne nm e = active≢unused
+      (sym (trans (sym (snd (fs {sid′}) nm))
+                  (subst (λ z → s z ≡ active user) e sapp)))
+
+    F′ : sid′ ∈ us → add-session-at s sid revoked sid′ ≢ unused
+    F′ m = Dec-elim (sid ≟ₛᵢ sid′)
+      (λ e → λ eq → revoked≢unused
+         (sym (trans (sym eq)
+                     (subst (λ z → add-session-at s sid revoked z ≡ revoked) e add-session-same))))
+      (λ n₁ → add-session-no-¬ n₁ (fst (fs {sid′}) m))
+
+    S′ : sid′ ∉ us → add-session-at s sid revoked sid′ ≡ unused
+    S′ nm = trans (add-session-no (ne nm)) (snd (fs {sid′}) nm)
+
+add-session-valid-add :
+  ∀ {s : SessionId → SessionStatus} {sid : SessionId} {username : String} {user : Account} {account-at : String → Maybe Account} →
+  s sid ≡ unused →
+  account-at username ≡ just user →
+  (∀ {sid′ u} → s sid′ ≡ active u → ∃[ acc ] account-at u ≡ just acc) →
+  ∀ {sid′ u} → add-session-at s sid (active username) sid′ ≡ active u → ∃[ acc ] account-at u ≡ just acc
+add-session-valid-add {s = s} {sid = sid} {username = username} {user = user} {account-at = account-at}
+  unused-s acct Old {sid′} {u} eq =
+  Dec-elim (sid ≟ₛᵢ sid′)
+    (λ e → user , subst (λ z → account-at z ≡ just user)
+                        (active-injective
+                           (trans (sym (subst (λ z → add-session-at s sid (active username) z ≡ active username)
+                                               e add-session-same))
+                                  eq))
+                        acct)
+    (λ ne → let acc , eq′ = Old (trans (sym (add-session-no ne)) eq) in acc , eq′)
+
+add-session-valid-revoke :
+  ∀ {s : SessionId → SessionStatus} {sid : SessionId} {account-at : String → Maybe Account} →
+  (∀ {sid′ u} → s sid′ ≡ active u → ∃[ acc ] account-at u ≡ just acc) →
+  ∀ {sid′ u} → add-session-at s sid revoked sid′ ≡ active u → ∃[ acc ] account-at u ≡ just acc
+add-session-valid-revoke {s = s} {sid = sid} {account-at = account-at} Old {sid′} {u} eq =
+  Dec-elim (sid ≟ₛᵢ sid′)
+    (λ e → ⊥-elim (revoked≢active
+              (sym (trans (sym eq)
+                          (subst (λ z → add-session-at s sid revoked z ≡ revoked) e add-session-same)))))
+    (λ ne → Old (trans (sym (add-session-no ne)) eq))
+
+add-account-at : (String → Maybe Account) → String → Account → String → Maybe Account
+add-account-at acc-at username new-acc username′ with username ≟ username′
+... | yes _ = just new-acc
+... | no  _ = acc-at username′
+
+add-account-same : ∀ {acc-at : String → Maybe Account} {username : String} {new-acc : Account} →
+  add-account-at acc-at username new-acc username ≡ just new-acc
+add-account-same {username = username} with username ≟ username
+... | yes _  = refl
+... | no ne = ⊥-elim (ne refl)
+
+add-account-no : ∀ {acc-at : String → Maybe Account} {username : String} {new-acc : Account} {username′ : String} →
+  username ≢ username′ → add-account-at acc-at username new-acc username′ ≡ acc-at username′
+add-account-no {username = username} {username′ = username′} ne with username ≟ username′
+... | yes eq = ⊥-elim (ne eq)
+... | no _   = refl
+
+add-account-valid :
+  ∀ {session-at : SessionId → SessionStatus} {acc-at : String → Maybe Account} {username : String} (new-acc : Account) →
+  acc-at username ≡ nothing →
+  (∀ {s u} → session-at s ≡ active u → ∃[ acc ] acc-at u ≡ just acc) →
+  ∀ {s u} → session-at s ≡ active u → ∃[ acc ] add-account-at acc-at username new-acc u ≡ just acc
+add-account-valid {acc-at = acc-at} {username = username} new-acc absent Old {s} {u} act =
+  Dec-elim (username ≟ u)
+    (λ e →
+      let acc , eq = Old act
+      in ⊥-elim (nothing≢just (trans (sym absent)
+                                    (subst (λ z → acc-at z ≡ just acc) (sym e) eq))))
+    (λ ne → let acc , eq = Old act in acc , trans (add-account-no ne) eq)
+
+revoke-all : (SessionId → SessionStatus) → SessionId → SessionStatus
+revoke-all s sid with s sid
+... | active _ = revoked
+... | unused   = unused
+... | revoked  = revoked
+
+revoke-all-active : ∀ {s : SessionId → SessionStatus} {sid : SessionId} {user} →
+  s sid ≡ active user → revoke-all s sid ≡ revoked
+revoke-all-active {s = s} {sid = sid} eq with s sid
+... | active _ = refl
+... | unused   = ⊥-elim (unused≢active eq)
+... | revoked  = ⊥-elim (revoked≢active eq)
+
+revoke-all-used : ∀ {us : List SessionId} {s : SessionId → SessionStatus} →
+  (∀ {z} → (z ∈ us → s z ≢ unused) ∧ (z ∉ us → s z ≡ unused)) →
+  (∀ {z} → (z ∈ us → revoke-all s z ≢ unused) ∧ (z ∉ us → revoke-all s z ≡ unused))
+revoke-all-used {us = us} {s = s} fs {z} = go (fs {z})
+  where
+    go : ((z ∈ us → s z ≢ unused) ∧ (z ∉ us → s z ≡ unused)) →
+         (z ∈ us → revoke-all s z ≢ unused) ∧ (z ∉ us → revoke-all s z ≡ unused)
+    go fz with s z
+    ... | active user =
+        (λ m eq → revoked≢unused eq)
+        , (λ nm → ⊥-elim (active≢unused (snd fz nm)))
+    ... | unused      =
+        (λ m eq → fst fz m eq)
+        , (λ nm → refl)
+    ... | revoked     =
+        (λ m eq → revoked≢unused eq)
+        , (λ nm → ⊥-elim (revoked≢unused (snd fz nm)))
+
+revoke-all-valid :
+  ∀ {s : SessionId → SessionStatus} {account-at : String → Maybe Account} →
+  (∀ {sid u} → s sid ≡ active u → ∃[ acc ] account-at u ≡ just acc) →
+  ∀ {sid u} → revoke-all s sid ≡ active u → ∃[ acc ] account-at u ≡ just acc
+revoke-all-valid {s = s} Old {sid} {u} eq with s sid
+... | active _ = ⊥-elim (revoked≢active eq)
+... | unused   = ⊥-elim (unused≢active eq)
+... | revoked  = ⊥-elim (revoked≢active eq)
+
 --------------------------------------------------------------------------------
 --                                   PROOFS                                   --
 --------------------------------------------------------------------------------
@@ -583,7 +801,7 @@ cant-like-for-other-account {user = user} {other-user = other-user}
     (eq∈ , eq∉) = inj {user' = other-user} u≢ou'
     ∉before' = subst ((other-user ∉_) ∘ Post.likes) (sym eq-post) ∉before
     ∈after'  = subst ((other-user ∈_) ∘ Post.likes) (sym eq-post') ∈after
-  in subst id eq∉ ∉before' ∈after'
+  in eq∉ ∉before' ∈after'
 
 failed-delete-does-nothing : FailedDeleteDoesNothing
 failed-delete-does-nothing (delete-post _ _ _ _ _ _ _ _ _ _) h = ⊥-elim (h refl)
@@ -717,6 +935,524 @@ publish-exists {sid} {txt} {mparent} w
                          (add-post-no {f = World.post-at w} {pid = pid} {p = p} ne₁)) ,
                   refl , refl , refl)
 
--- step-exists : StepExists
--- step-exists w (publish _ _ _) = publish-exists w
--- step-exists w _ = {!!}
+delete-valid :
+  ∀ {w : World} {sid : SessionId} {pid : PostId} →
+  (pp : Maybe Post) →
+  World.post-at w pid ≡ pp →
+  (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
+  ∃[ after ] ∃[ result ] Step w (delete sid pid) after result
+delete-valid {w} {sid} {pid} pp pp≡ (acc , user , vs) with pp
+... | nothing = w , denied , failed-delete-non-existant-post vs pp≡
+... | just (post pa pt pv ps pl pr pp₁)
+  with pa ≟ user
+... | no pa≢user = w , denied , failed-delete-not-author vs pp≡ pa≢user
+... | yes refl =
+    let dp : Post
+        dp = post pa pt pv deleted pl pr pp₁
+
+        account-at = World.account-at w
+        session-at = World.session-at w
+        post-at = World.post-at w
+        follows = World.follows w
+        newest-first = World.newest-first w
+        used-post-ids = World.used-post-ids w
+        used-session-ids = World.used-session-ids w
+        only-used-pids = World.only-used-pids w
+        only-used-sids = World.only-used-sids w
+        only-valid-sessions = World.only-valid-sessions w
+        only-valid-posts = World.only-valid-posts w
+        only-valid-replies = World.only-valid-replies w
+        no-duplicate-replies = World.no-duplicate-replies w
+        no-duplicate-likes = World.no-duplicate-likes w
+        no-duplicate-posts = World.no-duplicate-posts w
+
+        after : World
+        after = world account-at
+                  session-at
+                  (add-post post-at pid dp)
+                  follows
+                  newest-first
+                  used-post-ids
+                  used-session-ids
+                  (add-post-used-keep {f = post-at} {ppid = pid}
+                                      {ppost = post pa pt pv ps pl pr pp₁}
+                                      dp pp≡ only-used-pids)
+                  only-used-sids
+                  only-valid-sessions
+                  (add-post-present only-valid-posts)
+                  (add-post-replies-keep {f = post-at} {pid = pid}
+                                         {ppost = post pa pt pv ps pl pr pp₁} {ppost′ = dp}
+                                         pp≡ refl refl only-valid-replies)
+                  (add-post-prop dp (no-duplicate-replies pp≡) no-duplicate-replies)
+                  (add-post-prop dp (no-duplicate-likes pp≡) no-duplicate-likes)
+                  no-duplicate-posts
+    in after , success , delete-post vs pp≡ (add-post-same {p = dp}) refl
+         refl refl refl refl refl
+         (λ {other-pid} {u1} {u2} {s} ne → sym (add-post-no ne) , refl , refl , refl)
+
+delete-exists :
+  ∀ {sid pid} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (delete sid pid) after result
+delete-exists {sid} {pid} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes vs∃ = delete-valid (World.post-at w pid) refl vs∃
+
+read-post-valid :
+  ∀ {w : World} {sid : SessionId} {pid : PostId} →
+  (pp : Maybe Post) →
+  World.post-at w pid ≡ pp →
+  (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
+  ∃[ after ] ∃[ result ] Step w (read-post (just sid) pid) after result
+read-post-valid {w} {sid} {pid} pp pp≡ (acc , user , vs) with pp
+... | nothing = w , denied , cant-read-post-public vs pp≡
+... | just (post pa pt pv deleted pl pr pp₁) = w , denied , cant-read-post-private-deleted vs pp≡ refl
+... | just (post pa pt pv live pl pr pp₁) with pv
+... | everyone = w , _ , read-post-logged-in (post-is-public vs pp≡ refl refl) pp≡ refl refl refl refl
+... | followers-only
+  with World.follows w user pa in fq
+... | true = w , _ , read-post-logged-in (post-is-private vs pp≡ refl refl fq) pp≡ refl refl refl refl
+... | false = w , denied , cant-read-post-private vs pp≡ refl refl fq
+
+read-post-exists :
+  ∀ {msid pid} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (read-post msid pid) after result
+read-post-exists {nothing} {pid} w with is-post-public w pid
+... | yes (p , eq , vis , st) = w , _ , read-post-anonymously eq vis st
+... | no ¬pub = w , expired , failed-access λ {eq → ⊥-elim (nothing≢just eq)}
+read-post-exists {just sid} {pid} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes vs∃ = read-post-valid (World.post-at w pid) refl vs∃
+
+∉-prepend : ∀ {x y : String} {xs : List String} → x ≢ y → x ∉ xs → x ∉ (y ∷ xs)
+∉-prepend ne ne′ m∈ with m∈
+... | here = ne refl
+... | there m∈′ = ne′ m∈′
+
+∈-decidable : (x : String) (xs : List String) → Dec (x ∈ xs)
+∈-decidable x [] = no λ { () }
+∈-decidable x (y ∷ ys) with x ≟ y
+... | yes refl = yes here
+... | no x≢y with ∈-decidable x ys
+...   | yes x∈ys = yes (there x∈ys)
+...   | no x∉ys = no (∉-prepend x≢y x∉ys)
+
+like-valid :
+  ∀ {w : World} {sid : SessionId} {pid : PostId} →
+  (pp : Maybe Post) →
+  World.post-at w pid ≡ pp →
+  (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
+  ∃[ after ] ∃[ result ] Step w (like sid pid) after result
+like-valid {w} {sid} {pid} pp pp≡ (acc , user , vs) with pp | can-read-post w sid pid
+... | nothing | yes (post-is-public vs₁ eq₁ _ _) =
+    ⊥-elim (nothing≢just (trans (sym pp≡) eq₁))
+... | nothing | yes (post-is-private vs₁ eq₁ _ _ _) =
+    ⊥-elim (nothing≢just (trans (sym pp≡) eq₁))
+... | nothing | no ¬cp = w , denied , failed-like-post vs ¬cp
+... | just (post pa pt pv ps pl pr pp₁) | no ¬cp = w , denied , failed-like-post vs ¬cp
+... | just (post pa pt pv ps pl pr pp₁) | yes cp with ∈-decidable user pl
+...   | yes user∈ =
+        w , _ , like-post vs cp pp≡ pp≡ user∈
+                refl refl refl refl refl refl
+                (λ {user′} ne → (λ m∈ → m∈) , (λ m∉ → m∉))
+                (λ {other-pids} ne → refl , refl , refl , refl , refl)
+...   | no user∉ =
+        let account-at = World.account-at w
+            session-at = World.session-at w
+            post-at = World.post-at w
+            follows = World.follows w
+            newest-first = World.newest-first w
+            used-post-ids = World.used-post-ids w
+            used-session-ids = World.used-session-ids w
+            only-used-pids = World.only-used-pids w
+            only-used-sids = World.only-used-sids w
+            only-valid-sessions = World.only-valid-sessions w
+            only-valid-posts = World.only-valid-posts w
+            only-valid-replies = World.only-valid-replies w
+            no-duplicate-replies = World.no-duplicate-replies w
+            no-duplicate-likes = World.no-duplicate-likes w
+            no-duplicate-posts = World.no-duplicate-posts w
+
+            p′ : Post
+            p′ = post pa pt pv ps (user ∷ pl) pr pp₁
+
+            after : World
+            after = world account-at
+                      session-at
+                      (add-post post-at pid p′)
+                      follows
+                      newest-first
+                      used-post-ids
+                      used-session-ids
+                      (add-post-used-keep {f = post-at} {ppid = pid}
+                          {ppost = post pa pt pv ps pl pr pp₁} p′ pp≡ only-used-pids)
+                      only-used-sids
+                      only-valid-sessions
+                      (add-post-present only-valid-posts)
+                      (add-post-replies-keep {f = post-at} {pid = pid}
+                          {ppost = post pa pt pv ps pl pr pp₁} {ppost′ = p′} pp≡ refl refl only-valid-replies)
+                      (add-post-prop p′ (no-duplicate-replies pp≡) no-duplicate-replies)
+                      (add-post-prop p′ (uniq-cons user pl user∉ (no-duplicate-likes pp≡)) no-duplicate-likes)
+                      no-duplicate-posts
+        in after , success , like-post vs cp pp≡ (add-post-same {p = p′}) here
+                refl refl refl refl refl refl
+                (λ {user′} ne → (λ m∈ → there m∈) , ∉-prepend (λ eq → ne (sym eq)))
+                (λ {other-pids} ne → refl , refl , sym (add-post-no ne) , refl , refl)
+
+like-exists :
+  ∀ {sid pid} →
+  (before : World) →
+  ∃[ after ] ∃[ result ] Step before (like sid pid) after result
+like-exists {sid} {pid} w with can-have-valid-session w sid
+... | no ¬vs =
+        w , expired , failed-access
+          (λ {msid-eq (acc , username , vs) →
+              ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes vs∃ = like-valid (World.post-at w pid) refl vs∃
+
+remove-like : (user : String) (pl : List String) → user ∈ pl → List String
+remove-like user (y ∷ ys) here = ys
+remove-like user (y ∷ ys) (there p) = y ∷ remove-like user ys p
+
+∈-splice : ∀ {user user′ : String} {pl : List String} {p : user ∈ pl} →
+           user′ ∈ remove-like user pl p → user′ ∈ pl
+∈-splice {p = here} m∈ = there m∈
+∈-splice {pl = y ∷ ys} {p = there p′} m∈ with m∈
+... | here = here
+... | there m∈′ = there (∈-splice {p = p′} m∈′)
+
+∈-remove : ∀ {user user′ : String} {pl : List String} {p : user ∈ pl} →
+           user ≢ user′ → user′ ∈ pl → user′ ∈ remove-like user pl p
+∈-remove {p = here} ne m∈ with m∈
+... | here = ⊥-elim (ne refl)
+... | there m∈′ = m∈′
+∈-remove {pl = y ∷ ys} {p = there p′} ne m∈ with m∈
+... | here = here
+... | there m∈′ = there (∈-remove {p = p′} ne m∈′)
+
+∉-splice : ∀ {user user′ : String} {pl : List String} {p : user ∈ pl} →
+           user ≢ user′ → user′ ∉ remove-like user pl p → user′ ∉ pl
+∉-splice ne m∉ m∈ = m∉ (∈-remove ne m∈)
+
+remove-transport :
+  ∀ {user user′ : String} {pl : List String} {p : user ∈ pl} →
+  user ≢ user′ →
+  (user′ ∈ remove-like user pl p → user′ ∈ pl)
+  ∧ (user′ ∉ remove-like user pl p → user′ ∉ pl)
+remove-transport ne = ∈-splice , ∉-splice ne
+
+remove-loses : ∀ {user : String} {pl : List String} (p : user ∈ pl) →
+               uniq pl → user ∉ remove-like user pl p
+remove-loses here (y∉ys , u) = y∉ys
+remove-loses (there p′) (y∉ys , u-ys) m∈ with m∈
+... | here = y∉ys p′
+... | there m∈′ = remove-loses p′ u-ys m∈′
+
+remove-uniq : ∀ {user : String} {pl : List String} (p : user ∈ pl) →
+              uniq pl → uniq (remove-like user pl p)
+remove-uniq here (y∉ys , u-ys) = u-ys
+remove-uniq (there p′) (y∉ys , u-ys) =
+    (λ m∈ → y∉ys (∈-splice {p = p′} m∈)) , remove-uniq p′ u-ys
+
+unlike-valid :
+  ∀ {w : World} {sid : SessionId} {pid : PostId} →
+  (pp : Maybe Post) →
+  World.post-at w pid ≡ pp →
+  (∃[ acc ] ∃[ user ] ValidSession w sid acc user) →
+  ∃[ after ] ∃[ result ] Step w (unlike sid pid) after result
+unlike-valid {w} {sid} {pid} pp pp≡ (acc , user , vs) with pp | can-read-post w sid pid
+... | nothing | yes (post-is-public vs₁ eq₁ _ _) = ⊥-elim (nothing≢just (trans (sym pp≡) eq₁))
+... | nothing | yes (post-is-private vs₁ eq₁ _ _ _) = ⊥-elim (nothing≢just (trans (sym pp≡) eq₁))
+... | nothing | no ¬cp = w , denied , failed-unlike-post vs ¬cp
+... | just (post pa pt pv ps pl pr pp₁) | no ¬cp = w , denied , failed-unlike-post vs ¬cp
+... | just (post pa pt pv ps pl pr pp₁) | yes cp with ∈-decidable user pl
+...   | yes user∈ =
+        let account-at = World.account-at w
+            session-at = World.session-at w
+            post-at = World.post-at w
+            follows = World.follows w
+            newest-first = World.newest-first w
+            used-post-ids = World.used-post-ids w
+            used-session-ids = World.used-session-ids w
+            only-used-pids = World.only-used-pids w
+            only-used-sids = World.only-used-sids w
+            only-valid-sessions = World.only-valid-sessions w
+            only-valid-posts = World.only-valid-posts w
+            only-valid-replies = World.only-valid-replies w
+            no-duplicate-replies = World.no-duplicate-replies w
+            no-duplicate-likes = World.no-duplicate-likes w
+            no-duplicate-posts = World.no-duplicate-posts w
+
+            p′ : Post
+            p′ = post pa pt pv ps (remove-like user pl user∈) pr pp₁
+
+            after : World
+            after = world account-at
+                      session-at
+                      (add-post post-at pid p′)
+                      follows
+                      newest-first
+                      used-post-ids
+                      used-session-ids
+                      (add-post-used-keep {f = post-at} {ppid = pid}
+                          {ppost = post pa pt pv ps pl pr pp₁} p′ pp≡ only-used-pids)
+                      only-used-sids
+                      only-valid-sessions
+                      (add-post-present only-valid-posts)
+                      (add-post-replies-keep {f = post-at} {pid = pid}
+                          {ppost = post pa pt pv ps pl pr pp₁} {ppost′ = p′} pp≡ refl refl only-valid-replies)
+                      (add-post-prop p′ (no-duplicate-replies pp≡) no-duplicate-replies)
+                      (add-post-prop p′ (remove-uniq user∈ (no-duplicate-likes pp≡)) no-duplicate-likes)
+                      no-duplicate-posts
+        in after , success , unlike-post vs cp pp≡ (add-post-same {p = p′})
+                 (remove-loses user∈ (no-duplicate-likes pp≡))
+                 refl refl refl refl refl refl
+                 remove-transport
+                 (λ {other-pids} ne → sym (add-post-no ne) , refl , refl , refl , refl)
+...   | no user∉ =
+        w , _ , unlike-post vs cp pp≡ pp≡ user∉
+                refl refl refl refl refl refl
+                (λ {user′} ne → (λ m∈ → m∈) , (λ m∉ → m∉))
+                (λ {other-pids} ne → refl , refl , refl , refl , refl)
+
+unlike-exists :
+  ∀ {sid pid} →
+  (before : World) →
+  ∃[ after ] ∃[ result ] Step before (unlike sid pid) after result
+unlike-exists {sid} {pid} w with can-have-valid-session w sid
+... | no ¬vs =
+        w , expired , failed-access
+          (λ {msid-eq (acc , username , vs) →
+              ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes vs∃ = unlike-valid (World.post-at w pid) refl vs∃
+
+read-personal-timeline-exists :
+  ∀ {sid n} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (read-personal-timeline sid n) after result
+read-personal-timeline-exists {sid} {n} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes (_ , user , vs) = w , _ , get-personal-timeline vs
+
+read-global-timeline-exists :
+  ∀ {msid n} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (read-global-timeline msid n) after result
+read-global-timeline-exists {nothing} {n} w = w , _ , get-public-global-timeline
+read-global-timeline-exists {just sid} {n} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes (_ , user , vs) = w , _ , get-private-global-timeline vs
+
+authenticate-exists :
+  ∀ {username passwd} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (authenticate username passwd) after result
+authenticate-exists {username} {passwd} w with World.account-at w username in acnt
+... | nothing = w , login-failed , failed-login-1 acnt
+... | just user with Account.password user ≟ passwd
+... | no p≢passwd = w , login-failed , failed-login-2 acnt p≢passwd
+... | yes refl =
+    let (used-session-ids′ , sid) , sid∉ , sid∈ , _ = new-sid (World.used-session-ids w)
+        after : World
+        after = world (World.account-at w)
+                  (add-session-at (World.session-at w) sid (active username))
+                  (World.post-at w)
+                  (World.follows w)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (sid ∷ World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (add-session-used username sid∉ (World.only-used-sids w))
+                  (add-session-valid-add {username = username}
+                     (snd (World.only-used-sids w) sid∉) acnt
+                     (World.only-valid-sessions w))
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+    in after , issued-session sid , login
+         (snd (World.only-used-sids w) sid∉) (add-session-same {s = World.session-at w} {sid = sid} {st = active username}) acnt refl
+         (λ {other-sid} {pid} {u1} {u2} ne →
+           sym (add-session-no {s = World.session-at w} {sid = sid} {st = active username} ne) , refl , refl , refl , refl)
+         (valid-session {world = after} {sid = sid} {acc = user} {user = username}
+                        add-session-same acnt)
+revoke-token-exists :
+  ∀ {sid} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (revoke-token sid) after result
+revoke-token-exists {sid} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes (acc , user , vs) =
+    let after : World
+        after = world (World.account-at w)
+                  (add-session-at (World.session-at w) sid revoked)
+                  (World.post-at w)
+                  (World.follows w)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (add-session-used-keep (ValidSession.session-unchanged vs)
+                                         (World.only-used-sids w))
+                  (add-session-valid-revoke (World.only-valid-sessions w))
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+    in after , success , logout (ValidSession.session-unchanged vs)
+         (add-session-same {s = World.session-at w} {sid = sid} {st = revoked})
+       (λ {other-sid} ne →
+          sym (add-session-no {s = World.session-at w} {sid = sid} {st = revoked} ne) , refl , refl , refl , refl)
+
+register-exists :
+  ∀ {username passwd} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (register username passwd) after result
+register-exists {username} {passwd} w with World.account-at w username in acnt
+... | nothing =
+    after , success , create-account acnt (add-account-same {acc-at = World.account-at w} {username = username} {new-acc = account passwd everyone})
+      (λ {sid} {pid} {u1} {u2} ne₁ ne₂ → sym (add-account-no ne₁) , refl , refl , refl , refl)
+  where
+    after : World
+    after = world (add-account-at (World.account-at w) username (account passwd everyone))
+                  (World.session-at w)
+                  (World.post-at w)
+                  (World.follows w)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (World.only-used-sids w)
+                  (add-account-valid {session-at = World.session-at w} {acc-at = World.account-at w}
+                                     {username = username} (account passwd everyone) acnt
+                                     (World.only-valid-sessions w))
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+... | just (account passwd₁ vis₁) =
+    w , signup-failed , failed-create-account λ {ne → nothing≢just (trans (sym ne) acnt)}
+
+follow-exists :
+  ∀ {sid followee} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (follow sid followee) after result
+follow-exists {sid} {followee} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes (acc , user , vs) =
+    let after : World
+        after = world (World.account-at w)
+                  (World.session-at w)
+                  (World.post-at w)
+                  (add-follower (World.follows w) user followee)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (World.only-used-sids w)
+                  (World.only-valid-sessions w)
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+    in after , success , follow-user vs refl refl refl refl refl
+
+unfollow-exists :
+  ∀ {sid followee} →
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before (unfollow sid followee) after result
+unfollow-exists {sid} {followee} w with can-have-valid-session w sid
+... | no ¬vs =
+    w , expired , failed-access
+      (λ {msid-eq (acc , username , vs) →
+          ¬vs (acc , username , update-vs vs (just-injective msid-eq))})
+... | yes (acc , user , vs) =
+    let after : World
+        after = world (World.account-at w)
+                  (World.session-at w)
+                  (World.post-at w)
+                  (remove-follower (World.follows w) user followee)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (World.only-used-sids w)
+                  (World.only-valid-sessions w)
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+    in after , success , unfollow-user vs refl refl refl refl refl
+
+time-passes-exists :
+  (before : World) →
+  ∃[ after ] ∃[ result ]
+  Step before time-passes after result
+time-passes-exists w =
+  after , success , session-timeout (revoke-all-active {s = World.session-at w})
+    (λ {sid} eq₁ eq₂ eq₃ eq₄ → refl)
+  where
+    after : World
+    after = world (World.account-at w)
+                  (revoke-all (World.session-at w))
+                  (World.post-at w)
+                  (World.follows w)
+                  (World.newest-first w)
+                  (World.used-post-ids w)
+                  (World.used-session-ids w)
+                  (World.only-used-pids w)
+                  (revoke-all-used (World.only-used-sids w))
+                  (revoke-all-valid {s = World.session-at w} (World.only-valid-sessions w))
+                  (World.only-valid-posts w)
+                  (World.only-valid-replies w)
+                  (World.no-duplicate-replies w)
+                  (World.no-duplicate-likes w)
+                  (World.no-duplicate-posts w)
+
+step-exists : StepExists
+step-exists w (publish _ _ _)              = publish-exists w
+step-exists w (delete _ _)                 = delete-exists w
+step-exists w (read-post _ _)              = read-post-exists w
+step-exists w (read-personal-timeline _ _) = read-personal-timeline-exists w
+step-exists w (read-global-timeline _ _)   = read-global-timeline-exists w
+step-exists w (authenticate _ _)           = authenticate-exists w
+step-exists w (revoke-token _)             = revoke-token-exists w
+step-exists w (register _ _)               = register-exists w
+step-exists w (follow _ _)                 = follow-exists w
+step-exists w (unfollow _ _)               = unfollow-exists w
+step-exists w (like _ _)                   = like-exists w
+step-exists w (unlike _ _)                 = unlike-exists w
+step-exists w time-passes                  = time-passes-exists w
