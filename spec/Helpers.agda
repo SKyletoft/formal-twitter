@@ -32,12 +32,20 @@ uniq : List a → Set
 uniq []       = ⊤
 uniq (x ∷ xs) = (x ∉ xs) × uniq xs
 
--- Transport of membership / uniqueness along a list equality
 ∈-cong : (x : a) (m n : List a) → m ≡ n → x ∈ m → x ∈ n
 ∈-cong x m n refl m∈ = m∈
 
 ∈[] : (x : a) → x ∈ [] → ⊥
 ∈[] x ()
+
+∉-head : ∀ {x y : a} {xs : List a} → x ∉ (y ∷ xs) → x ≢ y
+∉-head neq refl = neq here
+
+∉-tail : ∀ {x y : a} {xs : List a} → x ∉ (y ∷ xs) → x ∉ xs
+∉-tail neq m = neq (there m)
+
+∈-sym : ∀ {x y : a} {xs : List a} → x ≡ y → y ∈ xs → x ∈ xs
+∈-sym refl m∈ = m∈
 
 uniq-transport : (m n : List a) → m ≡ n → uniq m → uniq n
 uniq-transport m n refl u = u
