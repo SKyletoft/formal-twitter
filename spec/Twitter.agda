@@ -388,12 +388,12 @@ data Step : World → Command → World → Result → Set₁ where
     PostIsNew before after pid (new-post username txt user) →
     pid ∷ World.newest-first before ≡ World.newest-first after →
     -- Everything else unchanged
-    ∀ {other-pids u1 u2 s} →
-    pid ≢ other-pids →
-    World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.account-at before u1      ≡ World.account-at after u1 →
-    World.session-at before s       ≡ World.session-at after s →
-    World.follows before u1 u2      ≡ World.follows after u1 u2 →
+    (∀ {other-pids u1 u2 s} →
+      pid ≢ other-pids →
+      World.post-at before other-pids ≡ World.post-at after other-pids
+      ∧ World.account-at before u1      ≡ World.account-at after u1
+      ∧ World.session-at before s       ≡ World.session-at after s
+      ∧ World.follows before u1 u2      ≡ World.follows after u1 u2) →
     Step before (publish sid txt nothing) after (created-post pid)
 
   successful-reply :
@@ -409,14 +409,14 @@ data Step : World → Command → World → Result → Set₁ where
     World.post-at before ppid ≡ just ppost →
     World.post-at after  ppid ≡ just ppost' →
     -- Everything else unchanged
-    ∀ {other-pids u1 u2 s} →
-    pid  ≢ other-pids →
-    pid  ≢ ppid →
-    ppid ≢ other-pids →
-    World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.account-at before u1      ≡ World.account-at after u1 →
-    World.session-at before s       ≡ World.session-at after s →
-    World.follows before u1 u2      ≡ World.follows after u1 u2 →
+    pid ≢ ppid →
+    (∀ {other-pids u1 u2 s} →
+      pid  ≢ other-pids →
+      ppid ≢ other-pids →
+      World.post-at before other-pids ≡ World.post-at after other-pids
+      ∧ World.account-at before u1 ≡ World.account-at after u1
+      ∧ World.session-at before s  ≡ World.session-at after s
+      ∧ World.follows before u1 u2 ≡ World.follows after u1 u2) →
     Step before (publish sid txt (just ppid)) after (created-post pid)
 
   failed-reply :
@@ -438,12 +438,12 @@ data Step : World → Command → World → Result → Set₁ where
     Post.replies post        ≡ Post.replies post' →
     Post.status post'        ≡ deleted →
     -- Everything else unchanged
-    ∀ {other-pids u1 u2 s} →
-    pid ≢ other-pids →
-    World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.account-at before u1      ≡ World.account-at after u1 →
-    World.session-at before s       ≡ World.session-at after s →
-    World.follows before u1 u2      ≡ World.follows after u1 u2 →
+    (∀ {other-pids u1 u2 s} →
+      pid ≢ other-pids →
+      World.post-at before other-pids ≡ World.post-at after other-pids
+      ∧ World.account-at before u1 ≡ World.account-at after u1
+      ∧ World.session-at before s  ≡ World.session-at after s
+      ∧ World.follows before u1 u2 ≡ World.follows after u1 u2) →
     Step before (delete sid pid) after success
 
   failed-delete-non-existant-post :
@@ -470,14 +470,14 @@ data Step : World → Command → World → Result → Set₁ where
     World.account-at before username ≡ nothing →
     World.account-at after username  ≡ just (account passwd everyone) →
     -- Everything else unchanged
-    ∀ {sid pid u1 u2} →
-    username ≢ u1 →
-    username ≢ u2 →
-    World.account-at before u1  ≡ World.account-at after u1 →
-    World.session-at before sid ≡ World.session-at after sid →
-    World.post-at before pid    ≡ World.post-at after pid →
-    World.follows before u1 u2  ≡ World.follows after u1 u2 →
-    World.newest-first before   ≡ World.newest-first after →
+    (∀ {sid pid u1 u2} →
+      username ≢ u1 →
+      username ≢ u2 →
+      World.account-at before u1  ≡ World.account-at after u1
+      ∧ World.session-at before sid ≡ World.session-at after sid
+      ∧ World.post-at before pid    ≡ World.post-at after pid
+      ∧ World.follows before u1 u2  ≡ World.follows after u1 u2
+      ∧ World.newest-first before   ≡ World.newest-first after) →
     Step before (register username passwd) after success
 
   failed-create-account :
@@ -492,13 +492,13 @@ data Step : World → Command → World → Result → Set₁ where
     World.account-at before username ≡ just user →
     Account.password user            ≡ passwd →
     -- Everything else unchanged
-    ∀ {other-sid pid u1 u2} →
-    sid ≢ other-sid →
-    World.session-at before other-sid ≡ World.session-at after other-sid →
-    World.account-at before u1        ≡ World.account-at after u1 →
-    World.post-at before pid          ≡ World.post-at after pid →
-    World.follows before u1 u2        ≡ World.follows after u1 u2 →
-    World.newest-first before         ≡ World.newest-first after →
+    (∀ {other-sid pid u1 u2} →
+      sid ≢ other-sid →
+      World.session-at before other-sid ≡ World.session-at after other-sid
+      ∧ World.account-at before u1 ≡ World.account-at after u1
+      ∧ World.post-at before pid   ≡ World.post-at after pid
+      ∧ World.follows before u1 u2 ≡ World.follows after u1 u2
+      ∧ World.newest-first before  ≡ World.newest-first after) →
     ValidSession after sid user username →
     Step before (authenticate username passwd) after (issued-session sid)
 
@@ -601,13 +601,13 @@ data Step : World → Command → World → Result → Set₁ where
         ((user' ∉ Post.likes post) ≡ (user' ∉ Post.likes post'))
     ) →
     -- Everything else unchanged
-    ∀ {other-pids} →
-    pid ≢ other-pids →
-    World.account-at before         ≡ World.account-at after →
-    World.session-at before         ≡ World.session-at after  →
-    World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.follows before            ≡ World.follows after →
-    World.newest-first before       ≡ World.newest-first after →
+    (∀ {other-pids} →
+      pid ≢ other-pids →
+      World.account-at before ≡ World.account-at after
+      ∧ World.session-at before ≡ World.session-at after
+      ∧ World.post-at before other-pids ≡ World.post-at after other-pids
+      ∧ World.follows before ≡ World.follows after
+      ∧ World.newest-first before ≡ World.newest-first after) →
     Step before (like sid pid) after success
 
   failed-like-post :
@@ -630,17 +630,17 @@ data Step : World → Command → World → Result → Set₁ where
     Post.status post'     ≡ Post.status post →
     Post.replies post'    ≡ Post.replies post →
     Post.parent post'     ≡ Post.parent post →
-    ∀ {user'} →
-    user ≢ user' →
-    (user' ∈ Post.likes post') ≡ (user' ∈ Post.likes post) →
+    (∀ {user'} →
+      user ≢ user' →
+      (user' ∈ Post.likes post') ≡ (user' ∈ Post.likes post)) →
     -- Everything else unchanged
-    ∀ {other-pids} →
-    pid ≢ other-pids →
-    World.post-at before other-pids ≡ World.post-at after other-pids →
-    World.account-at before         ≡ World.account-at after →
-    World.session-at before         ≡ World.session-at after  →
-    World.follows before            ≡ World.follows after →
-    World.newest-first before       ≡ World.newest-first after →
+    (∀ {other-pids} →
+      pid ≢ other-pids →
+      World.post-at before other-pids ≡ World.post-at after other-pids
+      ∧ World.account-at before ≡ World.account-at after
+      ∧ World.session-at before ≡ World.session-at after
+      ∧ World.follows before ≡ World.follows after
+      ∧ World.newest-first before ≡ World.newest-first after) →
     Step before (unlike sid pid) after success
 
   failed-unlike-post :
@@ -676,13 +676,13 @@ data Step : World → Command → World → Result → Set₁ where
     World.session-at before sid ≡ active user →
     World.session-at after sid  ≡ revoked →
     -- Everything else unchanged
-    ∀ {other-sid} →
-    sid ≢ other-sid →
-    World.session-at before other-sid ≡ World.session-at after other-sid →
-    World.account-at before           ≡ World.account-at after →
-    World.post-at before              ≡ World.post-at after →
-    World.follows before              ≡ World.follows after →
-    World.newest-first before         ≡ World.newest-first after →
+    (∀ {other-sid} →
+      sid ≢ other-sid →
+      World.session-at before other-sid ≡ World.session-at after other-sid
+      ∧ World.account-at before ≡ World.account-at after
+      ∧ World.post-at before ≡ World.post-at after
+      ∧ World.follows before ≡ World.follows after
+      ∧ World.newest-first before ≡ World.newest-first after) →
     Step before (revoke-token sid) after success
 
   session-timeout :
