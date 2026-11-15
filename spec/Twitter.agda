@@ -599,8 +599,8 @@ data Step : World → Command → World → Result → Set₁ where
     Post.replies post    ≡ Post.replies post' →
     Post.parent post     ≡ Post.parent post' →
     (∀ {user'} → user ≢ user' →
-      ((user' ∈ Post.likes post) ≡ (user' ∈ Post.likes post'))
-      ∧ ((user' ∉ Post.likes post) ≡ (user' ∉ Post.likes post'))
+      (user' ∈ Post.likes post → user' ∈ Post.likes post')
+      ∧ (user' ∉ Post.likes post → user' ∉ Post.likes post')
     ) →
     -- Everything else unchanged
     (∀ {other-pids} →
@@ -632,9 +632,10 @@ data Step : World → Command → World → Result → Set₁ where
     Post.status post'     ≡ Post.status post →
     Post.replies post'    ≡ Post.replies post →
     Post.parent post'     ≡ Post.parent post →
-    (∀ {user'} →
-      user ≢ user' →
-      (user' ∈ Post.likes post') ≡ (user' ∈ Post.likes post)) →
+    (∀ {user'} → user ≢ user' →
+      (user' ∈ Post.likes post → user' ∈ Post.likes post')
+      ∧ (user' ∉ Post.likes post → user' ∉ Post.likes post')
+    ) →
     -- Everything else unchanged
     (∀ {other-pids} →
       pid ≢ other-pids →
