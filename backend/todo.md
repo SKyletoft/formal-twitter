@@ -1,15 +1,11 @@
-In backend/ write an implementation of the spec in
-@spec/Interface.agda .
+* In backend/ write an implementation of the spec in @spec/Interface.agda .
 
-Use Rust with Rocket and Diesel. You may use
-cache, but all data must live in a postgres database and be committed
-before it's served.
+* Use Rust with Rocket and Diesel. You may use cache, but all data must live in a sqlite database and be committed before it's served.
 
-The spec describes /api, let / just statically
-serve frontend/.
+* The spec describes /api, let / just statically serve frontend/.
 
-There should also be a /raw that returns plaintext Debug printing of
-State (wrapped in <pre> if needed?)
+* Make sure frontend/ is aligned with @spec/Interface.agda
 
-There should also be a /log that returns a log of all requests +
-timestamps
+* There should also be a /raw that returns plaintext Debug printing of State (wrapped in <pre> if needed?)
+
+* There should also be a /log that returns a log of all requests + timestamps
