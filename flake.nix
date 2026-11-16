@@ -15,6 +15,7 @@
 					rustfmt
 					clippy
 					rust-analyzer
+					sqlite
 					custom-agda
 				];
 				custom-agda = pkgs.agda.withPackages (p: with p; [
