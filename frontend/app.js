@@ -108,10 +108,10 @@ function buildBody(kind, args, token) {
 function buildParams(kind, args, token) {
   const params = new URLSearchParams();
   if (kind === 'get-tweet') {
-    if (token) params.set('token', token);
+    params.set('token', token || '');
     params.set('id', String(args.id));
   } else if (kind === 'timeline') {
-    if (token) params.set('token', token);
+    params.set('token', token || '');
     params.set('len', String(args.len));
   }
   return params.toString();
@@ -124,7 +124,8 @@ async function performAction(kind, args, opts) {
   const authAction = kind === 'login' || kind === 'signup';
   const token = authAction ? null : currentToken();
   const useBody = kind === 'post-tweet' || authAction;
-  const url = '/api/' + kind + (useBody ? '' : '?' + buildParams(kind, args, token));
+  const pathName = kind === 'timeline' ? (token ? 'private-timeline' : 'global-timeline') : kind;
+  const url = '/api/' + pathName + (useBody ? '' : '?' + buildParams(kind, args, token));
   let response;
   try {
     response = await fetch(url, {
