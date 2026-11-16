@@ -10,3 +10,6 @@ Non-rust packages are to be installed with nix in @flake.nix.
 You have webfetch access to the rocket.rs and diesel.rs websites.
 
 You can browse the docs of your dependencies after you've compiled them with `cargo doc`.
+
+Cargo clippy must pass without warnings.
+Use cargo fmt before presenting your results.
