@@ -5,6 +5,11 @@ open import Agda.Builtin.Maybe
 open import Agda.Builtin.List
 open import Agda.Builtin.String
 
+open import Data.Nat.Properties                   using () renaming (_≟_ to _≟ₙ_)
+open import Function                              using (_∘_; _$_)
+open import Relation.Binary.PropositionalEquality using (_≡_; cong)
+open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
+
 postulate
   unlines : List String → String
   show    : Nat → String
@@ -23,18 +28,19 @@ record TweetId : Set where
 
 -- The public API after parsing. Entirely unvalidated on purpose.
 data Action : Set where
-  post-tweet       : LoginToken → String        → Action
-  delete-tweet     : LoginToken → TweetId       → Action
-  like             : LoginToken → TweetId       → Action
-  unlike           : LoginToken → TweetId       → Action
-  follow           : LoginToken → String        → Action
-  unfollow         : LoginToken → String        → Action
-  get-tweet        : Maybe LoginToken → TweetId → Action
-  global-timeline  : Maybe LoginToken → Nat     → Action
-  private-timeline : LoginToken → Nat           → Action
-  login            : String → String            → Action
-  logout           : LoginToken                 → Action
-  signup           : String → String            → Action
+  post-tweet       : LoginToken → String           → Action
+  post-reply       : LoginToken → String → TweetId → Action
+  delete-tweet     : LoginToken → TweetId          → Action
+  like             : LoginToken → TweetId          → Action
+  unlike           : LoginToken → TweetId          → Action
+  follow           : LoginToken → String           → Action
+  unfollow         : LoginToken → String           → Action
+  get-tweet        : Maybe LoginToken → TweetId    → Action
+  global-timeline  : Maybe LoginToken → Nat        → Action
+  private-timeline : LoginToken → Nat              → Action
+  login            : String → String               → Action
+  logout           : LoginToken                    → Action
+  signup           : String → String               → Action
 
 -- The model has no way to forget an account, so this is not an endpoint yet.
 -- delete-account : LoginToken                 → Action
@@ -46,6 +52,14 @@ to-request (post-tweet (token tk) txt) =
           ∷ ""
           ∷ show tk
           ∷ txt
+          ∷ [])
+to-request (post-reply (token tk) txt (tweet-id twt)) =
+  unlines ("POST /api/post-reply 1.1"
+          ∷ "Content-Type: text/plain"
+          ∷ ""
+          ∷ show tk
+          ∷ txt
+          ∷ show twt
           ∷ [])
 to-request (delete-tweet (token tk) (tweet-id twt)) =
   unlines ("POST /api/delete-tweet 1.1"
@@ -103,7 +117,7 @@ to-request (global-timeline (just (token tk)) len) =
           ∷ show len
           ∷ [])
 to-request (global-timeline nothing len) =
-  unlines ("GET /api/timeline 1.1"
+  unlines ("GET /api/global-timeline 1.1"
           ∷ "Content-Type: text/plain"
           ∷ ""
           ∷ show len
@@ -227,7 +241,17 @@ postulate
   new-pid : CreateNew TweetId
   new-sid : CreateNew LoginToken
 
-open import Twitter LoginToken TweetId new-sid new-pid
+_≟ₜ_ : (l : TweetId) → (r : TweetId) → Dec (l ≡ r)
+(tweet-id l) ≟ₜ (tweet-id r) with l ≟ₙ r
+... | yes p = yes $ cong tweet-id p
+... | no ¬p = no  $ ¬p ∘ cong TweetId.t
+
+_≟ₗ_ : (l : LoginToken) → (r : LoginToken) → Dec (l ≡ r)
+(token l) ≟ₗ (token r) with l ≟ₙ r
+... | yes p = yes $ cong token p
+... | no ¬p = no  $ ¬p ∘ cong LoginToken.t
+
+open import Twitter LoginToken TweetId new-sid new-pid _≟ₜ_ _≟ₗ_
 
 to-output : Result → Response
 to-output success                                  = ok
@@ -242,6 +266,7 @@ to-output (returned-post author txt likes replies) = tweet author txt likes repl
 
 from-input : Action → Command
 from-input (post-tweet tk txt)           = publish tk txt nothing
+from-input (post-reply tk txt twt)       = publish tk txt (just twt)
 from-input (get-tweet (just tk) twt)     = read-post (just tk) twt
 from-input (get-tweet nothing twt)       = read-post nothing twt
 from-input (global-timeline (just tk) n) = read-global-timeline (just tk) n
