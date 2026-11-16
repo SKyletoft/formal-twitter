@@ -1,16 +1,12 @@
-module Helpers where
-
 open import Agda.Builtin.List
 open import Agda.Builtin.Sigma
-open import Agda.Builtin.Maybe
 
-open import Data.Empty                            using (⊥; ⊥-elim)
-open import Data.Unit                             using (⊤; tt)
+
+open import Data.Unit                             using (⊤)
 open import Level                                 using (_⊔_)
 open import Relation.Nullary.Negation.Core        using (¬_)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong;
-                                                         cong₂; trans; sym)
-open import Data.Product                          using (∃-syntax)
+
+module Helpers where
 
 variable a b c : Set
 
@@ -32,36 +28,9 @@ uniq : List a → Set
 uniq []       = ⊤
 uniq (x ∷ xs) = (x ∉ xs) × uniq xs
 
-∈-cong : (x : a) (m n : List a) → m ≡ n → x ∈ m → x ∈ n
-∈-cong x m n refl m∈ = m∈
-
-∈[] : (x : a) → x ∈ [] → ⊥
-∈[] x ()
-
-∉-head : ∀ {x y : a} {xs : List a} → x ∉ (y ∷ xs) → x ≢ y
-∉-head neq refl = neq here
-
-∉-tail : ∀ {x y : a} {xs : List a} → x ∉ (y ∷ xs) → x ∉ xs
-∉-tail neq m = neq (there m)
-
-∈-sym : ∀ {x y : a} {xs : List a} → x ≡ y → y ∈ xs → x ∈ xs
-∈-sym refl m∈ = m∈
-
-uniq-transport : (m n : List a) → m ≡ n → uniq m → uniq n
-uniq-transport m n refl u = u
-
-uniq-cons : (x : a) (xs : List a) → x ∉ xs → uniq xs → uniq (x ∷ xs)
-uniq-cons x xs x∉xs u = x∉xs , u
-
-uniq-≡[] : (xs : List a) → xs ≡ [] → uniq xs
-uniq-≡[] xs refl = tt
-
 CreateNew : Set → Set
 CreateNew element =
   (us : List element) →
   Σ ((List element) × element) (λ { (us' , sid) → sid ∉ us ∧
                                                   sid ∈ us' ∧
                                                   (∀ {s} → s ∈ us → s ∈ us') })
-
-id : ∀ {ℓ} → Set ℓ → Set ℓ
-id x = x
