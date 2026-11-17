@@ -46,7 +46,36 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   connection sharing, data limits, config/env port.
 - Design note: commit every todo.md change together with the task it tracks; co-author maki@qwen3.8-flash-next-coder.
 
-## Design decisions
+## Spec semantics (from R4, spec/Twitter.agda)
+- `World` (:65-109): `account-at : String -> Maybe Account{password, default-visibility}`;
+  `session-at : Sid -> SessionStatus{unused, active username, revoked}`; `post-at : Pid -> Maybe Post{author,text,
+  visibility,status,likes:List Username,replies:List Pid,parent:Maybe Pid}`; `follows : String -> String -> Bool`;
+  `newest-first : List Pid` (head = newest, never filtered/reordered); `used-post-ids`, `used-session-ids`.
+  Visibility is 2-valued `everyone`/`followers-only`; PostStatus 2-valued `live`/`deleted`.
+- Invariants (proof-carrying, must hold in Rust + DB on restart): pid in used-post-ids <-> post-at pid <> nothing;
+  sid in used-session-ids <-> session-at sid <> unused; active session implies account exists; newest-first members
+  exist in post-at; replies point back at their parent and child.parent = just parent, child <> parent; uniq replies;
+  uniq likes; uniq newest-first.
+- `CanReadPost w sid pid` <=> exists post w/ post-at = just post, status live, and (visibility everyone) OR
+  (visibility followers-only AND follows user (author post)). Anonymous read = same with visibility everyone.
+- Universal rule `failed-access` (:464): any session-taking command whose sid lacks a valid session => `expired`,
+  world unchanged, checked BEFORE the command's own rules.
+- Commands: publish (reply only when CanReadPost parent, parent live, pid <> parent; reply visibility = parent's
+  when parent followers-only else account default-visibility; prepend to newest-first) => created-post, else denied.
+  delete (author only; only flips status to deleted, keeps likes/replies/parent; idempotent) => success/denied.
+  read-post => returned-post author text (length likes) replies / denied. personal timeline =
+  take n . filter(follows-post-author) . filter(can-read-post) . newest-first; logged-in global = drop the
+  follows filter; anonymous global = filter is-post-public (everyone AND live). like/unlike => success but denied
+  when NOT CanReadPost; like appends username if absent (uniq), unlike removes it. follow/unfollow always succeed
+  with a valid session (set pair to true/false; no existence check). register: only when username unused => account
+  with default-visibility `everyone`; else signup-failed. login: only for a FRESH (unused) sid + matching password
+  => active username + issued-session sid; else login-failed (spec stuck on reused sid; pick fresh sid always).
+  logout: active -> revoked => success (unused/revoked => expired). `collect-dead-posts`/`reap-tombstones` are
+  commented out in the spec: DO NOT implement; tombstones persist. `time-passes` (session-timeout :691) revokes
+  every active session; no Action constructor, so not an endpoint (model tests only if proofs need it).
+- `Result`: success | denied | expired | login-failed | signup-failed | returned-timeline ids | issued-session sid
+  | created-post pid | returned-post author text likes replies. to-output maps them to the 200/403/401/400 bodies in
+  Interface.agda:to-response (single-quoted pseudo-JSON).
 - DB schema: accounts(username PK,password,vis), sessions(sid PK,status active:user|revoked),
   posts(pid PK,author,text,vis,status,parent NULL,seq — newest-first = order by seq desc),
   likes(pid,user), replies(pid,reply_pid), follows(follower,followee); absence = false/unused/nothing.
