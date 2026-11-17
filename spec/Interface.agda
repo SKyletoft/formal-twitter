@@ -11,10 +11,14 @@ open import Relation.Binary.PropositionalEquality using (_≡_; cong)
 open import Relation.Nullary.Decidable.Core       using (Dec; yes; no)
 
 postulate
-  unlines : List String → String
-  show    : Nat → String
-  _++_    : String → String → String
-infixr 5 _++_
+  unlines-crlf : List String → String
+  show         : Nat → String
+  _++_         : String → String → String
+  octet-strlen : String → Nat
+  escape       : String → String
+  host         : String
+  date         : String
+infixr 6 _++_
 
 record LoginToken : Set where
   constructor token
@@ -47,108 +51,153 @@ data Action : Set where
 
 to-request : Action → String
 to-request (post-tweet (token tk) txt) =
-  unlines ("POST /api/post-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/post-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ txt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ txt
-          ∷ [])
+          ∷ []
 to-request (post-reply (token tk) txt (tweet-id twt)) =
-  unlines ("POST /api/post-reply 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/post-reply HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ txt ∷ show twt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ txt
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (delete-tweet (token tk) (tweet-id twt)) =
-  unlines ("POST /api/delete-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/delete-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show twt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (like (token tk) (tweet-id twt)) =
-  unlines ("POST /api/like-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/like-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show twt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (unlike (token tk) (tweet-id twt)) =
-  unlines ("POST /api/unlike-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/unlike-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show twt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (follow (token tk) username) =
-  unlines ("POST /api/follow-user 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/follow-user HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ username ∷ [])
           ∷ ""
           ∷ show tk
           ∷ username
-          ∷ [])
+          ∷ []
 to-request (unfollow (token tk) username) =
-  unlines ("POST /api/unfollow-user 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/unfollow-user HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ username ∷ [])
           ∷ ""
           ∷ show tk
           ∷ username
-          ∷ [])
+          ∷ []
 to-request (get-tweet (just (token tk)) (tweet-id twt)) =
-  unlines ("GET /api/get-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/get-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show twt ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (get-tweet nothing (tweet-id twt)) =
-  unlines ("GET /api/get-tweet 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/get-tweet HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show twt ∷ [])
           ∷ ""
           ∷ show twt
-          ∷ [])
+          ∷ []
 to-request (global-timeline (just (token tk)) len) =
-  unlines ("GET /api/global-timeline 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/global-timeline HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show len ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show len
-          ∷ [])
+          ∷ []
 to-request (global-timeline nothing len) =
-  unlines ("GET /api/global-timeline 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/global-timeline HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show len ∷ [])
           ∷ ""
           ∷ show len
-          ∷ [])
+          ∷ []
 to-request (private-timeline (token tk) len) =
-  unlines ("GET /api/private-timeline 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/private-timeline HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ show len ∷ [])
           ∷ ""
           ∷ show tk
           ∷ show len
-          ∷ [])
+          ∷ []
 to-request (logout (token tk)) =
-  unlines ("POST /api/logout 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/logout HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ show tk ∷ [])
           ∷ ""
           ∷ show tk
-          ∷ [])
+          ∷ []
 to-request (login username passwd) =
-  unlines ("POST /api/login 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/login HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ username ∷ passwd ∷ [])
           ∷ ""
           ∷ username
           ∷ passwd
-          ∷ [])
+          ∷ []
 to-request (signup username passwd) =
-  unlines ("POST /api/signup 1.1"
-          ∷ "Content-Type: text/plain"
+  unlines-crlf $ "POST /api/signup HTTP/1.1"
+          ∷ "Host: " ++ host
+          ∷ "Accept: application/json"
+          ∷ "Content-Type: text/plain; charset=utf-8"
+          ∷ "Content-Length: " ++ (show ∘ octet-strlen ∘ unlines-crlf $ username ∷ passwd ∷ [])
           ∷ ""
           ∷ username
           ∷ passwd
-          ∷ [])
+          ∷ []
 
 -- Possible responses from the public API
 data Response : Set where
@@ -174,60 +223,90 @@ show-tweets (tweet-id twt ∷ xs@(_ ∷ _)) = show twt ++ ", " ++ show-tweets xs
 
 to-response : Response → String
 to-response ok =
-  unlines ("HTTP/1.1 200 OK"
-          ∷ [])
+  unlines-crlf $ "HTTP/1.1 200 OK"
+          ∷ "Date: " ++ date
+          ∷ "Content-Length: 0"
+          ∷ ""
+          ∷ []
 to-response permission-error =
-  unlines ("HTTP/1.1 403 Forbidden"
+  let body = "{\"error\": \"access_denied\"}" in
+  unlines-crlf $ "HTTP/1.1 403 Forbidden"
+          ∷ "Date: " ++ date
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ "{'error': 'access_denied'}"
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response outdated-login-token =
-  unlines ("HTTP/1.1 401 Unauthorized"
+  let body = "{\"error\": \"session_expired\"}" in
+  unlines-crlf $ "HTTP/1.1 401 Unauthorized"
+          ∷ "Date: " ++ date
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ "{'error': 'session_expired'}"
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response (tweet-id (tweet-id twt)) =
-  unlines ("HTTP/1.1 200 OK"
+  let body = "{\"tweet_id\": \"" ++ show twt ++ "\"}" in
+  unlines-crlf $ "HTTP/1.1 200 OK"
+          ∷ "Date: " ++ date
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ ("{'tweet_id': '" ++ show twt ++ "'}")
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response (timeline xs) =
-  unlines ("HTTP/1.1 200 OK"
+  let body = "{\"timeline\": [" ++ show-tweets xs ++ "]}" in
+  unlines-crlf $ "HTTP/1.1 200 OK"
+          ∷ "Date: " ++ date
+          ∷ "Cache-Control: no-store"
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ ("{'timeline': [" ++ show-tweets xs ++ "]}")
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response (session-token (token tk)) =
-  unlines ("HTTP/1.1 200 OK"
+  let body = "{\"session_token\": \"" ++ show tk ++ "\"}" in
+  unlines-crlf $ "HTTP/1.1 200 OK"
+          ∷ "Date: " ++ date
+          ∷ "Cache-Control: no-store"
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ ("{'session_token': '" ++ show tk ++ "'}")
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response login-error =
-  unlines ("HTTP/1.1 401 Unauthorized"
+  let body = "{\"error\": \"login_failed\"}" in
+  unlines-crlf $ "HTTP/1.1 401 Unauthorized"
+          ∷ "Date: " ++ date
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ "{'error': 'login_failed'}"
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response signup-error =
-  unlines ("HTTP/1.1 400 Bad Request"
+  let body = "{\"error\": \"signup_failed\"}" in
+  unlines-crlf $ "HTTP/1.1 400 Bad Request"
+          ∷ "Date: " ++ date
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ "{'error': 'signup_failed'}"
-          ∷ [])
+          ∷ body
+          ∷ []
 to-response (tweet username txt like-count replies) =
-  unlines ("HTTP/1.1 200 OK"
+  let body = "{\"username\": \"" ++ escape username
+             ++ "\", \"text\": \"" ++ escape txt
+             ++ "\", \"likes\": " ++ show like-count
+             ++ ", \"replies\": [" ++ show-tweets replies
+             ++ "]}" in
+  unlines-crlf $ "HTTP/1.1 200 OK"
+          ∷ "Date: " ++ date
+          ∷ "Cache-Control: no-store"
           ∷ "Content-Type: application/json"
+          ∷ "Content-Length: " ++ show (octet-strlen body)
           ∷ ""
-          ∷ ("{'username': '" ++ username
-             ++ "', 'text': '" ++ txt
-             ++ "', 'likes': " ++ show like-count
-             ++ ", 'replies': [" ++ show-tweets replies
-             ++ "]}")
-          ∷ [])
+          ∷ body
+          ∷ []
 
 --------------------------------------------------------------------------------
 --                                 INTERFACE                                  --
