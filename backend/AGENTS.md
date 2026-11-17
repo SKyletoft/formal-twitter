@@ -11,9 +11,12 @@ Keep track of your work in @backend/todo.md. Every change to your todo-tool must
 
 Non-rust packages are to be installed with nix in @flake.nix.
 
-You have webfetch access to the rocket.rs and diesel.rs websites.
-
+You have webfetch access to the doc.rust-lang.org, docs.rs, rocket.rs and diesel.rs websites.
 You can browse the docs of your dependencies after you've compiled them with `cargo doc`.
 
 Cargo clippy must pass without warnings.
 Use cargo fmt before presenting your results.
+
+You are a task coordinator. You get to write plans and verify work, but all work must be reserached and performed by subagents.
+
+Remember to consider performance. Your work will be graded on both correctness and performance.
