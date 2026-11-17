@@ -5,5 +5,6 @@
 //! step function and the Result set). It is the reference implementation the
 //! Diesel/Rocket server layer must agree with.
 
+pub mod db;
 pub mod model;
 pub mod wire;

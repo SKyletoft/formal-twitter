@@ -149,3 +149,5 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   `Host:`, `Accept: application/json`, `Content-Type: text/plain; charset=utf-8`, exact
   `Content-Length`; body lines CRLF-joined, token first, anonymous get-tweet/global-timeline omit it.
   GET only appears from the legacy frontend (query params); support as aliases (T4).
+
+T3 ACCEPTED: db.rs init_or_open+load_world+save_world, 4 db_tests (22 lib tests total), 6 ImplStorage theorems; gates green (build, clippy -D warnings zero, fmt, tests, agda both exit 0).

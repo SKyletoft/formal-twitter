@@ -222,3 +222,5 @@ th-prop-timeline-personal = get-personal-timeline
 -- The wire-layer refl theorems (from-input / to-output pins for backend/src/wire.rs) live in
 -- backend/ImplWire.agda: opening Interface inside this module clashes with Twitter's Command/Result
 -- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.
+
+-- storage encodings proved in ImplStorage.agda
