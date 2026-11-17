@@ -45,10 +45,16 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       client (stdlib only) speaking the NEW spec protocol, exercise all endpoints incl. error paths.
 - [x] Task T1 (subagent impl, ACCEPTED d5f78e5): pure model module (backend/src lib: model.rs mirroring Twitter.agda
       World/Step/Result) + QuickCheck tests + matching theorems in ImplProofs.agda; agda typecheck.
-- [ ] Task T2 (subagent impl, SMALL): wire.rs — parse POST bodies (CRLF/LF/tolerant) → WireAction,
-      to_command (per from-input), escape_json, WireResponse builders byte-exact per to-response
-      (headers list without Content-Length: rocket owns it) + #[test]s + refl theorems in ImplProofs.agda
-      for each to_command mapping; gates green.
+- [x] Task T2 (subagent impl, ACCEPTED, NOT committed): wire.rs (542 lines; 322 non-test) — WireAction/WireError/
+      ApiResponse/WireResponse; parse_action (CRLF/LF/lone-CR split, drops exactly one trailing empty line,
+      u64 = ASCII digits only, arity decides anonymous get-tweet/global-timeline, never panics);
+      to_command = from-input; escape_json (" \\ \n \r \t and <0x20 -> \u00xx lower hex); respond = to-response minus
+      the status line and minus Content-Length (rocket appends it), header order exact, Cache-Control: no-store
+      on timeline/session-token/tweet, ok = 200 empty body. Tests: #[cfg(test)] mod wire_tests with 7 #[test]
+      + 1 #[quickcheck] (13 endpoint round-trips CRLF/LF/CR, malformed -> errors, escape_json, timeline bodies
+      byte-exact for []/[1]/[1,2]). Proofs: 24 refl theorems in NEW backend/ImplWire.agda (module ImplWire,
+      15 from-input + 9 to-output) — ImplProofs.agda cannot open Interface (Command/Result clash at SessionId/PostId);
+      pointer comment + `open import ImplWire` added there so `agda ImplProofs.agda` Gates green: build/clippy -D warnings/fmt --check/18 tests/agda both files exit 0.
 - [ ] Task T3 (subagent impl, SMALL): db.rs — diesel 2.4.0 sqlite storage (table!s: accounts,sessions,
       posts(seq,parent),likes,replies,follows), load World ↔ save World, reentrant init; #[test]s
       incl. save/load round-trip equality; small matching proofs where feasible.

@@ -13,6 +13,8 @@ open import Relation.Nullary.Decidable.Core            using (Dec; yes; no)
 
 open import Helpers
 
+open import ImplWire
+
 module ImplProofs
   (SessionId PostId : Set)
   (new-sid : CreateNew SessionId)
@@ -216,3 +218,7 @@ th-prop-timeline-personal :
                    (filter (can-read-post before sid)
                            (World.newest-first before)))))
 th-prop-timeline-personal = get-personal-timeline
+
+-- The wire-layer refl theorems (from-input / to-output pins for backend/src/wire.rs) live in
+-- backend/ImplWire.agda: opening Interface inside this module clashes with Twitter's Command/Result
+-- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.

@@ -6,3 +6,4 @@
 //! Diesel/Rocket server layer must agree with.
 
 pub mod model;
+pub mod wire;
