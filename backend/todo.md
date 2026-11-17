@@ -12,11 +12,6 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       bodies = line-separated token/text/id; responses per to-output: ok/403 access_denied/
       401 session_expired/401 login_failed/400 signup_failed/200 {'tweet_id'}/200 {'timeline'}/
       200 {'session_token'}/200 tweet json)
-- [ ] Task I1 (subagent impl): Interface.agda HTTP/1.1 request conformance — CRLF headers/body,
-      request line `HTTP/1.1`, `Host: localhost`, `Content-Length` (UTF-8 octets) on POST bodies,
-      no GET bodies; GET id/len in query strings; login token for GET via
-      `Authorization: Bearer <tk>`, never in URL. Keep response encoding unchanged.
-      Verify with `agda Interface.agda` in `spec/`.
 - [ ] Task R1 (subagent research): frontend wire protocol from frontend/app.js
 - [ ] Task R2 (subagent research): Rocket 0.5.2 API — GET data routes, custom responses, state, port config
 - [ ] Task R3 (subagent research): Diesel 2.4.0 sqlite API — schema macros vs allow_sql, queries
