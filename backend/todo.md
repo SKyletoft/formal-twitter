@@ -41,6 +41,9 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - src/ is back to the hello-world stub: T1-T4 are fresh work, R1-R3 research results above are reusable.
 - Coordinator launches subagents in dependency order; each accepted task gets its own commit.
 - R4 (research subagent, background): Twitter.agda — World state + Step rules per command + Result set.
+- R5 (research subagent, background): nix buildRustPackage vendoring (vendorDir/cargoLock) + `nix run` entrypoint.
+- R6 (research subagent, background): Rocket 0.5.2 — GET query-param routes, custom responses, State/Diesel
+  connection sharing, data limits, config/env port.
 - Design note: commit every todo.md change together with the task it tracks; co-author maki@qwen3.8-flash-next-coder.
 
 ## Design decisions
@@ -52,6 +55,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   only implemented in model tests if proofs require.
 - Anonymous read of private/deleted/nonexistent post has no Step rule; implementation returns
   permission-error (403), consistent with denied family.
+- Frontend (frontend/app.js:106-135) speaks POST with newline-joined bodies (`token\ntext\n`) for
+  login/signup/post-tweet and GET with `?token=&id=` (get-tweet) / `?token=&len=` (timeline); the
+  timeline path is picked by token presence: `private-timeline` if a token is set else `global-timeline`.
+  Frontend only uses login/signup/post-tweet/get-tweet/timeline; response parser accepts the single-quoted
+  JSON of to-response (app.js:62-94).
 - Wire requests: HTTP/1.1 with CRLF, `Host: localhost`, POST bodies carry `Content-Length`.
   POST keeps session token in the line-oriented body; GET carries it in
   `Authorization: Bearer <tk>`. GET targets are `/api/get-tweet?id=<twt>` and
