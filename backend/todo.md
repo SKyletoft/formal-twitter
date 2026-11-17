@@ -65,7 +65,8 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       /api/{global,private}-timeline?token=&len=) → same Action; tolerate LF/trailing-newline bodies.
 - [ ] Task T7 (subagent impl): flake.nix — cargo vendor committed; hermetic rustPlatform buildRustPackage
       (vendorDir + cargoLock); libsqlite3-sys bundled pin if needed; verify `nix run .` starts server.
-- [ ] Task T8 (subagent impl): EVERYTHING. Review the entire implementation for non-idiomatic code and potential performance issues.
+- [ ] Task T8 (research subagent): Investigate using smallstring and smallvec. (github:SKyletoft/smallstr, github:SKyletoft/rust-smallvec/v1)
+- [ ] Task T9 (subagent impl): EVERYTHING. Review the entire implementation for non-idiomatic code and potential performance issues.
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
