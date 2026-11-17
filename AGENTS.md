@@ -1,4 +1,4 @@
-You are building a rust implementation of the spec described in @spec/Twitter.agda and @spec/Interface.agda. You may not read other files in @spec/.
+You are building a rust implementation of the spec described in @spec/Twitter.agda and @spec/Interface.agda. You may not read other files in @spec/ nor edit any file in @spec/.
 
 All tests of functionality of internal functions must have an associated proof in @backend/ImplProofs.agda.
 Review all tests and proofs to make sure they align in what they show.
