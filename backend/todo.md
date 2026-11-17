@@ -19,7 +19,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
-- [ ] Review the changes brought in by the merge
+- [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js
 - [x] Task R1 (research subagent): frontend/app.js protocol — POST bodies newline-joined,
@@ -41,21 +41,32 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       (accounts, sessions, posts(seq order + parent, likes, replies), follows), rocket routes
       implementing Step semantics, reentrant startup on existing DB, crypto-random Nat ids
       checked fresh. Must pass cargo build, clippy -D warnings, cargo fmt.
-- [ ] Task T3 (subagent impl): network integration tests — launch server, raw-TCP HTTP/1.1
+- [ ] Task T5 (subagent impl, SMALL): network integration tests — launch server, raw-TCP HTTP/1.1
       client (stdlib only) speaking the NEW spec protocol, exercise all endpoints incl. error paths.
-- [x] Task T1 (subagent impl): pure model module (ACCEPTED: build+clippy -D warnings+fmt+10 QC tests green; ImplProofs.agda = 10 theorems, agda exit 0) (backend/src lib: model.rs mirroring Twitter.agda
+- [x] Task T1 (subagent impl, ACCEPTED d5f78e5): pure model module (backend/src lib: model.rs mirroring Twitter.agda
       World/Step/Result) + QuickCheck tests + matching theorems in ImplProofs.agda; agda typecheck.
-- [ ] Task T2 (subagent impl): diesel/sqlite storage + rocket routes + reentrant startup +
-      crypto-random Nat ids + NEW wire protocol (POST, exact Content-Length/Date/Cache-Control,
-      JSON responses, escape) — must pass build/clippy -D warnings/fmt.
-- [ ] Task T5 (subagent impl): flake.nix — cargo vendor committed; add libsqlite3-sys bundled
-      dep; rustPlatform buildRustPackage hermetic (vendorDir + cargoLock); verify `nix run` starts server.
-- [ ] Task T4 (subagent impl): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
-      /api/global-timeline?token=&len=, /api/private-timeline?...) + tolerate LF/trailing-newline
-      POST bodies from the browser; both formats route to the same Action.
+- [ ] Task T2 (subagent impl, SMALL): wire.rs — parse POST bodies (CRLF/LF/tolerant) → WireAction,
+      to_command (per from-input), escape_json, WireResponse builders byte-exact per to-response
+      (headers list without Content-Length: rocket owns it) + #[test]s + refl theorems in ImplProofs.agda
+      for each to_command mapping; gates green.
+- [ ] Task T3 (subagent impl, SMALL): db.rs — diesel 2.4.0 sqlite storage (table!s: accounts,sessions,
+      posts(seq,parent),likes,replies,follows), load World ↔ save World, reentrant init; #[test]s
+      incl. save/load round-trip equality; small matching proofs where feasible.
+- [ ] Task T4 (subagent impl, SMALL): main.rs — rocket routes for all 13 POST endpoints using wire.rs +
+      model.step, fresh u64 ids from /dev/urandom (reject used), Date header (UTC from epoch),
+      managed State(conn+World), static frontend if ./frontend present; reentrancy smoke test
+      (3 server runs over ONE DB file via curl).
+- [ ] Task T6 (subagent impl, SMALL): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
+      /api/{global,private}-timeline?token=&len=) → same Action; tolerate LF/trailing-newline bodies.
+- [ ] Task T7 (subagent impl): flake.nix — cargo vendor committed; hermetic rustPlatform buildRustPackage
+      (vendorDir + cargoLock); libsqlite3-sys bundled pin if needed; verify `nix run .` starts server.
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
+- T2a ATTEMPT #2 CANCELLED by user (reverted: wire.rs deleted, lib.rs restored, _probe6.rs scratch
+  deleted). Lessons kept in memory (tags wire/tooling): the code-generation tools mangle punctuation
+  inside writes — grep-verify after every write/edit, compile after each small chunk; Rust 2024 gotchas:
+  `use crate::model::{...}`, enum ctors with `::`, comma-separated struct fields, no extra parens in patterns.
 - T2 ATTEMPT #1 REJECTED (not committed, reverted): agent produced non-compiling db.rs pseudo-code
   (110 errors), no wire.rs/main.rs. Lessons recorded as R7 below; files restored to d5f78e5 state
   (db.rs deleted; lib.rs `pub mod db;` removed; Cargo.toml libsqlite3-sys line removed).
