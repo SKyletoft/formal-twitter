@@ -55,13 +55,12 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       byte-exact for []/[1]/[1,2]). Proofs: 24 refl theorems in NEW backend/ImplWire.agda (module ImplWire,
       15 from-input + 9 to-output) — ImplProofs.agda cannot open Interface (Command/Result clash at SessionId/PostId);
       pointer comment + `open import ImplWire` added there so `agda ImplProofs.agda` Gates green: build/clippy -D warnings/fmt --check/18 tests/agda both files exit 0.
-- [ ] Task T3 (subagent impl, SMALL): db.rs — diesel 2.4.0 sqlite storage (table!s: accounts,sessions,
-      posts(seq,parent),likes,replies,follows), load World ↔ save World, reentrant init; #[test]s
-      incl. save/load round-trip equality; small matching proofs where feasible.
-- [ ] Task T4 (subagent impl, SMALL): main.rs — rocket routes for all 13 POST endpoints using wire.rs +
-      model.step, fresh u64 ids from /dev/urandom (reject used), Date header (UTC from epoch),
-      managed State(conn+World), static frontend if ./frontend present; reentrancy smoke test
-      (3 server runs over ONE DB file via curl).
+- [ ] Task T3 (subagent impl, SMALL): db.rs — table! macros (accounts,sessions,posts(seq,parent),likes,replies,follows),
+      encodings, init_or_open (reentrant CREATE), load World from DB, save World (full rewrite);
+      #[test]s round-trip; ImplStorage.agda refl theorems. NO apply() yet (that goes with T4).
+- [ ] Task T4 (subagent impl, SMALL): main.rs — rocket 13 POST routes (wire.rs+model.step), apply(before,after)
+      write-through diff in db.rs, fresh u64 ids from /dev/urandom (reject used), Date header,
+      managed State; reentrancy curl smoke (3 runs on ONE DB file).
 - [ ] Task T6 (subagent impl, SMALL): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
       /api/{global,private}-timeline?token=&len=) → same Action; tolerate LF/trailing-newline bodies.
 - [ ] Task T7 (subagent impl): flake.nix — cargo vendor committed; hermetic rustPlatform buildRustPackage
@@ -69,6 +68,15 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
+- T3 ATTEMPT #2 CANCELLED (thinking loop; partial non-compiling db.rs deleted, lib.rs restored to HEAD).
+  Lessons (R8, verified from diesel-2.4.0 vendored sources during attempt):
+  * `.load::<Element>(conn)` returns QueryResult<Vec<Element>> (doctest: `users.load::<String>(connection)`);
+    NO load_all needed; `diesel::insert_into(t).values(v).execute(conn)`, `diesel::delete(t).execute(conn)`;
+    sql_query(CREATE_SQL_LITERAL).execute(conn).ok() to ignore "table exists" on reopen (reentrant init);
+  * table! grammar: `table!(name (pk) { col -> Type, ... });` (diesel_table_macro_syntax-0.4.0);
+  * SimpleConnection::batch_execute exists at src/connection/mod.rs:81; prelude lacks `diesel::result::Error`
+    (use full path `diesel::result::Error`); SqliteConnection::establish(&str) at sqlite/connection/mod.rs:265;
+  * webfetch to docs.diesel.rs DENIED in sandbox; read vendored sources instead.
 - T2a ATTEMPT #2 CANCELLED by user (reverted: wire.rs deleted, lib.rs restored, _probe6.rs scratch
   deleted). Lessons kept in memory (tags wire/tooling): the code-generation tools mangle punctuation
   inside writes — grep-verify after every write/edit, compile after each small chunk; Rust 2024 gotchas:
