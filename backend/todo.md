@@ -43,7 +43,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       checked fresh. Must pass cargo build, clippy -D warnings, cargo fmt.
 - [ ] Task T3 (subagent impl): network integration tests — launch server, raw-TCP HTTP/1.1
       client (stdlib only) speaking the NEW spec protocol, exercise all endpoints incl. error paths.
-- [ ] Task T1 (subagent impl): pure model module (backend/src lib: model.rs mirroring Twitter.agda
+- [x] Task T1 (subagent impl): pure model module (ACCEPTED: build+clippy -D warnings+fmt+10 QC tests green; ImplProofs.agda = 10 theorems, agda exit 0) (backend/src lib: model.rs mirroring Twitter.agda
       World/Step/Result) + QuickCheck tests + matching theorems in ImplProofs.agda; agda typecheck.
 - [ ] Task T2 (subagent impl): diesel/sqlite storage + rocket routes + reentrant startup +
       crypto-random Nat ids + NEW wire protocol (POST, exact Content-Length/Date/Cache-Control,
@@ -57,6 +57,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 
 ## Progress log (as of restart)
 - src/ is back to the hello-world stub: T1-T4 are fresh work, R1-R3 research results above are reusable.
+- T1 done: backend/src/model.rs (World/step mirroring Twitter.agda; qc mod: well_formed-checked Arbitrary<World>, 10 prop_*) + backend/ImplProofs.agda (10 theorems, one per prop; delete merged via _×_, register_taken added via failed-create-account).
 - Coordinator launches subagents in dependency order; each accepted task gets its own commit.
 - R4 (research subagent, background): Twitter.agda — World state + Step rules per command + Result set.
 - R5 (research subagent, background): nix buildRustPackage vendoring (vendorDir/cargoLock) + `nix run` entrypoint.
