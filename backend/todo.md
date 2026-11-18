@@ -19,10 +19,14 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
-- [ ] Task T4b-1 (subagent impl, SMALL): main.rs PART 1 — pure helpers only, NO rocket macros:
-      civil_date/http_date (std-only), to_output (model.Result -> wire.ApiResponse), to_http
-      (wire.WireResponse -> rocket Response builder), random_u64 (/dev/urandom 8B BE), sample_id
-      (nonzero + !used). Gate: build + clippy -D + fmt.
+- [x] Task T4b-1 (subagent impl, ACCEPTED): main.rs helpers (143 lines): http_date std-only IMF
+      (civil-date loop, weekday table anchored Thu@day0, verified), to_output Result->ApiResponse
+      (arg order (author,text,likes,replies) verified vs model.rs:470 + wire.rs:296 — direct
+      passthrough), random_u64 (/dev/urandom 8B BE, 0 on error), sample_id (nonzero+unused loop),
+      to_http (WireResponse{status_code,headers,body} -> Response<'static> fold-in-order +
+      Status::from_code + sized_body/Cursor + finalize). Coordinator gates: build/clippy -D/fmt/test
+      (24) all exit 0; artifact greps clean. NOTE for T4c: to_output + to_http need #[test]s +
+      Interface-level pins (no #[test] in main.rs yet) before those count as done.
 - [ ] Task T4b-2 (subagent impl, SMALL): main.rs PART 2 — serve() (parse_action -> to_command ->
       sample ids -> step -> apply -> respond) + Mutex<Server{world,conn}> State + the 13 #[post]
       route wrappers + #[launch] (init_or_open + load_world at startup, reentrant).
