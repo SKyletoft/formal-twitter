@@ -19,6 +19,9 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
+- [ ] Task TD1 (You): Clean up the todo list structure.
+- [ ] Task DB2 (research subagent): Find violations of database usage rules as described in @AGENTS.md
+- [ ] Task DB3 (subagent impl): Fix usage of database.
 - [x] Task T4b-1 (subagent impl, ACCEPTED): main.rs helpers (143 lines): http_date std-only IMF
       (civil-date loop, weekday table anchored Thu@day0, verified), to_output Result->ApiResponse
       (arg order (author,text,likes,replies) verified vs model.rs:470 + wire.rs:296 — direct
