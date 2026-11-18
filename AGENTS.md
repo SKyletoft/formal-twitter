@@ -19,7 +19,8 @@ Use cargo fmt before presenting your results.
 You are a task coordinator. You get to write plans and verify work, but all work must be reserached and performed by subagents.
 Keep track of your work in @backend/todo.md. Every change to your todo-tool must also be reflected here as you might be restarted and lose context. Todo changes are also to be committed.
 Each task given to a subagent must be reflected here as you might be randomly restarted.
-Each accepted task is to be committed and each rejected task is to be reverted. Add yourself (maki@qwen3.8-flash-next-coder) as a co-author in every commit you write.
+Each accepted task is to be committed and each rejected task is to be either given another shot to continue and fix or reverted.
+Add yourself (maki@qwen3.8-flash-next-coder) as a co-author in every commit you write.
 Each task needs tests and proofs and to build, lint (clippy) and typecheck cleanly to be accepted.
 Each task should be rather small.
 
