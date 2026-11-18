@@ -247,6 +247,145 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 	}
 }
 
+// ---- Per-section reload (task DB3b: partial cache rotation) ----
+
+/// reload-accounts (task DB3b): throw ONLY the accounts section of the RAM cache out
+/// and re-query it from the DB, leaving every other World field at its cached
+/// value.  Uses load_world's select + sort + decode pipeline verbatim, so the
+/// reloaded section always agrees with load_world.  Lets main.rs rotate one
+/// World field group per request instead of re-loading the whole World.
+pub fn reload_accounts(conn: &mut SqliteConnection, w: World) -> World {
+	let mut out = w;
+	let mut account_rows = accounts::dsl::accounts
+		.select((
+			accounts::dsl::username,
+			accounts::dsl::password,
+			accounts::dsl::visibility,
+		))
+		.load::<(String, String, i32)>(conn)
+		.unwrap_or_default();
+	account_rows.sort();
+	out.accounts = account_rows
+		.into_iter()
+		.map(|(username, password, vis)| {
+			(
+				username,
+				Account {
+					password,
+					default_visibility: dec_vis(vis),
+				},
+			)
+		})
+		.collect();
+	out
+}
+
+/// reload-sessions (task DB3b): ONE section covering sessions AND used_session_ids,
+/// both derived from the sessions table, replaced together so they stay consistent.
+/// Same select + sort + decode as load_world's sessions query; all other fields
+/// keep their cached values.
+pub fn reload_sessions(conn: &mut SqliteConnection, w: World) -> World {
+	let mut out = w;
+	let mut session_rows = sessions::dsl::sessions
+		.select((
+			sessions::dsl::sid,
+			sessions::dsl::status,
+			sessions::dsl::user,
+		))
+		.load::<(i64, i32, Option<String>)>(conn)
+		.unwrap_or_default();
+	session_rows.sort();
+	out.used_session_ids = session_rows.iter().map(|row| row.0 as u64).collect();
+	out.sessions = session_rows
+		.into_iter()
+		.map(|(sid, code, user)| (sid as u64, dec_sess_row(code, user)))
+		.collect();
+	out
+}
+
+/// reload-follows (task DB3b): ONE section for the follows table only; the cached
+/// rows are dropped and re-queried with load_world's select + sort.
+/// Everything else keeps its cached value.
+pub fn reload_follows(conn: &mut SqliteConnection, w: World) -> World {
+	let mut out = w;
+	let mut follow_rows = follows::dsl::follows
+		.select((follows::dsl::follower, follows::dsl::followee))
+		.load::<(String, String)>(conn)
+		.unwrap_or_default();
+	follow_rows.sort();
+	out.follows = follow_rows;
+	out
+}
+
+/// reload-posts (task DB3b): ONE section for posts, newest_first and used_post_ids,
+/// which all derive from the posts tables, so they must move together.  Re-queries
+/// posts (plus the likes/replies rows load_world's Post decode reads) and rebuilds
+/// newest_first with load_world's ORDER BY seq DESC query; accounts, sessions and
+/// follows keep their cached values.
+pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
+	let mut out = w;
+	let mut post_rows = posts::dsl::posts
+		.select((
+			posts::dsl::pid,
+			posts::dsl::author,
+			posts::dsl::text,
+			posts::dsl::visibility,
+			posts::dsl::status,
+			posts::dsl::parent,
+			posts::dsl::seq,
+		))
+		.load::<(i64, String, String, i32, i32, Option<i64>, i64)>(conn)
+		.unwrap_or_default();
+	let mut like_rows = likes::dsl::likes
+		.select((likes::dsl::post_pid, likes::dsl::user))
+		.load::<(i64, String)>(conn)
+		.unwrap_or_default();
+	let mut reply_rows = replies::dsl::replies
+		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
+		.load::<(i64, i64)>(conn)
+		.unwrap_or_default();
+	let newest_first: Vec<u64> = posts::dsl::posts
+		.select(posts::dsl::pid)
+		.order(posts::dsl::seq.desc())
+		.load::<i64>(conn)
+		.unwrap_or_default()
+		.into_iter()
+		.map(|id| id as u64)
+		.collect();
+	post_rows.sort();
+	like_rows.sort();
+	reply_rows.sort();
+	let posts_map: Vec<(u64, Post)> = post_rows
+		.into_iter()
+		.map(|(pid, author, text, vis, code, parent, _seq)| {
+			(
+				pid as u64,
+				Post {
+					author,
+					text,
+					visibility: dec_vis(vis),
+					status: dec_status(code),
+					likes: like_rows
+						.iter()
+						.filter(|row| row.0 == pid)
+						.map(|row| row.1.clone())
+						.collect(),
+					replies: reply_rows
+						.iter()
+						.filter(|row| row.0 == pid)
+						.map(|row| row.1 as u64)
+						.collect(),
+					parent: parent.map(|p| p as u64),
+				},
+			)
+		})
+		.collect();
+	out.used_post_ids = posts_map.iter().map(|row| row.0).collect();
+	out.posts = posts_map;
+	out.newest_first = newest_first;
+	out
+}
+
 // ---- Saving World (full rewrite) ----
 
 /// Full rewrite of the DB: wipe the six tables, then insert every row of w.
@@ -616,7 +755,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 mod db_tests {
 	use super::{
 		Account, Post, PostStatus, SessionStatus, Visibility, World, apply, init_or_open,
-		load_world, reopen, save_world,
+		load_world, reload_accounts, reload_follows, reload_posts, reload_sessions, reopen,
+		save_world,
 	};
 	use crate::model::empty_world;
 
@@ -896,5 +1036,99 @@ mod db_tests {
 		assert!(load_world(&mut conn) == pre);
 		let mut fresh = reopen(path.to_string()).unwrap();
 		assert!(load_world(&mut fresh) == pre);
+	}
+	#[test]
+	/// DB3b gate: reload_accounts throws ONLY the accounts section of the RAM cache out
+	/// and re-queries it, so the tampered accounts (bob dropped, alice's password is a lie)
+	/// come back as the DB rows, while sessions/posts/follows/newest_first/used_* keep their
+	/// cached (tampered) values: exactly one section moved.
+	fn test_reload_accounts() {
+		let path = "/tmp/ft-reload-accounts.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let mut tampered = build_world();
+		let ghost = "bob".to_string();
+		tampered.accounts.retain(|entry| entry.0 != ghost);
+		tampered.accounts[0].1.password = "LIE".to_string();
+		let mut fresh = reopen(path.to_string()).unwrap();
+		let reloaded = reload_accounts(&mut fresh, tampered.clone());
+		let mut again = init_or_open(path.to_string()).unwrap();
+		assert!(reloaded.accounts == load_world(&mut again).accounts);
+		assert!(reloaded.sessions == tampered.sessions);
+		assert!(reloaded.posts == tampered.posts);
+		assert!(reloaded.follows == tampered.follows);
+		assert!(reloaded.newest_first == tampered.newest_first);
+		assert!(reloaded.used_post_ids == tampered.used_post_ids);
+		assert!(reloaded.used_session_ids == tampered.used_session_ids);
+	}
+
+	#[test]
+	/// DB3b gate: reload_sessions replaces ONE section (sessions AND the derived used_session_ids
+	/// together), so the tampered session list (200 dropped, 100 flipped to Unused, a ghost id)
+	/// is restored from the DB while accounts/posts/follows/newest_first keep their cached values.
+	fn test_reload_sessions() {
+		let path = "/tmp/ft-reload-sessions.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let mut tampered = build_world();
+		tampered.sessions.retain(|entry| entry.0 != 200);
+		tampered.sessions[0].1 = SessionStatus::Unused;
+		tampered.used_session_ids = vec![100, 999];
+		let mut fresh = reopen(path.to_string()).unwrap();
+		let reloaded = reload_sessions(&mut fresh, tampered.clone());
+		let mut again = init_or_open(path.to_string()).unwrap();
+		let expected = load_world(&mut again);
+		assert!(reloaded.sessions == expected.sessions);
+		assert!(reloaded.used_session_ids == expected.used_session_ids);
+		assert!(reloaded.accounts == tampered.accounts);
+		assert!(reloaded.posts == tampered.posts);
+		assert!(reloaded.follows == tampered.follows);
+	}
+
+	#[test]
+	/// DB3b gate: reload_follows re-queries the follows section only, so a tampered cache
+	/// (the real pairs replaced by a ghost pair) comes back as the DB rows while
+	/// accounts/sessions/posts/newest_first/used_* keep their cached values.
+	fn test_reload_follows() {
+		let path = "/tmp/ft-reload-follows.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let mut tampered = build_world();
+		tampered.follows = vec![("ghost".to_string(), "alice".to_string())];
+		let mut fresh = reopen(path.to_string()).unwrap();
+		let reloaded = reload_follows(&mut fresh, tampered.clone());
+		let mut again = init_or_open(path.to_string()).unwrap();
+		assert!(reloaded.follows == load_world(&mut again).follows);
+		assert!(reloaded.accounts == tampered.accounts);
+		assert!(reloaded.sessions == tampered.sessions);
+		assert!(reloaded.posts == tampered.posts);
+		assert!(reloaded.newest_first == tampered.newest_first);
+	}
+
+	#[test]
+	/// DB3b gate: reload_posts moves posts, newest_first and used_post_ids together (all
+	/// derive from the posts tables), so a cache missing post 3 with a bogus timeline is fully
+	/// restored from the DB (newest_first [3,2,1] via ORDER BY seq DESC) while accounts/sessions/
+	/// used_session_ids keep their cached values.
+	fn test_reload_posts() {
+		let path = "/tmp/ft-reload-posts.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let mut tampered = build_world();
+		tampered.posts.retain(|entry| entry.0 != 3);
+		tampered.posts[0].1.text = "LIE".to_string();
+		tampered.newest_first = vec![9, 8];
+		tampered.used_post_ids = vec![9, 8];
+		let mut fresh = reopen(path.to_string()).unwrap();
+		let reloaded = reload_posts(&mut fresh, tampered.clone());
+		let mut again = init_or_open(path.to_string()).unwrap();
+		let expected = load_world(&mut again);
+		assert!(reloaded.posts == expected.posts);
+		assert!(reloaded.newest_first == expected.newest_first);
+		assert!(reloaded.used_post_ids == expected.used_post_ids);
+		assert!(reloaded.accounts == tampered.accounts);
+		assert!(reloaded.sessions == tampered.sessions);
+		assert!(reloaded.follows == tampered.follows);
+		assert!(reloaded.used_session_ids == tampered.used_session_ids);
 	}
 }

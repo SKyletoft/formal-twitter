@@ -34,6 +34,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   smallvec 1.15+union in Cargo.toml. Use in src deferred to T9 (types pinned by diesel + Agda-style ==).
 
 ## Next (in order)
+- [ ] RV1 (research-subagent): Review all proofs for alignment with the tests. Do they show the same thing? Are there any orphan proofs?
 - [ ] TD1 (coordinator): clean up this todo list structure. (commit todo changes)
 - [ ] DB2 (research subagent): audit implementation vs the AGENTS.md database rules
   ("database is source of truth"; "no data served unless committed in DB"; "RAM cache must periodically be
@@ -41,6 +42,16 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] DB3 (impl subagent): fix the DB2 findings — serve AFTER commit (or error path on DB failure),
   periodic PARTIAL cache reload (cycle over cache sections, reload one section per N requests,
   never the whole World at once), db.rs gains reopen + per-section reload fns. Tests + proofs + gates.
+- [x] DB3b (impl subagent): db.rs per-section reload fns — reload_accounts (:257, accounts only),
+  reload_sessions (:287, sessions + used_session_ids as ONE section), reload_follows (:309),
+  reload_posts (:325, posts + newest_first + used_post_ids together via the ORDER BY seq DESC query);
+  each copies load_world's diesel pipelines verbatim, so main.rs can rotate ONE World field group per
+  request. db_tests +test_reload_accounts/test_reload_sessions/test_reload_follows/test_reload_posts
+  (tamper one section of the RAM cache, reload with a live conn, assert that section == load_world and
+  the rest == the cached values). backend/ImplReload.agda (module ImplReload, open import ImplApply)
+  +th-reload-accounts/-sessions/-follows/-posts (posts-section pair: rows × nf-of = posts-B × [3,2,1])
+  + -used/-rest refl theorems; ImplProofs.agda +1 "open import ImplReload". Gates: build/clippy/fmt/
+  cargo test 35 passed (26 lib + 4 new + 5 smoke), agda ImplReload/ImplApply/ImplProofs/ImplStorage exit 0.
 - [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference, one 16B /dev/urandom read per
   request (two u64s), poison-tolerant lock, reopen() = establish-only (no per-request failing CREATE batch).
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets

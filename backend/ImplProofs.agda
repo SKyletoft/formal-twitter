@@ -17,6 +17,8 @@ open import ImplWire
 
 open import ImplApply
 
+open import ImplReload
+
 module ImplProofs
   (SessionId PostId : Set)
   (new-sid : CreateNew SessionId)
