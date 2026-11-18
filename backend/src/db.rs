@@ -8,11 +8,13 @@
 use crate::model::{Account, Post, PostStatus, SessionStatus, Visibility, World};
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use diesel::connection::SimpleConnection;
 use diesel::delete;
 use diesel::insert_into;
 use diesel::prelude::*;
+use diesel::update;
 
 table!(accounts (username) {
 	username -> Text,
@@ -51,7 +53,6 @@ table!(follows (follower, followee) {
 	 followee -> Text,
 });
 
-
 // ---- Encodings (proved pins: backend/ImplStorage.agda) ----
 
 /// enc-vis: Everyone = 0, FollowersOnly = 1.
@@ -64,11 +65,11 @@ pub fn enc_vis(vis: Visibility) -> i32 {
 
 /// dec-vis: 1 = FollowersOnly, anything else = Everyone (corruption-tolerant).
 pub fn dec_vis(code: i32) -> Visibility {
-	 if code == 1 {
-	  Visibility::FollowersOnly
-	 } else {
-	  Visibility::Everyone
-	 }
+	if code == 1 {
+		Visibility::FollowersOnly
+	} else {
+		Visibility::Everyone
+	}
 }
 
 /// enc-status: live (PostStatus::Other) = 0, Deleted = 1.
@@ -81,11 +82,11 @@ pub fn enc_status(status: PostStatus) -> i32 {
 
 /// dec-status: 1 = Deleted, anything else = live.
 pub fn dec_status(code: i32) -> PostStatus {
-	 if code == 1 {
-	  PostStatus::Deleted
-	 } else {
-	  PostStatus::Other
-	 }
+	if code == 1 {
+		PostStatus::Deleted
+	} else {
+		PostStatus::Other
+	}
 }
 
 /// Session row encoding: (1, user) = Active, (2, NULL) = Revoked, (0, NULL) = Unused.
@@ -121,11 +122,10 @@ CREATE TABLE follows (follower TEXT, followee TEXT);";
 /// every startup: on an existing DB they all fail atomically (batch_execute is
 /// one transaction), and we ignore that error, which makes startup reentrant.
 pub fn init_or_open(path: String) -> ConnectionResult<SqliteConnection> {
-	 let mut conn = SqliteConnection::establish(&path)?;
-	 let _created = conn.batch_execute(CREATE_SQL);
-	 Ok(conn)
+	let mut conn = SqliteConnection::establish(&path)?;
+	let _created = conn.batch_execute(CREATE_SQL);
+	Ok(conn)
 }
-
 
 // ---- Loading World from the DB ----
 
@@ -136,17 +136,30 @@ pub fn init_or_open(path: String) -> ConnectionResult<SqliteConnection> {
 /// ORDER BY seq DESC; likes/replies keep row order within a post).
 pub fn load_world(conn: &mut SqliteConnection) -> World {
 	let mut account_rows = accounts::dsl::accounts
-		.select((accounts::dsl::username, accounts::dsl::password, accounts::dsl::visibility))
+		.select((
+			accounts::dsl::username,
+			accounts::dsl::password,
+			accounts::dsl::visibility,
+		))
 		.load::<(String, String, i32)>(conn)
 		.unwrap_or_default();
 	let mut session_rows = sessions::dsl::sessions
-		.select((sessions::dsl::sid, sessions::dsl::status, sessions::dsl::user))
+		.select((
+			sessions::dsl::sid,
+			sessions::dsl::status,
+			sessions::dsl::user,
+		))
 		.load::<(i64, i32, Option<String>)>(conn)
 		.unwrap_or_default();
 	let mut post_rows = posts::dsl::posts
 		.select((
-			posts::dsl::pid, posts::dsl::author, posts::dsl::text, posts::dsl::visibility,
-			posts::dsl::status, posts::dsl::parent, posts::dsl::seq,
+			posts::dsl::pid,
+			posts::dsl::author,
+			posts::dsl::text,
+			posts::dsl::visibility,
+			posts::dsl::status,
+			posts::dsl::parent,
+			posts::dsl::seq,
 		))
 		.load::<(i64, String, String, i32, i32, Option<i64>, i64)>(conn)
 		.unwrap_or_default();
@@ -178,31 +191,43 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		.collect();
 	let posts_map: Vec<(u64, Post)> = post_rows
 		.into_iter()
-		.map(|(pid, author, text, vis, code, parent, _seq)| (
-			pid as u64,
-			Post {
-				author,
-				text,
-				visibility: dec_vis(vis),
-				status: dec_status(code),
-				likes: like_rows.iter()
-					.filter(|row| row.0 == pid)
-					.map(|row| row.1.clone())
-					.collect(),
-				replies: reply_rows.iter()
-					.filter(|row| row.0 == pid)
-					.map(|row| row.1 as u64)
-					.collect(),
-				parent: parent.map(|p| p as u64),
-			},
-		))
+		.map(|(pid, author, text, vis, code, parent, _seq)| {
+			(
+				pid as u64,
+				Post {
+					author,
+					text,
+					visibility: dec_vis(vis),
+					status: dec_status(code),
+					likes: like_rows
+						.iter()
+						.filter(|row| row.0 == pid)
+						.map(|row| row.1.clone())
+						.collect(),
+					replies: reply_rows
+						.iter()
+						.filter(|row| row.0 == pid)
+						.map(|row| row.1 as u64)
+						.collect(),
+					parent: parent.map(|p| p as u64),
+				},
+			)
+		})
 		.collect();
 	let used_post_ids: Vec<u64> = posts_map.iter().map(|row| row.0).collect();
 	let used_session_ids: Vec<u64> = session_rows.iter().map(|row| row.0 as u64).collect();
 	World {
 		accounts: account_rows
 			.into_iter()
-			.map(|(username, password, vis)| (username, Account {password, default_visibility: dec_vis(vis)}))
+			.map(|(username, password, vis)| {
+				(
+					username,
+					Account {
+						password,
+						default_visibility: dec_vis(vis),
+					},
+				)
+			})
 			.collect(),
 		sessions: session_rows
 			.into_iter()
@@ -216,102 +241,420 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 	}
 }
 
-
 // ---- Saving World (full rewrite) ----
 
 /// Full rewrite of the DB: wipe the six tables, then insert every row of w.
 /// seq is re-stamped 1..n over newest_first REVERSED (oldest to newest), so
 /// a later ORDER BY seq DESC reproduces w.newest_first exactly.
 pub fn save_world(conn: &mut SqliteConnection, w: World) {
-	 let _wiped_accounts = delete(accounts::dsl::accounts).execute(conn);
-	 let _wiped_sessions = delete(sessions::dsl::sessions).execute(conn);
-	 let _wiped_posts = delete(posts::dsl::posts).execute(conn);
-	 let _wiped_likes = delete(likes::dsl::likes).execute(conn);
-	 let _wiped_replies = delete(replies::dsl::replies).execute(conn);
-	 let _wiped_follows = delete(follows::dsl::follows).execute(conn);
-	 let mut seq_of: HashMap<u64, i64> = HashMap::new();
-	 for (index, pid) in w.newest_first.into_iter().rev().enumerate() {
-	  seq_of.insert(pid, (index as i64) + 1);
-	 }
-	 let account_rows: Vec<_> = w.accounts.into_iter()
-		.map(|(username, account)| (
-		accounts::dsl::username.eq(username), accounts::dsl::password.eq(account.password),
-				accounts::dsl::visibility.eq(enc_vis(account.default_visibility))
-		))
-		.collect();
-	 let session_rows: Vec<_> = w.sessions.into_iter()
-		.map(|(sid, st)| {
-			 let (code, user) = enc_sess_row(st);
-			(sessions::dsl::sid.eq(sid as i64), sessions::dsl::status.eq(code), sessions::dsl::user.eq(user))
+	let _wiped_accounts = delete(accounts::dsl::accounts).execute(conn);
+	let _wiped_sessions = delete(sessions::dsl::sessions).execute(conn);
+	let _wiped_posts = delete(posts::dsl::posts).execute(conn);
+	let _wiped_likes = delete(likes::dsl::likes).execute(conn);
+	let _wiped_replies = delete(replies::dsl::replies).execute(conn);
+	let _wiped_follows = delete(follows::dsl::follows).execute(conn);
+	let mut seq_of: HashMap<u64, i64> = HashMap::new();
+	for (index, pid) in w.newest_first.into_iter().rev().enumerate() {
+		seq_of.insert(pid, (index as i64) + 1);
+	}
+	let account_rows: Vec<_> = w
+		.accounts
+		.into_iter()
+		.map(|(username, account)| {
+			(
+				accounts::dsl::username.eq(username),
+				accounts::dsl::password.eq(account.password),
+				accounts::dsl::visibility.eq(enc_vis(account.default_visibility)),
+			)
 		})
 		.collect();
-	 let mut post_rows = vec![];
-	 let mut like_rows = vec![];
-	 let mut reply_rows = vec![];
-	 for (pid, post) in w.posts.into_iter() {
-	  post_rows.push((
-		posts::dsl::pid.eq(pid as i64),
-		posts::dsl::author.eq(post.author),
-		posts::dsl::text.eq(post.text),
-		posts::dsl::visibility.eq(enc_vis(post.visibility)),
-		posts::dsl::status.eq(enc_status(post.status)),
-		posts::dsl::parent.eq(post.parent.map(|p| p as i64)),
-		posts::dsl::seq.eq(*seq_of.get(&pid).unwrap_or(&0)),
-	  ));
-	  for user in post.likes.into_iter() {
-		like_rows.push((likes::dsl::post_pid.eq(pid as i64), likes::dsl::user.eq(user)));
-	  }
-	  for reply_pid in post.replies.into_iter() {
-		reply_rows.push((replies::dsl::post_pid.eq(pid as i64), replies::dsl::reply_pid.eq(reply_pid as i64)));
-	  }
-	 }
-	 if !account_rows.is_empty() {
-	  let _ = insert_into(accounts::dsl::accounts).values(&account_rows).execute(conn);
-	 }
-	 if !session_rows.is_empty() {
-	  let _ = insert_into(sessions::dsl::sessions).values(&session_rows).execute(conn);
-	 }
-	 if !post_rows.is_empty() {
-	  let _ = insert_into(posts::dsl::posts).values(&post_rows).execute(conn);
-	 }
-	 if !like_rows.is_empty() {
-	  let _ = insert_into(likes::dsl::likes).values(&like_rows).execute(conn);
-	 }
-	 if !reply_rows.is_empty() {
-	  let _ = insert_into(replies::dsl::replies).values(&reply_rows).execute(conn);
-	 }
-	 let follow_rows: Vec<_> = w.follows.into_iter()
-		.map(|(follower, followee)| (follows::dsl::follower.eq(follower), follows::dsl::followee.eq(followee)))
+	let session_rows: Vec<_> = w
+		.sessions
+		.into_iter()
+		.map(|(sid, st)| {
+			let (code, user) = enc_sess_row(st);
+			(
+				sessions::dsl::sid.eq(sid as i64),
+				sessions::dsl::status.eq(code),
+				sessions::dsl::user.eq(user),
+			)
+		})
 		.collect();
-	 if !follow_rows.is_empty() {
-	  let _ = insert_into(follows::dsl::follows).values(&follow_rows).execute(conn);
-	 }
-	 // used_post_ids / used_session_ids are not stored: load_world derives them
-	 // from the keys actually present, which keeps the DB the reentrant source of truth.
+	let mut post_rows = vec![];
+	let mut like_rows = vec![];
+	let mut reply_rows = vec![];
+	for (pid, post) in w.posts.into_iter() {
+		post_rows.push((
+			posts::dsl::pid.eq(pid as i64),
+			posts::dsl::author.eq(post.author),
+			posts::dsl::text.eq(post.text),
+			posts::dsl::visibility.eq(enc_vis(post.visibility)),
+			posts::dsl::status.eq(enc_status(post.status)),
+			posts::dsl::parent.eq(post.parent.map(|p| p as i64)),
+			posts::dsl::seq.eq(*seq_of.get(&pid).unwrap_or(&0)),
+		));
+		for user in post.likes.into_iter() {
+			like_rows.push((
+				likes::dsl::post_pid.eq(pid as i64),
+				likes::dsl::user.eq(user),
+			));
+		}
+		for reply_pid in post.replies.into_iter() {
+			reply_rows.push((
+				replies::dsl::post_pid.eq(pid as i64),
+				replies::dsl::reply_pid.eq(reply_pid as i64),
+			));
+		}
+	}
+	if !account_rows.is_empty() {
+		let _ = insert_into(accounts::dsl::accounts)
+			.values(&account_rows)
+			.execute(conn);
+	}
+	if !session_rows.is_empty() {
+		let _ = insert_into(sessions::dsl::sessions)
+			.values(&session_rows)
+			.execute(conn);
+	}
+	if !post_rows.is_empty() {
+		let _ = insert_into(posts::dsl::posts)
+			.values(&post_rows)
+			.execute(conn);
+	}
+	if !like_rows.is_empty() {
+		let _ = insert_into(likes::dsl::likes)
+			.values(&like_rows)
+			.execute(conn);
+	}
+	if !reply_rows.is_empty() {
+		let _ = insert_into(replies::dsl::replies)
+			.values(&reply_rows)
+			.execute(conn);
+	}
+	let follow_rows: Vec<_> = w
+		.follows
+		.into_iter()
+		.map(|(follower, followee)| {
+			(
+				follows::dsl::follower.eq(follower),
+				follows::dsl::followee.eq(followee),
+			)
+		})
+		.collect();
+	if !follow_rows.is_empty() {
+		let _ = insert_into(follows::dsl::follows)
+			.values(&follow_rows)
+			.execute(conn);
+	}
+	// used_post_ids / used_session_ids are not stored: load_world derives them
+	// from the keys actually present, which keeps the DB the reentrant source of truth.
+}
+
+// ---- Write-through diff (task T4) ----
+
+#[doc = "Bounded write-through: the DB must already mirror `before`; we mutate only"]
+#[doc = "the delta to `after`. Accounts only ever get INSERTs (password/visibility of"]
+#[doc = "an existing account never changes). Sessions UPDATE on status/user change,"]
+#[doc = "INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed"]
+#[doc = "with seq = (max existing seq in the DB) + 1, growing by one per insertion, so"]
+#[doc = "ORDER BY seq DESC keeps newest_first (new posts prepend); existing seqs stay put."]
+#[doc = "Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;"]
+#[doc = "follows likewise. Nothing existing is rewritten, so this is O(delta)."]
+pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
+	let prev_users: HashMap<String, bool> = before
+		.accounts
+		.iter()
+		.map(|(username, _)| (username.clone(), true))
+		.collect();
+	let next_users: HashMap<String, bool> = after
+		.accounts
+		.iter()
+		.map(|(username, _)| (username.clone(), true))
+		.collect();
+	for (username, account) in after.accounts.iter() {
+		if !prev_users.contains_key(username) {
+			let _ = insert_into(accounts::dsl::accounts)
+				.values((
+					accounts::dsl::username.eq(username),
+					accounts::dsl::password.eq(account.password.clone()),
+					accounts::dsl::visibility.eq(enc_vis(account.default_visibility.clone())),
+				))
+				.execute(conn);
+		}
+	}
+	for (username, _) in before.accounts.iter() {
+		if !next_users.contains_key(username) {
+			let _ = delete(accounts::dsl::accounts)
+				.filter(accounts::dsl::username.eq(username))
+				.execute(conn);
+		}
+	}
+	let prev_sessions: HashMap<u64, SessionStatus> = before
+		.sessions
+		.iter()
+		.map(|(sid, status)| (*sid, status.clone()))
+		.collect();
+	let next_sessions: HashMap<u64, SessionStatus> = after
+		.sessions
+		.iter()
+		.map(|(sid, status)| (*sid, status.clone()))
+		.collect();
+	for (sid, status) in after.sessions.iter() {
+		let (code, user) = enc_sess_row(status.clone());
+		match prev_sessions.get(sid) {
+			None => {
+				let _ = insert_into(sessions::dsl::sessions)
+					.values((
+						sessions::dsl::sid.eq(*sid as i64),
+						sessions::dsl::status.eq(code),
+						sessions::dsl::user.eq(user),
+					))
+					.execute(conn);
+			}
+			Some(old) => {
+				if old != status {
+					let _ = update(sessions::dsl::sessions)
+						.filter(sessions::dsl::sid.eq(*sid as i64))
+						.set((sessions::dsl::status.eq(code), sessions::dsl::user.eq(user)))
+						.execute(conn);
+				}
+			}
+		}
+	}
+	for (sid, _) in before.sessions.iter() {
+		if !next_sessions.contains_key(sid) {
+			let _ = delete(sessions::dsl::sessions)
+				.filter(sessions::dsl::sid.eq(*sid as i64))
+				.execute(conn);
+		}
+	}
+	// max existing seq via plain load (bounded): avoids the Aggregates type soup.
+	let seqs: Vec<i64> = posts::dsl::posts
+		.select(posts::dsl::seq)
+		.load::<i64>(conn)
+		.unwrap_or_default();
+	let mut next_seq: i64 = 1;
+	for s in seqs.into_iter() {
+		if s >= next_seq {
+			next_seq = s + 1;
+		}
+	}
+	let prev_posts: HashMap<u64, Post> = before
+		.posts
+		.iter()
+		.map(|(pid, post)| (*pid, post.clone()))
+		.collect();
+	let next_pids: HashSet<u64> = after.posts.iter().map(|(pid, _)| *pid).collect();
+	for (pid, post) in after.posts.iter() {
+		match prev_posts.get(pid) {
+			None => {
+				let _ = insert_into(posts::dsl::posts)
+					.values((
+						posts::dsl::pid.eq(*pid as i64),
+						posts::dsl::author.eq(post.author.clone()),
+						posts::dsl::text.eq(post.text.clone()),
+						posts::dsl::visibility.eq(enc_vis(post.visibility.clone())),
+						posts::dsl::status.eq(enc_status(post.status.clone())),
+						posts::dsl::parent.eq(post.parent.map(|p| p as i64)),
+						posts::dsl::seq.eq(next_seq),
+					))
+					.execute(conn);
+				next_seq += 1;
+				for user in post.likes.iter() {
+					let _ = insert_into(likes::dsl::likes)
+						.values((
+							likes::dsl::post_pid.eq(*pid as i64),
+							likes::dsl::user.eq(user.clone()),
+						))
+						.execute(conn);
+				}
+				for reply_pid in post.replies.iter() {
+					let _ = insert_into(replies::dsl::replies)
+						.values((
+							replies::dsl::post_pid.eq(*pid as i64),
+							replies::dsl::reply_pid.eq(*reply_pid as i64),
+						))
+						.execute(conn);
+				}
+			}
+			Some(old) => {
+				if old.status != post.status || old.visibility != post.visibility {
+					let _ = update(posts::dsl::posts)
+						.filter(posts::dsl::pid.eq(*pid as i64))
+						.set((
+							posts::dsl::status.eq(enc_status(post.status.clone())),
+							posts::dsl::visibility.eq(enc_vis(post.visibility.clone())),
+						))
+						.execute(conn);
+				}
+				for user in post.likes.iter() {
+					if !old.likes.iter().any(|prev| prev == user) {
+						let _ = insert_into(likes::dsl::likes)
+							.values((
+								likes::dsl::post_pid.eq(*pid as i64),
+								likes::dsl::user.eq(user),
+							))
+							.execute(conn);
+					}
+				}
+				for user in old.likes.iter() {
+					if !post.likes.iter().any(|next| next == user) {
+						let _ = delete(likes::dsl::likes)
+							.filter(
+								likes::dsl::post_pid
+									.eq(*pid as i64)
+									.and(likes::dsl::user.eq(user)),
+							)
+							.execute(conn);
+					}
+				}
+				for reply_pid in post.replies.iter() {
+					if !old.replies.iter().any(|prev| prev == reply_pid) {
+						let _ = insert_into(replies::dsl::replies)
+							.values((
+								replies::dsl::post_pid.eq(*pid as i64),
+								replies::dsl::reply_pid.eq(*reply_pid as i64),
+							))
+							.execute(conn);
+					}
+				}
+				for reply_pid in old.replies.iter() {
+					if !post.replies.iter().any(|next| next == reply_pid) {
+						let _ = delete(replies::dsl::replies)
+							.filter(
+								replies::dsl::post_pid
+									.eq(*pid as i64)
+									.and(replies::dsl::reply_pid.eq(*reply_pid as i64)),
+							)
+							.execute(conn);
+					}
+				}
+			}
+		}
+	}
+	for (pid, _old) in before.posts.iter() {
+		if !next_pids.contains(pid) {
+			let _ = delete(posts::dsl::posts)
+				.filter(posts::dsl::pid.eq(*pid as i64))
+				.execute(conn);
+			let _ = delete(likes::dsl::likes)
+				.filter(likes::dsl::post_pid.eq(*pid as i64))
+				.execute(conn);
+			let _ = delete(replies::dsl::replies)
+				.filter(replies::dsl::post_pid.eq(*pid as i64))
+				.execute(conn);
+		}
+	}
+	let prev_follows: HashSet<(String, String)> = before
+		.follows
+		.iter()
+		.map(|(follower, followee)| (follower.clone(), followee.clone()))
+		.collect();
+	let next_follows: HashSet<(String, String)> = after
+		.follows
+		.iter()
+		.map(|(follower, followee)| (follower.clone(), followee.clone()))
+		.collect();
+	for (follower, followee) in after.follows.iter() {
+		if !prev_follows.contains(&(follower.clone(), followee.clone())) {
+			let _ = insert_into(follows::dsl::follows)
+				.values((
+					follows::dsl::follower.eq(follower),
+					follows::dsl::followee.eq(followee),
+				))
+				.execute(conn);
+		}
+	}
+	for (follower, followee) in before.follows.iter() {
+		if !next_follows.contains(&(follower.clone(), followee.clone())) {
+			let _ = delete(follows::dsl::follows)
+				.filter(
+					follows::dsl::follower
+						.eq(follower)
+						.and(follows::dsl::followee.eq(followee)),
+				)
+				.execute(conn);
+		}
+	}
 }
 
 #[cfg(test)]
 mod db_tests {
-	use super::{Account, Post, PostStatus, SessionStatus, Visibility, World, init_or_open, load_world, save_world};
+	use super::{
+		Account, Post, PostStatus, SessionStatus, Visibility, World, apply, init_or_open,
+		load_world, save_world,
+	};
 	use crate::model::empty_world;
 
 	#[doc = "Canonical well-formed World for the save/load tests; rows are pre-sorted in the"]
 	#[doc = "order load_world returns them, so equality holds after a full save/reopen round-trip."]
 	fn build_world() -> World {
 		World {
-			accounts: vec!(("alice".to_string(), Account { password: "a".to_string(), default_visibility: Visibility::Everyone }),
-				("bob".to_string(), Account { password: "b".to_string(), default_visibility: Visibility::FollowersOnly })),
-			sessions: vec!((100, SessionStatus::Active("alice".to_string())), (200, SessionStatus::Revoked)),
-			posts: vec!(				(1, Post { author: "alice".to_string(), text: "hello".to_string(), visibility: Visibility::Everyone,
-				status: PostStatus::Other, likes: vec!("bob".to_string()), replies: vec!(2), parent: None }),
-				(2, Post { author: "bob".to_string(), text: "reply-text".to_string(), visibility: Visibility::FollowersOnly,
-					status: PostStatus::Other, likes: vec![], replies: vec![], parent: Some(1) }),
-				(3, Post { author: "alice".to_string(), text: "gone".to_string(), visibility: Visibility::Everyone,
-					status: PostStatus::Deleted, likes: vec![], replies: vec![], parent: None })),
-			follows: vec!(("alice".to_string(), "bob".to_string()), ("bob".to_string(), "alice".to_string())),
-			newest_first: vec!(3, 2, 1),
-			used_post_ids: vec!(1, 2, 3),
-			used_session_ids: vec!(100, 200),
+			accounts: vec![
+				(
+					"alice".to_string(),
+					Account {
+						password: "a".to_string(),
+						default_visibility: Visibility::Everyone,
+					},
+				),
+				(
+					"bob".to_string(),
+					Account {
+						password: "b".to_string(),
+						default_visibility: Visibility::FollowersOnly,
+					},
+				),
+			],
+			sessions: vec![
+				(100, SessionStatus::Active("alice".to_string())),
+				(200, SessionStatus::Revoked),
+			],
+			posts: vec![
+				(
+					1,
+					Post {
+						author: "alice".to_string(),
+						text: "hello".to_string(),
+						visibility: Visibility::Everyone,
+						status: PostStatus::Other,
+						likes: vec!["bob".to_string()],
+						replies: vec![2],
+						parent: None,
+					},
+				),
+				(
+					2,
+					Post {
+						author: "bob".to_string(),
+						text: "reply-text".to_string(),
+						visibility: Visibility::FollowersOnly,
+						status: PostStatus::Other,
+						likes: vec![],
+						replies: vec![],
+						parent: Some(1),
+					},
+				),
+				(
+					3,
+					Post {
+						author: "alice".to_string(),
+						text: "gone".to_string(),
+						visibility: Visibility::Everyone,
+						status: PostStatus::Deleted,
+						likes: vec![],
+						replies: vec![],
+						parent: None,
+					},
+				),
+			],
+			follows: vec![
+				("alice".to_string(), "bob".to_string()),
+				("bob".to_string(), "alice".to_string()),
+			],
+			newest_first: vec![3, 2, 1],
+			used_post_ids: vec![1, 2, 3],
+			used_session_ids: vec![100, 200],
 		}
 	}
 
@@ -339,7 +682,7 @@ mod db_tests {
 	#[test]
 	#[doc = "T3 gate: two reopened loads agree on the same DB file."]
 	fn test_db_reopen_equal() {
-			let path = "/tmp/ft-db-test-reopen.sqlite";
+		let path = "/tmp/ft-db-test-reopen.sqlite";
 		let w = build_world();
 		let mut conn = init_or_open(path.to_string()).unwrap();
 		save_world(&mut conn, w);
@@ -361,5 +704,129 @@ mod db_tests {
 		let loaded = load_world(&mut again);
 		assert!(loaded.sessions.len() == 2);
 		assert!(loaded.sessions[1] == (200, SessionStatus::Revoked));
+	}
+
+	#[doc = "The after-World for the bounded-diff test: signup zoe (INSERT),"]
+	#[doc = "session 100 Active->Revoked (UPDATE), 200 dropped (DELETE), 300 inserted"]
+	#[doc = "(INSERT, Unused), post 1 liked by carol and replied to by pid 500 (whose"]
+	#[doc = "parent stays 1), post 2 flipped to deleted, follows changed. Rows stay in"]
+	#[doc = "load_world's canonical sorted order."]
+	fn build_after() -> World {
+		World {
+			accounts: vec![
+				(
+					"alice".to_string(),
+					Account {
+						password: "a".to_string(),
+						default_visibility: Visibility::Everyone,
+					},
+				),
+				(
+					"bob".to_string(),
+					Account {
+						password: "b".to_string(),
+						default_visibility: Visibility::FollowersOnly,
+					},
+				),
+				(
+					"zoe".to_string(),
+					Account {
+						password: "z".to_string(),
+						default_visibility: Visibility::Everyone,
+					},
+				),
+			],
+			sessions: vec![(100, SessionStatus::Revoked), (300, SessionStatus::Unused)],
+			posts: vec![
+				(
+					1,
+					Post {
+						author: "alice".to_string(),
+						text: "hello".to_string(),
+						visibility: Visibility::Everyone,
+						status: PostStatus::Other,
+						likes: vec!["bob".to_string(), "carol".to_string()],
+						replies: vec![2, 500],
+						parent: None,
+					},
+				),
+				(
+					2,
+					Post {
+						author: "bob".to_string(),
+						text: "reply-text".to_string(),
+						visibility: Visibility::FollowersOnly,
+						status: PostStatus::Deleted,
+						likes: vec![],
+						replies: vec![],
+						parent: Some(1),
+					},
+				),
+				(
+					3,
+					Post {
+						author: "alice".to_string(),
+						text: "gone".to_string(),
+						visibility: Visibility::Everyone,
+						status: PostStatus::Deleted,
+						likes: vec![],
+						replies: vec![],
+						parent: None,
+					},
+				),
+				(
+					500,
+					Post {
+						author: "alice".to_string(),
+						text: "new reply".to_string(),
+						visibility: Visibility::Everyone,
+						status: PostStatus::Other,
+						likes: vec![],
+						replies: vec![],
+						parent: Some(1),
+					},
+				),
+			],
+			follows: vec![
+				("alice".to_string(), "bob".to_string()),
+				("carol".to_string(), "alice".to_string()),
+			],
+			newest_first: vec![500, 3, 2, 1],
+			used_post_ids: vec![1, 2, 3, 500],
+			used_session_ids: vec![100, 300],
+		}
+	}
+
+	#[test]
+	#[doc = "T4 gate: apply on an empty DB (before = empty) INSERTs every row of after;"]
+	#[doc = "new pids get seq = max+1 from scratch, and reload reproduces after."]
+	fn test_apply_inserts_all() {
+		let path = "/tmp/ft-apply-empty.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// Wipe first so the test is hermetic when the file already exists from an earlier run.
+		save_world(&mut conn, empty_world());
+		let after = build_world();
+		apply(&mut conn, &empty_world(), &after);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		assert!(load_world(&mut again) == after);
+	}
+
+	#[test]
+	#[doc = "T4 gate: bounded diff from a saved before-world: INSERTs, UPDATEs (session"]
+	#[doc = "status, post status, likes, replies, follows), DELETEs (session 200, follow"]
+	#[doc = "(bob,alice)); reload equals after, newest_first [500,3,2,1] (newest-first"]
+	#[doc = "preserved, existing seqs untouched) and the reply's parent is still 1."]
+	fn test_apply_diff() {
+		let path = "/tmp/ft-apply-diff.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let before = build_world();
+		let after = build_after();
+		apply(&mut conn, &before, &after);
+		assert!(load_world(&mut conn) == after);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		assert!(load_world(&mut again) == after);
+		assert!(load_world(&mut conn).newest_first == vec!(500, 3, 2, 1));
+		assert!(load_world(&mut conn).posts[3].1.parent == Some(1));
 	}
 }

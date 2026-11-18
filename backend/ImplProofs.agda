@@ -15,6 +15,8 @@ open import Helpers
 
 open import ImplWire
 
+open import ImplApply
+
 module ImplProofs
   (SessionId PostId : Set)
   (new-sid : CreateNew SessionId)
@@ -224,3 +226,8 @@ th-prop-timeline-personal = get-personal-timeline
 -- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.
 
 -- storage encodings proved in ImplStorage.agda
+
+-- the bounded write-through diff pins for backend/src/db.rs:apply (INSERT/UPDATE/DELETE per table,
+-- seq = max + 1) are refl theorems over sample session/post/like/reply/follow tables in ImplApply.agda:
+-- opening db.rs's World shape inside this module would clash with Twitter's World, so the pins live in a
+-- module that sees only the stdlib.

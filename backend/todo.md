@@ -19,9 +19,15 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
-- [ ] Task T4a-P (subagent impl, proofs): ImplApply.agda refl theorems for apply()'s diff
-      semantics mirroring db.rs test_apply_inserts_all/test_apply_diff (insert/update/delete
-      per table, seq = max+1); import into ImplProofs.agda; gate green. THEN accept+commit T4a.
+- [x] Task T4a-P (subagent impl, proofs, ACCEPTED): backend/ImplApply.agda (408 lines; models the
+      six DB tables as assoc-lists over the sample worlds db.rs:591 build_world / :714 build_after;
+      apply-diff mirrors apply()'s INSERT/UPDATE/DELETE clauses; 32 refl theorems: empty-insert per
+      table, per-table reload==after, sess 100 UPDATE Active→Revoked, 200 DELETE, 300 INSERT, pid 2
+      status UPDATE, pid 3 stays Deleted, pid 500 seq=4=max+1, existing seqs kept, newest_first
+      [500,3,2,1], parent 500→1, like/reply/follow pair deltas). `open import ImplApply` in ImplProofs.agda.
+      NOTE: brief's world description was wrong; agent modelled the FILE (zoe INSERT, sid 300 Unused
+      INSERT, pid 2 flip) — matches Rust tests. Gates: agda ImplApply/ImplProofs exit 0, 24 cargo tests.
+- [x] Task T4a (db.rs apply rework in working tree, accepted via T4a-P): committed below.
 - [ ] Task T4b (subagent impl): main.rs — rocket 13 POST routes (wire.rs parse -> model.step ->
       apply() write-through), fresh u64 ids from /dev/urandom (reject used), Date header,
       managed State<World>; reentrancy smoke: 3 runs on ONE DB file via curl.
