@@ -19,18 +19,13 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
-- [x] Task T4a-P (subagent impl, proofs, ACCEPTED): backend/ImplApply.agda (408 lines; models the
-      six DB tables as assoc-lists over the sample worlds db.rs:591 build_world / :714 build_after;
-      apply-diff mirrors apply()'s INSERT/UPDATE/DELETE clauses; 32 refl theorems: empty-insert per
-      table, per-table reload==after, sess 100 UPDATE Active→Revoked, 200 DELETE, 300 INSERT, pid 2
-      status UPDATE, pid 3 stays Deleted, pid 500 seq=4=max+1, existing seqs kept, newest_first
-      [500,3,2,1], parent 500→1, like/reply/follow pair deltas). `open import ImplApply` in ImplProofs.agda.
-      NOTE: brief's world description was wrong; agent modelled the FILE (zoe INSERT, sid 300 Unused
-      INSERT, pid 2 flip) — matches Rust tests. Gates: agda ImplApply/ImplProofs exit 0, 24 cargo tests.
-- [x] Task T4a (db.rs apply rework in working tree, accepted via T4a-P): committed below.
-- [ ] Task T4b (subagent impl): main.rs — rocket 13 POST routes (wire.rs parse -> model.step ->
-      apply() write-through), fresh u64 ids from /dev/urandom (reject used), Date header,
-      managed State<World>; reentrancy smoke: 3 runs on ONE DB file via curl.
+- [ ] Task T4b-1 (subagent impl, SMALL): main.rs PART 1 — pure helpers only, NO rocket macros:
+      civil_date/http_date (std-only), to_output (model.Result -> wire.ApiResponse), to_http
+      (wire.WireResponse -> rocket Response builder), random_u64 (/dev/urandom 8B BE), sample_id
+      (nonzero + !used). Gate: build + clippy -D + fmt.
+- [ ] Task T4b-2 (subagent impl, SMALL): main.rs PART 2 — serve() (parse_action -> to_command ->
+      sample ids -> step -> apply -> respond) + Mutex<Server{world,conn}> State + the 13 #[post]
+      route wrappers + #[launch] (init_or_open + load_world at startup, reentrant).
 - [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js
@@ -82,6 +77,14 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
+- T4b ATTEMPT #1 REJECTED (reverted by coordinator: main.rs back to a tiny stub via printf).
+  Failure mode: the subagent's main.rs was GARBAGE — function bodies replaced by nested `{ { { ; } } }`,
+  `ref_box` nonsense, only 1 of 13 routes emitted; cargo build 1 error. Same corruption family as the
+  earlier wire/tooling gotcha (code-generation tools mangle punctuation-heavy writes). LESSON for impl
+  agents: after EVERY write/edit of a .rs file, (a) `wc -l` compare against intent, (b) grep for
+  `{;$`/empty-block patterns, (c) run cargo build immediately, and write in small chunks (one function
+  per edit), never one giant write. Coordinator note: my own large write call also came out mangled
+  (long filler tail) — keep tool payloads short.
 - T4a (apply in db.rs) REWORKED in working tree (uncommitted, on top of 58f2c92's db.rs):
   pub apply(conn, before, after) bounded write-through O(delta) — accounts INSERT/DELETE,
   sessions INSERT/UPDATE/DELETE, posts INSERT with seq = (max DB seq)+1 growing (keeps
