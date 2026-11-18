@@ -19,6 +19,12 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   (real JSON fine), regex fallback. So backend must accept both spec POST bodies and frontend GETs (task T4).
 
 ## Next
+- [ ] Task T4a-P (subagent impl, proofs): ImplApply.agda refl theorems for apply()'s diff
+      semantics mirroring db.rs test_apply_inserts_all/test_apply_diff (insert/update/delete
+      per table, seq = max+1); import into ImplProofs.agda; gate green. THEN accept+commit T4a.
+- [ ] Task T4b (subagent impl): main.rs — rocket 13 POST routes (wire.rs parse -> model.step ->
+      apply() write-through), fresh u64 ids from /dev/urandom (reject used), Date header,
+      managed State<World>; reentrancy smoke: 3 runs on ONE DB file via curl.
 - [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js
@@ -70,6 +76,14 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
+- T4a (apply in db.rs) REWORKED in working tree (uncommitted, on top of 58f2c92's db.rs):
+  pub apply(conn, before, after) bounded write-through O(delta) — accounts INSERT/DELETE,
+  sessions INSERT/UPDATE/DELETE, posts INSERT with seq = (max DB seq)+1 growing (keeps
+  ORDER BY seq DESC newest-first), status flips UPDATE, likes/replies/follows pair INSERT/DELETE.
+  Verified by coordinator: cargo build OK, fmt --check exit 0, clippy -- -D warnings exit 0,
+  24 tests pass (6 new db tests: roundtrips + test_apply_inserts_all + test_apply_diff).
+  Agda gate (ImplProofs/ImplWire/ImplStorage) exit 0. NOT acceptable yet: no proofs for the
+  apply tests. T4a-P adds them, then commit.
 - T3 ATTEMPT #2 CANCELLED (thinking loop; partial non-compiling db.rs deleted, lib.rs restored to HEAD).
   Lessons (R8, verified from diesel-2.4.0 vendored sources during attempt):
   * `.load::<Element>(conn)` returns QueryResult<Vec<Element>> (doctest: `users.load::<String>(connection)`);
