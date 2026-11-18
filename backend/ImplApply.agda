@@ -406,3 +406,28 @@ th-follow-added = refl
 
 th-follow-dropped : ∈-follow (frow "bob" "alice") (apply-follows follows-B follows-A) ≡ false
 th-follow-dropped = refl
+
+-- ---- apply()'s success flag (task DB3a) ----
+
+-- The Bool that db.rs:apply now returns is true iff the whole batch COMMITs, i.e.
+-- iff every INSERTed PRIMARY KEY (accounts username, sessions sid, posts pid) is
+-- absent from the rows already on disk; likes/replies/follows have no PK so their
+-- INSERTs never error.  collide models the PK check over the pid column.
+collide : List ℕ → List ℕ → Bool
+collide db [] = false
+collide db (p ∷ ps) with key∈ p db
+collide db (p ∷ ps) | true = true
+collide db (p ∷ ps) | false = collide db ps
+
+inserted-pids : W → W → List ℕ
+inserted-pids before after =
+  flt (λ p → not (key∈ p (map pid-of (post-of before)))) (map pid-of (post-of after))
+
+apply-ok : W → W → Bool
+apply-ok before after =
+  not (collide (map pid-of (post-of before)) (inserted-pids before after))
+
+-- test_apply_returns_true: the DB equals BEFORE, so the sample diff INSERTs only pid
+-- 500 (fresh), every statement returns Ok, and apply COMMITs with true.
+th-apply-ok : apply-ok world-B world-A ≡ true
+th-apply-ok = refl

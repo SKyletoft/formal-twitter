@@ -127,6 +127,12 @@ pub fn init_or_open(path: String) -> ConnectionResult<SqliteConnection> {
 	Ok(conn)
 }
 
+/// Open an existing SQLite DB without touching the CREATEs: the pure open used
+/// by reload paths, so write-through can be observed from a fresh connection.
+pub fn reopen(path: String) -> ConnectionResult<SqliteConnection> {
+	SqliteConnection::establish(&path)
+}
+
 // ---- Loading World from the DB ----
 
 /// Load every table with static typed queries. A query error (corrupt or
@@ -360,7 +366,12 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 #[doc = "ORDER BY seq DESC keeps newest_first (new posts prepend); existing seqs stay put."]
 #[doc = "Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;"]
 #[doc = "follows likewise. Nothing existing is rewritten, so this is O(delta)."]
-pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
+#[doc = "The whole batch is one sqlite transaction (raw BEGIN/COMMIT or ROLLBACK pragmas);"]
+#[doc = "the Bool reports whether the batch committed, i.e. false means the DB is unchanged."]
+pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool {
+	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
+	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
+	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
 	let prev_users: HashMap<String, bool> = before
 		.accounts
 		.iter()
@@ -373,20 +384,22 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 		.collect();
 	for (username, account) in after.accounts.iter() {
 		if !prev_users.contains_key(username) {
-			let _ = insert_into(accounts::dsl::accounts)
+			ok &= insert_into(accounts::dsl::accounts)
 				.values((
 					accounts::dsl::username.eq(username),
 					accounts::dsl::password.eq(account.password.clone()),
 					accounts::dsl::visibility.eq(enc_vis(account.default_visibility.clone())),
 				))
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
 	for (username, _) in before.accounts.iter() {
 		if !next_users.contains_key(username) {
-			let _ = delete(accounts::dsl::accounts)
+			ok &= delete(accounts::dsl::accounts)
 				.filter(accounts::dsl::username.eq(username))
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
 	let prev_sessions: HashMap<u64, SessionStatus> = before
@@ -403,29 +416,32 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 		let (code, user) = enc_sess_row(status.clone());
 		match prev_sessions.get(sid) {
 			None => {
-				let _ = insert_into(sessions::dsl::sessions)
+				ok &= insert_into(sessions::dsl::sessions)
 					.values((
 						sessions::dsl::sid.eq(*sid as i64),
 						sessions::dsl::status.eq(code),
 						sessions::dsl::user.eq(user),
 					))
-					.execute(conn);
+					.execute(conn)
+					.is_ok();
 			}
 			Some(old) => {
 				if old != status {
-					let _ = update(sessions::dsl::sessions)
+					ok &= update(sessions::dsl::sessions)
 						.filter(sessions::dsl::sid.eq(*sid as i64))
 						.set((sessions::dsl::status.eq(code), sessions::dsl::user.eq(user)))
-						.execute(conn);
+						.execute(conn)
+						.is_ok();
 				}
 			}
 		}
 	}
 	for (sid, _) in before.sessions.iter() {
 		if !next_sessions.contains_key(sid) {
-			let _ = delete(sessions::dsl::sessions)
+			ok &= delete(sessions::dsl::sessions)
 				.filter(sessions::dsl::sid.eq(*sid as i64))
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
 	// max existing seq via plain load (bounded): avoids the Aggregates type soup.
@@ -448,7 +464,7 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 	for (pid, post) in after.posts.iter() {
 		match prev_posts.get(pid) {
 			None => {
-				let _ = insert_into(posts::dsl::posts)
+				ok &= insert_into(posts::dsl::posts)
 					.values((
 						posts::dsl::pid.eq(*pid as i64),
 						posts::dsl::author.eq(post.author.clone()),
@@ -458,75 +474,83 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 						posts::dsl::parent.eq(post.parent.map(|p| p as i64)),
 						posts::dsl::seq.eq(next_seq),
 					))
-					.execute(conn);
+					.execute(conn)
+					.is_ok();
 				next_seq += 1;
 				for user in post.likes.iter() {
-					let _ = insert_into(likes::dsl::likes)
+					ok &= insert_into(likes::dsl::likes)
 						.values((
 							likes::dsl::post_pid.eq(*pid as i64),
 							likes::dsl::user.eq(user.clone()),
 						))
-						.execute(conn);
+						.execute(conn)
+						.is_ok();
 				}
 				for reply_pid in post.replies.iter() {
-					let _ = insert_into(replies::dsl::replies)
+					ok &= insert_into(replies::dsl::replies)
 						.values((
 							replies::dsl::post_pid.eq(*pid as i64),
 							replies::dsl::reply_pid.eq(*reply_pid as i64),
 						))
-						.execute(conn);
+						.execute(conn)
+						.is_ok();
 				}
 			}
 			Some(old) => {
 				if old.status != post.status || old.visibility != post.visibility {
-					let _ = update(posts::dsl::posts)
+					ok &= update(posts::dsl::posts)
 						.filter(posts::dsl::pid.eq(*pid as i64))
 						.set((
 							posts::dsl::status.eq(enc_status(post.status.clone())),
 							posts::dsl::visibility.eq(enc_vis(post.visibility.clone())),
 						))
-						.execute(conn);
+						.execute(conn)
+						.is_ok();
 				}
 				for user in post.likes.iter() {
 					if !old.likes.iter().any(|prev| prev == user) {
-						let _ = insert_into(likes::dsl::likes)
+						ok &= insert_into(likes::dsl::likes)
 							.values((
 								likes::dsl::post_pid.eq(*pid as i64),
 								likes::dsl::user.eq(user),
 							))
-							.execute(conn);
+							.execute(conn)
+							.is_ok();
 					}
 				}
 				for user in old.likes.iter() {
 					if !post.likes.iter().any(|next| next == user) {
-						let _ = delete(likes::dsl::likes)
+						ok &= delete(likes::dsl::likes)
 							.filter(
 								likes::dsl::post_pid
 									.eq(*pid as i64)
 									.and(likes::dsl::user.eq(user)),
 							)
-							.execute(conn);
+							.execute(conn)
+							.is_ok();
 					}
 				}
 				for reply_pid in post.replies.iter() {
 					if !old.replies.iter().any(|prev| prev == reply_pid) {
-						let _ = insert_into(replies::dsl::replies)
+						ok &= insert_into(replies::dsl::replies)
 							.values((
 								replies::dsl::post_pid.eq(*pid as i64),
 								replies::dsl::reply_pid.eq(*reply_pid as i64),
 							))
-							.execute(conn);
+							.execute(conn)
+							.is_ok();
 					}
 				}
 				for reply_pid in old.replies.iter() {
 					if !post.replies.iter().any(|next| next == reply_pid) {
-						let _ = delete(replies::dsl::replies)
+						ok &= delete(replies::dsl::replies)
 							.filter(
 								replies::dsl::post_pid
 									.eq(*pid as i64)
 									.and(replies::dsl::reply_pid.eq(*reply_pid as i64)),
 							)
-							.execute(conn);
+							.execute(conn)
+							.is_ok();
 					}
 				}
 			}
@@ -534,15 +558,18 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 	}
 	for (pid, _old) in before.posts.iter() {
 		if !next_pids.contains(pid) {
-			let _ = delete(posts::dsl::posts)
+			ok &= delete(posts::dsl::posts)
 				.filter(posts::dsl::pid.eq(*pid as i64))
-				.execute(conn);
-			let _ = delete(likes::dsl::likes)
+				.execute(conn)
+				.is_ok();
+			ok &= delete(likes::dsl::likes)
 				.filter(likes::dsl::post_pid.eq(*pid as i64))
-				.execute(conn);
-			let _ = delete(replies::dsl::replies)
+				.execute(conn)
+				.is_ok();
+			ok &= delete(replies::dsl::replies)
 				.filter(replies::dsl::post_pid.eq(*pid as i64))
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
 	let prev_follows: HashSet<(String, String)> = before
@@ -557,32 +584,39 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) {
 		.collect();
 	for (follower, followee) in after.follows.iter() {
 		if !prev_follows.contains(&(follower.clone(), followee.clone())) {
-			let _ = insert_into(follows::dsl::follows)
+			ok &= insert_into(follows::dsl::follows)
 				.values((
 					follows::dsl::follower.eq(follower),
 					follows::dsl::followee.eq(followee),
 				))
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
 	for (follower, followee) in before.follows.iter() {
 		if !next_follows.contains(&(follower.clone(), followee.clone())) {
-			let _ = delete(follows::dsl::follows)
+			ok &= delete(follows::dsl::follows)
 				.filter(
 					follows::dsl::follower
 						.eq(follower)
 						.and(follows::dsl::followee.eq(followee)),
 				)
-				.execute(conn);
+				.execute(conn)
+				.is_ok();
 		}
 	}
+	if !ok {
+		let _ = conn.batch_execute("ROLLBACK TRANSACTION;");
+		return false;
+	}
+	conn.batch_execute("COMMIT TRANSACTION;").is_ok()
 }
 
 #[cfg(test)]
 mod db_tests {
 	use super::{
 		Account, Post, PostStatus, SessionStatus, Visibility, World, apply, init_or_open,
-		load_world, save_world,
+		load_world, reopen, save_world,
 	};
 	use crate::model::empty_world;
 
@@ -806,7 +840,7 @@ mod db_tests {
 		// Wipe first so the test is hermetic when the file already exists from an earlier run.
 		save_world(&mut conn, empty_world());
 		let after = build_world();
-		apply(&mut conn, &empty_world(), &after);
+		let _ok = apply(&mut conn, &empty_world(), &after);
 		let mut again = init_or_open(path.to_string()).unwrap();
 		assert!(load_world(&mut again) == after);
 	}
@@ -822,11 +856,45 @@ mod db_tests {
 		save_world(&mut conn, build_world());
 		let before = build_world();
 		let after = build_after();
-		apply(&mut conn, &before, &after);
+		let _ok = apply(&mut conn, &before, &after);
 		assert!(load_world(&mut conn) == after);
 		let mut again = init_or_open(path.to_string()).unwrap();
 		assert!(load_world(&mut again) == after);
 		assert!(load_world(&mut conn).newest_first == vec!(500, 3, 2, 1));
 		assert!(load_world(&mut conn).posts[3].1.parent == Some(1));
+	}
+	#[test]
+	#[doc = "DB3a gate: a clean diff COMMITs (apply returns true) and the new rows are visible"]
+	#[doc = "from a brand-new connection, so write-through really reached the DB."]
+	fn test_apply_returns_true() {
+		let path = "/tmp/ft-apply-true.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, build_world());
+		let before = build_world();
+		let after = build_after();
+		let committed = apply(&mut conn, &before, &after);
+		assert!(committed);
+		assert!(load_world(&mut conn) == after);
+		let mut fresh = reopen(path.to_string()).unwrap();
+		assert!(load_world(&mut fresh) == after);
+	}
+
+	#[test]
+	#[doc = "DB3a gate: the RAM cache lies (post 1 is missing from BEFORE, but the DB has it),"]
+	#[doc = "so apply() re-INSERTs pid 1 and hits the PRIMARY KEY, then INSERTs its like and"]
+	#[doc = "reply pairs (likes/replies have no PK, so they would leak). The batch must ROLLBACK:"]
+	#[doc = "apply reports failure and the pre-state is intact on disk."]
+	fn test_apply_failure_rolls_back() {
+		let path = "/tmp/ft-apply-rollback.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		let pre = build_world();
+		save_world(&mut conn, pre.clone());
+		let mut bad_before = build_world();
+		bad_before.posts.retain(|entry| entry.0 != 1);
+		let committed = apply(&mut conn, &bad_before, &pre);
+		assert!(!committed);
+		assert!(load_world(&mut conn) == pre);
+		let mut fresh = reopen(path.to_string()).unwrap();
+		assert!(load_world(&mut fresh) == pre);
 	}
 }

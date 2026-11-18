@@ -197,7 +197,9 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 	// Per-request DB work; a failed reopen never panics, it only skips persistence.
 	match init_or_open(locked.db_path.clone()) {
 		Err(_) => (),
-		Ok(mut conn) => apply(&mut conn, &before, &after),
+		Ok(mut conn) => {
+			let _ok = apply(&mut conn, &before, &after);
+		}
 	}
 	// In-memory world advances either way.
 	locked.world = after;

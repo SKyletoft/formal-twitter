@@ -24,6 +24,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] Task T4b-2 (ACCEPTED 6bd2426): main.rs server layer — serve() behind 13 #[post] routes,
   State<Mutex<Server{world,db_path}>>, per-request init_or_open + apply() write-through, launch via FT_DB.
 - [x] Task T5 (ACCEPTED 794ce85): tests/smoke.rs — 5 network integration tests, raw std::net TCP spec client,
+- [ ] Task DB3a (impl, pending acceptance): db.rs apply() -> bool, batch wrapped in raw sqlite pragmas
+  (BEGIN TRANSACTION; first, COMMIT TRANSACTION; iff every statement Ok else ROLLBACK TRANSACTION; + false);
+  per-statement `ok &= ...execute(conn).is_ok()` keeps the recoverable-error tolerance; reopen() = establish only;
+  +db_tests test_apply_returns_true / test_apply_failure_rolls_back (rollback leaks the PK-less like+reply rows
+  if the ROLLBACK is dropped); ImplApply.agda +th-apply-ok (refl). main.rs:200 arm now discards the bool (3 lines).
   3-lifecycle reentrancy on ONE FT_DB file.
 - [x] Task T8 (RESOLVED e5dd9f9): SKyletoft/* are owner forks; canonical deps smallstr 0.3+union,
   smallvec 1.15+union in Cargo.toml. Use in src deferred to T9 (types pinned by diesel + Agda-style ==).
@@ -49,6 +54,8 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Task T10 (impl, MECHANICAL): convert ALL #[doc = "..."] one-liners + stacks to /// across
   model.rs/wire.rs/db.rs/main.rs/smoke.rs; verify fmt/clippy/test/agda unchanged.
 - [ ] Task T9 (impl): review whole implementation for non-idiomatic code + perf issues (after TA-TB-TC landed).
+- [ ] Task T10 (research): Is frontend spec-conformant?
+- [ ] Task T11 (research): Remove compat aliases?
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
   commit each accepted task with co-author maki@qwen3.8-flash-next-coder.
 
