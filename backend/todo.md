@@ -52,6 +52,16 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       duplicate signup now 400; run3 sees A,B then adds C). Semantics verified vs Interface.agda:269 + model.rs:500
       (login issues session token; signup answers ok-empty). Coordinator gates: cargo test 29 passed (4 suites, 32s),
       clippy -D 0, fmt 0, agda 0. Header-name assertions case-insensitive (rocket lowercases + adds server/shield).
+- [ ] Task TA (subagent impl, SMALL): perf main.rs+db.rs — sample_id(&World) by reference (kills 2 of 4 World
+      clones/req), one 16B /dev/urandom read per request (two u64s), poison-tolerant lock, db.rs gains
+      `reopen(path)` = establish-only (no per-request CREATE batch; launch keeps init_or_open), serve uses reopen.
+- [ ] Task TB (subagent impl, SMALL): perf db.rs apply() — replace deep-clone HashMaps with borrows
+      (HashMap<u64,&Post>, HashSet<&String>, HashSet<(&String,&String)>, no status/username clones).
+- [ ] Task TC (subagent impl, MED): perf model.rs timelines — hoist active_user/account_at out of the
+      newest_first loop, early-stop after n matches, post_at_ref -> Option<&Post> for read-only callers.
+- [ ] Task T10 (subagent impl, MECHANICAL): convert ALL #[doc = "..."] (145 one-liners + 8 stacks) to ///
+      across model.rs/wire.rs/db.rs/main.rs/smoke.rs (db.rs already has 18 /// — unify to /// style); verify
+      fmt/clippy/test/agda unchanged.
 - [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js
