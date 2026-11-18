@@ -7,6 +7,10 @@ Write your tests with QuickCheck (quickcheck=1, quickcheck_macros=1) over any fo
 You also need to write integration tests that actually test functionality over the network.
 
 The program needs to be reentrant and be able to start with an existing database.
+The database is the source of truth, not RAM.
+Everything in RAM is just a cache for the database.
+No data can be served without it being committed in the database and all data in RAM must periodically be thrown out and re-queried from the database.
+(Not all at once.)
 
 Non-rust packages are to be installed with nix in @flake.nix and the entire program must be runnable with `nix run`.
 
