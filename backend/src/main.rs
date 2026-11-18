@@ -7,7 +7,10 @@
 //! (`sample_id`).  `to_http` lifts a rendered `WireResponse` into a rocket
 //! `Response`, headers in the order the spec fixes.  The routes, state and
 //! launch come in part 2; nothing here talks to a server or to the DB.
-use formal_twitter::db::{apply, init_or_open, load_world};
+use formal_twitter::db::{
+	apply, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
+	reload_sessions, reopen,
+};
 use formal_twitter::model::{Command, Result, World, empty_world, step, used_pid, used_sid};
 use formal_twitter::wire::{
 	ApiResponse, WireError, WireResponse, parse_action, respond, to_command,
@@ -148,10 +151,12 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
-#[doc = "Server state: the current world plus the DB path the world came from."]
+#[doc = "Server state: the world cache, the DB it mirrors, and the tick that drives"]
+#[doc = "the rotating PARTIAL cache reload (one section re-queried every four requests)."]
 pub struct Server {
 	pub world: World,
 	pub db_path: String,
+	pub tick: u64,
 }
 
 #[doc = "Parse failures answer with the spec's 403 access_denied shape: the Interface"]
@@ -159,6 +164,11 @@ pub struct Server {
 pub fn wire_error(e: WireError) -> WireResponse {
 	_ = e;
 	respond(ApiResponse::PermissionError, http_date())
+}
+
+#[doc = "The cache-reload schedule: a pure 4-cycle 0 -> 1 -> 2 -> 3 -> 0."]
+pub fn next_tick(t: u64) -> u64 {
+	(t + 1) % 4
 }
 
 #[doc = "A pre-rendered rocket response lifted into a handler return type."]
@@ -174,7 +184,17 @@ impl<'r> Responder<'r, 'static> for Served {
 	}
 }
 
-#[doc = "The one handler behind all 13 routes: parse, step, persist, render."]
+#[doc = "The one handler behind all 13 routes: parse, step, COMMIT, rotate, render."]
+#[doc = "Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7): the database is"]
+#[doc = "the source of truth, not RAM.  The world cache advances ONLY after apply reports the"]
+#[doc = "BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back apply (PK clashes"]
+#[doc = "on RAM-sampled ids included) serves NO data and answers the 403 access_denied shape,"]
+#[doc = "so nothing can be served that is not committed in the DB.  After every commit exactly"]
+#[doc = "ONE cache section is thrown out and re-queried from the same connection, rotating"]
+#[doc = "follows -> sessions -> accounts -> posts by tick: RAM is refreshed periodically, never"]
+#[doc = "all at once, and load_world runs only at launch.  The lock is poison-tolerant: the"]
+#[doc = "guarded region keeps its invariants (clone + step + recoverable DB errors), so a"]
+#[doc = "poisoned guard still holds a valid Server."]
 pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Served {
 	// Parse first so malformed bodies never touch the world.
 	let command: Command = match parse_action(path.as_str(), body.value.as_bytes()) {
@@ -185,25 +205,51 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 		}
 		Ok(action) => to_command(action),
 	};
-	let mut locked = state.lock().unwrap();
+	// Poison-tolerant lock: the Err carries a PoisonError whose guard we recover.
+	let mut locked = match state.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	};
 	// A private copy of the world so step and apply see before/after values.
 	let before: World = locked.world.clone();
-	// The spec's fresh-id sampler, run under the lock.
+	// The spec fresh-id sampler, run under the lock.
 	let fresh_pid: u64 = sample_id(before.clone(), used_pid);
 	let fresh_sid: u64 = sample_id(before.clone(), used_sid);
 	let stepped: (World, Result) = step(&before, command, fresh_pid, fresh_sid);
 	let after: World = stepped.0;
 	let result: Result = stepped.1;
-	// Per-request DB work; a failed reopen never panics, it only skips persistence.
-	match init_or_open(locked.db_path.clone()) {
-		Err(_) => (),
+	// COMMIT FIRST: establish-only reopen, then apply BEGIN/COMMIT/ROLLBACK batch.
+	// RAM-sampled ids can collide; apply PK failure rolls back and reports false.
+	let committed: bool = match reopen(locked.db_path.clone()) {
+		Err(_) => false,
 		Ok(mut conn) => {
-			let _ok = apply(&mut conn, &before, &after);
+			if !apply(&mut conn, &before, &after) {
+				// Rolled back: the DB refused the update, RAM must not advance.
+				false
+			} else {
+				// Committed: advance the cache AND rotate ONE section through the same
+				// connection, after the commit so the fresh writes stay visible.  after is
+				// moved, so the reload costs no extra World clone.
+				let reloaded: World = match locked.tick {
+					0 => reload_follows(&mut conn, after),
+					1 => reload_sessions(&mut conn, after),
+					2 => reload_accounts(&mut conn, after),
+					_ => reload_posts(&mut conn, after),
+				};
+				locked.world = reloaded;
+				locked.tick = next_tick(locked.tick);
+				true
+			}
 		}
+	};
+	if !committed {
+		// Nothing was committed, so no data may be served: the same 403 access_denied shape
+		// as a parse failure (wire_error discards its argument).
+		return Served {
+			response: to_http(wire_error(WireError::UnknownEndpoint)),
+		};
 	}
-	// In-memory world advances either way.
-	locked.world = after;
-	// from-output, then respond with the current date, then lift to rocket.
+	// Only reachable after a successful commit, so every served byte is DB-backed.
 	Served {
 		response: to_http(respond(to_output(result), http_date())),
 	}
@@ -305,6 +351,7 @@ fn rocket() -> _ {
 		.manage(Mutex::new(Server {
 			world,
 			db_path: path,
+			tick: 0,
 		}))
 		.mount(
 			"/",
@@ -324,4 +371,32 @@ fn rocket() -> _ {
 				private_timeline,
 			],
 		)
+}
+
+#[doc = "Server-layer test pointer: the DB-facing rules are proven in Agda, not in Rust."]
+#[doc = "ImplApply.agda (DB3a): apply returns true iff the batch committed (th-apply-ok), and"]
+#[doc = "rolls back otherwise; ImplStorage.agda + ImplProofs.agda pin load_world and the"]
+#[doc = "reload_* fns to the DB view; ImplReload.agda (DB3b): each reload_* replaces exactly"]
+#[doc = "one cache section and leaves the rest of the cache alone.  The residue testable here"]
+#[doc = "is the pure tick schedule: forall tick in {0,1,2,3}, next_tick^4 tick == tick."]
+#[test]
+fn test_tick_rotation_cycle() {
+	// Stepping eight times from tick 0 hits each of the four sections exactly twice, so
+	// every cache section is re-queried once every four requests, never all at once.
+	let mut hits: [u64; 4] = [0, 0, 0, 0];
+	let mut t: u64 = 0;
+	for _ in 0..8 {
+		t = next_tick(t);
+		hits[t as usize] += 1;
+	}
+	assert!(hits == [2, 2, 2, 2]);
+	// next_tick^4 is the identity on every residue: the schedule is a pure 4-cycle.
+	for start in 0..4 {
+		let s: u64 = start as u64;
+		assert!(next_tick(next_tick(next_tick(next_tick(s)))) == s);
+	}
+	// And the schedule is exactly the (i + 1) % 4 sequence for i in 0..8.
+	for i in 0..8 {
+		assert!(next_tick(i as u64) == (i as u64 + 1) % 4);
+	}
 }

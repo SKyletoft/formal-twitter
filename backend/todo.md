@@ -24,36 +24,36 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] Task T4b-2 (ACCEPTED 6bd2426): main.rs server layer — serve() behind 13 #[post] routes,
   State<Mutex<Server{world,db_path}>>, per-request init_or_open + apply() write-through, launch via FT_DB.
 - [x] Task T5 (ACCEPTED 794ce85): tests/smoke.rs — 5 network integration tests, raw std::net TCP spec client,
-- [ ] Task DB3a (impl, pending acceptance): db.rs apply() -> bool, batch wrapped in raw sqlite pragmas
-  (BEGIN TRANSACTION; first, COMMIT TRANSACTION; iff every statement Ok else ROLLBACK TRANSACTION; + false);
-  per-statement `ok &= ...execute(conn).is_ok()` keeps the recoverable-error tolerance; reopen() = establish only;
-  +db_tests test_apply_returns_true / test_apply_failure_rolls_back (rollback leaks the PK-less like+reply rows
-  if the ROLLBACK is dropped); ImplApply.agda +th-apply-ok (refl). main.rs:200 arm now discards the bool (3 lines).
   3-lifecycle reentrancy on ONE FT_DB file.
 - [x] Task T8 (RESOLVED e5dd9f9): SKyletoft/* are owner forks; canonical deps smallstr 0.3+union,
   smallvec 1.15+union in Cargo.toml. Use in src deferred to T9 (types pinned by diesel + Agda-style ==).
+- [x] Task DB3a (ACCEPTED 58cbc47): db.rs apply() -> bool transactional (BEGIN TRANSACTION; first,
+  per-statement `ok &= execute(conn).is_ok()`, COMMIT iff all Ok else ROLLBACK TRANSACTION; + false),
+  reopen() = establish-only; db_tests +test_apply_returns_true/test_apply_failure_rolls_back (non-vacuous:
+  sabotaging ROLLBACK fails the test); ImplApply.agda +th-apply-ok (refl); main.rs call site discards bool.
+- [x] Task DB3b (ACCEPTED 96da42d): db.rs per-section reload_accounts (:257 accounts only), reload_sessions
+  (:287 sessions + used_session_ids as ONE section), reload_follows (:309), reload_posts (:325 posts +
+  newest_first + used_post_ids via ORDER BY seq DESC); diesel pipelines copied from load_world; 4 db_tests
+  tamper one RAM section and assert reload restores the DB view while untouched sections stay tampered;
+  backend/ImplReload.agda (open import ImplApply) +10 refl theorems th-reload-* incl -used/-rest; ImplProofs
+  +open import ImplReload. cargo test 35 passed; agda ImplReload/ImplApply/ImplProofs/ImplStorage exit 0.
+- [x] Task DB3c (ACCEPTED, commit follows): main.rs serve-layer rule enforcement — Server +tick: u64;
+  poison-tolerant lock (Ok guard / Err(poisoned).into_inner()); COMMIT FIRST: reopen + apply(&before,&after),
+  on false/reopen-Err the world is NOT advanced and the answer is the 403 access_denied shape (wire_error);
+  after commit exactly ONE section reloads keyed by tick (0 follows, 1 sessions, 2 accounts, 3 posts) then
+  tick = next_tick(t) = (t+1)%4; load_world never at runtime; `after` moved into reload (no extra clone).
+  +#[test] test_tick_rotation_cycle (4-cycle balance + next_tick^4 == id) with pointer doc mapping DB-facing
+  theorems to ImplApply/ImplStorage/ImplReload. cargo test 36 (31 lib + 5 smoke).
+- [x] Task CL1 (ACCEPTED, commit follows): tests/smoke.rs clippy --all-targets cleanup — 6 findings fixed
+  (2 to_string elisions, match Option -> is_some, 3 == x.to_string() -> == x), 525 -> 516 lines, logic
+  byte-identical; clippy --all-targets -D warnings now exit 0.
 
 ## Next (in order)
-- [ ] RV1 (research-subagent): Review all proofs for alignment with the tests. Do they show the same thing? Are there any orphan proofs?
-- [ ] TD1 (coordinator): clean up this todo list structure. (commit todo changes)
-- [ ] DB2 (research subagent): audit implementation vs the AGENTS.md database rules
-  ("database is source of truth"; "no data served unless committed in DB"; "RAM cache must periodically be
-  thrown out and re-queried from the DB, NOT all at once"); report violations with file:line refs.
-- [ ] DB3 (impl subagent): fix the DB2 findings — serve AFTER commit (or error path on DB failure),
-  periodic PARTIAL cache reload (cycle over cache sections, reload one section per N requests,
-  never the whole World at once), db.rs gains reopen + per-section reload fns. Tests + proofs + gates.
-- [x] DB3b (impl subagent): db.rs per-section reload fns — reload_accounts (:257, accounts only),
-  reload_sessions (:287, sessions + used_session_ids as ONE section), reload_follows (:309),
-  reload_posts (:325, posts + newest_first + used_post_ids together via the ORDER BY seq DESC query);
-  each copies load_world's diesel pipelines verbatim, so main.rs can rotate ONE World field group per
-  request. db_tests +test_reload_accounts/test_reload_sessions/test_reload_follows/test_reload_posts
-  (tamper one section of the RAM cache, reload with a live conn, assert that section == load_world and
-  the rest == the cached values). backend/ImplReload.agda (module ImplReload, open import ImplApply)
-  +th-reload-accounts/-sessions/-follows/-posts (posts-section pair: rows × nf-of = posts-B × [3,2,1])
-  + -used/-rest refl theorems; ImplProofs.agda +1 "open import ImplReload". Gates: build/clippy/fmt/
-  cargo test 35 passed (26 lib + 4 new + 5 smoke), agda ImplReload/ImplApply/ImplProofs/ImplStorage exit 0.
-- [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference, one 16B /dev/urandom read per
-  request (two u64s), poison-tolerant lock, reopen() = establish-only (no per-request failing CREATE batch).
+- [ ] RV1 (research subagent): Review ALL tests vs ALL proofs for alignment: do they show the same thing?
+  Any orphan proofs (th-* without a matching #[test]/#[quickcheck], or vice versa)? Report list; fix mismatches
+  in a follow-up impl task.
+- [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference (kills 2 World clones/req), one 16B
+  /dev/urandom read per request (two u64s). (reopen + poison lock ALREADY DONE by DB3a/DB3c — strike those.)
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets
   (HashMap<u64,&Post>, HashSet<&String>, HashSet<(&String,&String)>, no status/username clones).
 - [ ] Task TC (impl, MED): perf model.rs timelines — hoist active_user/account_at out of newest_first loop,
