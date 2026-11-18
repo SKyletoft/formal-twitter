@@ -67,10 +67,14 @@ world-follows-tampered =
 posts-tampered : List PRow
 posts-tampered =
   prow 1 everyone live nothing 1 ∷ prow 2 followers-only live (just 1) 2 ∷ []
-posts-tampered-nf : List ℕ
-posts-tampered-nf = 9 ∷ 8 ∷ []
-posts-tampered-used : List ℕ
-posts-tampered-used = 9 ∷ 8 ∷ []
+-- NB (task RV2f): db.rs test_reload_posts also plants the RAM lies
+-- newest_first = [9,8] and used_post_ids = [9,8] (src/db.rs:1120-1121), but W
+-- (ImplApply:235) carries NO nf/used cache fields: nf-of and used-pids are
+-- recomputed from the post rows, so those lies cannot be planted here and are
+-- not modelled as separate values (they were dead defs, removed in RV2f).
+-- th-reload-posts below already feeds the TAMPERED section (posts-tampered via
+-- world-posts-tampered) and pins the restored rows + nf ≡ 3∷2∷1, and
+-- th-reload-posts-used pins the restored used ≡ 1∷2∷3 - exactly src/db.rs:1126-1128.
 world-posts-tampered : W
 world-posts-tampered =
   world accounts-B sessions-B posts-tampered likes-B replies-B follows-B
