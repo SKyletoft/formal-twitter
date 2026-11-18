@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 rocket = "0.5.2"
 diesel = { version = "=2.4.0", features = ["sqlite"] }
+smallstr = { version = "0.3", features = [ "union" ] }
+smallvec = { version = "1.15", features = [ "union", "const_generics", "const_new" ] }
 
 [dev-dependencies]
 quickcheck = "1.1.0"
