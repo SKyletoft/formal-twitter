@@ -27,9 +27,20 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       Status::from_code + sized_body/Cursor + finalize). Coordinator gates: build/clippy -D/fmt/test
       (24) all exit 0; artifact greps clean. NOTE for T4c: to_output + to_http need #[test]s +
       Interface-level pins (no #[test] in main.rs yet) before those count as done.
-- [ ] Task T4b-2 (subagent impl, SMALL): main.rs PART 2 — serve() (parse_action -> to_command ->
-      sample ids -> step -> apply -> respond) + Mutex<Server{world,conn}> State + the 13 #[post]
-      route wrappers + #[launch] (init_or_open + load_world at startup, reentrant).
+- [x] Task T4b-2 (subagent impl, ACCEPTED after coordinator fixes): main.rs server layer —
+      serve() behind 13 #[post] routes (paths copied from wire.rs table), custom `Served` Responder
+      wrapping pre-rendered Response, State<Mutex<Server{world,db_path}>>, per-request init_or_open +
+      apply() write-through (never re-establishes into state: Sync-safe), fresh ids via sample_id(used_pid/used_sid),
+      launch loads FT_DB (default twitter.db) via init_or_open+load_world. Coordinator fixes applied:
+      wire_error() rewritten to spec-style respond(PermissionError) 403 (agent invented non-spec 400
+      {"error":"invalid_request"} — REVERTED); truncated tests/smoke.rs DELETED (T5 owns it). Coordinator
+      probe: `timeout 3 ./target/debug/formal-twitter` prints all 13 routes + graceful SIGTERM shutdown.
+      Gates: build/clippy -D/fmt/test(24) exit 0. curl DENIED in sandbox -> network smoke = T5 cargo
+      integration test via std::net (raw TCP), 3 lifecycles on ONE FT_DB file.
+- [ ] Task T5 (subagent impl): tests/smoke.rs — cargo integration suite: spawn server binary (std::process),
+      raw-TCP HTTP/1.1 client (std::net), spec bodies (CRLF, token-first, exact Content-Type incl. charset),
+      all 13 endpoints + error paths (bad login 401, expired 401, denied 403, signup dup 400), THREE server
+      lifecycles on ONE FT_DB file asserting persistence; kill via SIGTERM (timeout/shutdown force).
 - [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js

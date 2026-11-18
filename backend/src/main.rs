@@ -7,11 +7,22 @@
 //! (`sample_id`).  `to_http` lifts a rendered `WireResponse` into a rocket
 //! `Response`, headers in the order the spec fixes.  The routes, state and
 //! launch come in part 2; nothing here talks to a server or to the DB.
-use formal_twitter::model::{Result, World};
-use formal_twitter::wire::{ApiResponse, WireResponse};
+use formal_twitter::db::{apply, init_or_open, load_world};
+use formal_twitter::model::{Command, Result, World, empty_world, step, used_pid, used_sid};
+use formal_twitter::wire::{
+	ApiResponse, WireError, WireResponse, parse_action, respond, to_command,
+};
 use rocket::Response;
+use rocket::State;
+use rocket::data::Capped;
 use rocket::http::{Header, Status};
+use rocket::launch;
+use rocket::post;
+use rocket::request::Request;
+use rocket::response::Responder;
+use rocket::routes;
 use std::io::Cursor;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[doc = "Two-digit decimal, zero-padded (as the IMF-date needs dd, HH, mm, ss)."]
@@ -137,7 +148,178 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
-#[doc = "Placeholder entry point; the server (state, routes, launch) comes in part 2."]
-fn main() {
-	println!("formal-twitter: server pending (task T4b-2)")
+#[doc = "Server state: the current world plus the DB path the world came from."]
+pub struct Server {
+	pub world: World,
+	pub db_path: String,
+}
+
+#[doc = "Parse failures answer with the spec's 403 access_denied shape: the Interface"]
+#[doc = "grammar is total, so a malformed body is treated as a denied request."]
+pub fn wire_error(e: WireError) -> WireResponse {
+	_ = e;
+	respond(ApiResponse::PermissionError, http_date())
+}
+
+#[doc = "A pre-rendered rocket response lifted into a handler return type."]
+pub struct Served {
+	pub response: Response<'static>,
+}
+
+#[doc = "The trivial responder: always Ok with the pre-rendered response."]
+impl<'r> Responder<'r, 'static> for Served {
+	// The request is irrelevant; the response is fully rendered.
+	fn respond_to(self, _req: &'r Request<'_>) -> rocket::response::Result<'static> {
+		Ok(self.response)
+	}
+}
+
+#[doc = "The one handler behind all 13 routes: parse, step, persist, render."]
+pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Served {
+	// Parse first so malformed bodies never touch the world.
+	let command: Command = match parse_action(path.as_str(), body.value.as_bytes()) {
+		Err(e) => {
+			return Served {
+				response: to_http(wire_error(e)),
+			};
+		}
+		Ok(action) => to_command(action),
+	};
+	let mut locked = state.lock().unwrap();
+	// A private copy of the world so step and apply see before/after values.
+	let before: World = locked.world.clone();
+	// The spec's fresh-id sampler, run under the lock.
+	let fresh_pid: u64 = sample_id(before.clone(), used_pid);
+	let fresh_sid: u64 = sample_id(before.clone(), used_sid);
+	let stepped: (World, Result) = step(&before, command, fresh_pid, fresh_sid);
+	let after: World = stepped.0;
+	let result: Result = stepped.1;
+	// Per-request DB work; a failed reopen never panics, it only skips persistence.
+	match init_or_open(locked.db_path.clone()) {
+		Err(_) => (),
+		Ok(mut conn) => apply(&mut conn, &before, &after),
+	}
+	// In-memory world advances either way.
+	locked.world = after;
+	// from-output, then respond with the current date, then lift to rocket.
+	Served {
+		response: to_http(respond(to_output(result), http_date())),
+	}
+}
+
+#[doc = "POST /api/signup."]
+#[post("/api/signup", data = "<body>")]
+fn signup(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/signup".to_string(), body, state)
+}
+
+#[doc = "POST /api/login."]
+#[post("/api/login", data = "<body>")]
+fn login(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/login".to_string(), body, state)
+}
+
+#[doc = "POST /api/logout."]
+#[post("/api/logout", data = "<body>")]
+fn logout(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/logout".to_string(), body, state)
+}
+
+#[doc = "POST /api/post-tweet."]
+#[post("/api/post-tweet", data = "<body>")]
+fn post_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/post-tweet".to_string(), body, state)
+}
+
+#[doc = "POST /api/post-reply."]
+#[post("/api/post-reply", data = "<body>")]
+fn post_reply(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/post-reply".to_string(), body, state)
+}
+
+#[doc = "POST /api/delete-tweet."]
+#[post("/api/delete-tweet", data = "<body>")]
+fn delete_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/delete-tweet".to_string(), body, state)
+}
+
+#[doc = "POST /api/like-tweet."]
+#[post("/api/like-tweet", data = "<body>")]
+fn like_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/like-tweet".to_string(), body, state)
+}
+
+#[doc = "POST /api/unlike-tweet."]
+#[post("/api/unlike-tweet", data = "<body>")]
+fn unlike_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/unlike-tweet".to_string(), body, state)
+}
+
+#[doc = "POST /api/follow-user."]
+#[post("/api/follow-user", data = "<body>")]
+fn follow_user(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/follow-user".to_string(), body, state)
+}
+
+#[doc = "POST /api/unfollow-user."]
+#[post("/api/unfollow-user", data = "<body>")]
+fn unfollow_user(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/unfollow-user".to_string(), body, state)
+}
+
+#[doc = "POST /api/get-tweet."]
+#[post("/api/get-tweet", data = "<body>")]
+fn get_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/get-tweet".to_string(), body, state)
+}
+
+#[doc = "POST /api/global-timeline."]
+#[post("/api/global-timeline", data = "<body>")]
+fn global_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/global-timeline".to_string(), body, state)
+}
+
+#[doc = "POST /api/private-timeline."]
+#[post("/api/private-timeline", data = "<body>")]
+fn private_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
+	serve("/api/private-timeline".to_string(), body, state)
+}
+
+#[doc = "Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 endpoints."]
+#[launch]
+fn rocket() -> _ {
+	// The DB path comes from the environment so restarts resume the same world.
+	let path: String = match std::env::var("FT_DB") {
+		Err(_) => "twitter.db".to_string(),
+		Ok(p) => p,
+	};
+	// Startup reopen must not panic; on failure the empty world still serves.
+	let world: World = match init_or_open(path.clone()) {
+		Err(_) => empty_world(),
+		Ok(mut conn) => load_world(&mut conn),
+	};
+	// Mount every endpoint at the path the spec fixes.
+	rocket::build()
+		.manage(Mutex::new(Server {
+			world,
+			db_path: path,
+		}))
+		.mount(
+			"/",
+			routes![
+				signup,
+				login,
+				logout,
+				post_tweet,
+				post_reply,
+				delete_tweet,
+				like_tweet,
+				unlike_tweet,
+				follow_user,
+				unfollow_user,
+				get_tweet,
+				global_timeline,
+				private_timeline,
+			],
+		)
 }
