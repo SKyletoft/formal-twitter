@@ -431,3 +431,36 @@ apply-ok before after =
 -- 500 (fresh), every statement returns Ok, and apply COMMITs with true.
 th-apply-ok : apply-ok world-B world-A ≡ true
 th-apply-ok = refl
+
+-- ---- apply()'s false side: test_apply_failure_rolls_back (db.rs:1027) ----
+--
+-- The test's bad_before is build_world() with post pid 1 RETAINed-out of the RAM cache while
+-- the DB on disk (save_world pre first) still holds that row; apply(conn, bad_before, pre)
+-- diffs the RAM views, so pid 1 looks new and gets INSERTed over the row already on disk.
+-- The INSERT's PRIMARY KEY error flips ok, the batch ROLLBACKs, apply returns false and
+-- load_world still equals pre.  So collide must fire over the DISK's pid column: apply-ok
+-- conflates the DB with before, which is exact only when the cache is honest; apply-ok-on
+-- keys on the DB world explicitly and reuses collide/inserted-pids unchanged.
+
+posts-B-minus-1 = prow 2 followers-only live (just 1) 2 ∷ prow 3 everyone deleted nothing 3 ∷ []
+world-B-minus-1 = world accounts-B sessions-B posts-B-minus-1 likes-B replies-B follows-B
+
+-- the one INSERT the lying cache makes: pid 1 is in after, hidden in before
+th-collide-inserted : inserted-pids world-B-minus-1 world-B ≡ 1 ∷ []
+th-collide-inserted = refl
+
+-- that INSERT's PRIMARY KEY hits the pid-1 row the DISK already carries
+th-collide-disk : collide (map pid-of posts-B) (inserted-pids world-B-minus-1 world-B) ≡ true
+th-collide-disk = refl
+
+apply-ok-on : W → W → W → Bool
+apply-ok-on disk before after =
+  not (collide (map pid-of (post-of disk)) (inserted-pids before after))
+
+-- apply()'s Bool is false on the colliding pair: assert!(!committed)
+th-apply-collide : apply-ok-on world-B world-B-minus-1 world-B ≡ false
+th-apply-collide = refl
+
+-- the honest DB (disk == before) still COMMITs, so the pin is not vacuously false
+th-apply-collide-honest : apply-ok-on world-B world-B world-A ≡ true
+th-apply-collide-honest = refl
