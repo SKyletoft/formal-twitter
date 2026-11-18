@@ -92,6 +92,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Task T9 (impl): review whole implementation for non-idiomatic code + perf issues (after TA-TB-TC landed).
 - [ ] Task T10 (research): Is frontend spec-conformant?
 - [ ] Task T11 (research): Remove compat aliases?
+- [ ] Task A4 (research): Remove pointless agda. Any agda that isn't proving (or providing lemmas for) anything in relation to the model in @spec/Twitter.agda or @spec/Interface.agda is useless and pointless.
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
   commit each accepted task with co-author maki@qwen3.8-flash-next-coder.
 
