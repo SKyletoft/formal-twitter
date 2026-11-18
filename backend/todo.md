@@ -37,10 +37,18 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       probe: `timeout 3 ./target/debug/formal-twitter` prints all 13 routes + graceful SIGTERM shutdown.
       Gates: build/clippy -D/fmt/test(24) exit 0. curl DENIED in sandbox -> network smoke = T5 cargo
       integration test via std::net (raw TCP), 3 lifecycles on ONE FT_DB file.
-- [ ] Task T5 (subagent impl): tests/smoke.rs — cargo integration suite: spawn server binary (std::process),
-      raw-TCP HTTP/1.1 client (std::net), spec bodies (CRLF, token-first, exact Content-Type incl. charset),
-      all 13 endpoints + error paths (bad login 401, expired 401, denied 403, signup dup 400), THREE server
-      lifecycles on ONE FT_DB file asserting persistence; kill via SIGTERM (timeout/shutdown force).
+- [x] Task T5 (subagent impl, ACCEPTED, committed): backend/tests/smoke.rs (525 lines) — cargo integration
+      suite (tests/ dir): spawn_server via timeout+FT_DB+unique ROCKET_PORT per test, wait_ready/wait_gone
+      TCP polling, raw std::net req() with exact spec framing (Host/Accept/Content-Type charset/CRLF body).
+      5 tests: test_signup_login (signup=empty 200 ok, login=200 {"session_token":N} w/ cache-control, wrong
+      pw 401 {"error": "login_failed"}, logout, fresh token per login), test_post_tweet (publish 200 {"tweet_id"},
+      anon timeline sees it, like/unlike 200), test_errors (400 signup_failed, 401 session_expired via stale/revoked
+      token, 403 access_denied anon get-tweet + unknown-pid like), test_http_framing (status lines, Date header,
+      exact Content-Length==body octets, cache-control only on JSON), test_reentrant_three_lifecycles (ONE /tmp
+      FT file, servers 8021/8022/8023 sequential: run2's startup REOPENS existing DB — old account+post visible,
+      duplicate signup now 400; run3 sees A,B then adds C). Semantics verified vs Interface.agda:269 + model.rs:500
+      (login issues session token; signup answers ok-empty). Coordinator gates: cargo test 29 passed (4 suites, 32s),
+      clippy -D 0, fmt 0, agda 0. Header-name assertions case-insensitive (rocket lowercases + adds server/shield).
 - [x] Review the changes brought in by the merge
 - [x] Study spec: Twitter.agda (World state, Step relation semantics for all commands),
       Interface.agda (Actions/Responses/to-output result mapping), frontend/app.js
@@ -87,8 +95,14 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       /api/{global,private}-timeline?token=&len=) → same Action; tolerate LF/trailing-newline bodies.
 - [ ] Task T7 (subagent impl): flake.nix — cargo vendor committed; hermetic rustPlatform buildRustPackage
       (vendorDir + cargoLock); libsqlite3-sys bundled pin if needed; verify `nix run .` starts server.
-- [ ] Task T8 (research subagent): Investigate using smallstring and smallvec. (github:SKyletoft/smallstr, github:SKyletoft/rust-smallvec/v1)
+- [x] Task T8 (research + owner decision, RESOLVED): SKyletoft/* are owner forks; use canonical crates.
+      cargo reaches crates.io itself (only web tools are sandbox-denied), so deps go straight into Cargo.toml:
+      smallstr = { version = "0.3", features = ["union"] } (lock: 0.3.1), smallvec = { version = "1.15", features =
+      ["union","const_generics","const_new"] } (lock reuses 1.16.5 already in graph via rocket). Build clean.
+      USING SmallStr/SmallVec in model.rs+db.rs deferred to T9 — types are Vec/String-pinned by diesel collect()
+      and Agda-style ==; migration must be surgical (candidates: Post.likes/replies, String keys).
 - [ ] Task T9 (subagent impl): EVERYTHING. Review the entire implementation for non-idiomatic code and potential performance issues.
+- [ ] Task T10 (subagent impl): EVERYTHING: Review the entire implementation for #[doc] instead of ///-doc-comments.
 - [ ] Final verify: cargo build/test, clippy clean, cargo fmt, agda typecheck, nix run; commit each accepted task.
 
 ## Progress log (as of restart)
@@ -191,3 +205,5 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   GET only appears from the legacy frontend (query params); support as aliases (T4).
 
 T3 ACCEPTED: db.rs init_or_open+load_world+save_world, 4 db_tests (22 lib tests total), 6 ImplStorage theorems; gates green (build, clippy -D warnings zero, fmt, tests, agda both exit 0).
+
+T5 ACCEPTED: backend/tests/smoke.rs (cargo integration test target "smoke", 5 tests, std-net raw TCP only, no new deps). Each test spawns target/debug/formal-twitter under `timeout` with its own ROCKET_PORT + FT_DB; wait_ready polls connect, wait_gone polls until the killed process frees the port (used by the reentrancy test to start 3 sequential servers on one shared /tmp/ft-smoke-T5.sqlite). Results: signup=200 empty (Content-Length 0), login=200 {"session_token":"N"} (quoted ids!), duplicate signup=400 signup_failed, bad login=401 login_failed (25 bytes), stale/revoked token=401 session_expired, unreadable pid=403 access_denied; rocket lowercases header names and appends server/shield headers. Gates green: cargo test --quiet -> 24 lib + 5 smoke all pass; clippy --quiet -- -D warnings exit 0; cargo fmt --check exit 0. Dialect notes: `final` is reserved, `xs.contains(&x)`, `s += &other`, no String+String by value.
