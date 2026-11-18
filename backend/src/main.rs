@@ -379,6 +379,7 @@ fn rocket() -> _ {
 #[doc = "reload_* fns to the DB view; ImplReload.agda (DB3b): each reload_* replaces exactly"]
 #[doc = "one cache section and leaves the rest of the cache alone.  The residue testable here"]
 #[doc = "is the pure tick schedule: forall tick in {0,1,2,3}, next_tick^4 tick == tick."]
+#[doc = "ImplTick.agda (RV2a): next-tick^4 = id on {0,1,2,3} and the pinned 8-step landing sequence backs the [2,2,2,2] hit count."]
 #[test]
 fn test_tick_rotation_cycle() {
 	// Stepping eight times from tick 0 hits each of the four sections exactly twice, so
