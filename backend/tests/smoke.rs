@@ -2,10 +2,10 @@
 #[doc = "Starts the server on one port and DB file, killed by timeout after secs."]
 fn spawn_server(port: u16, db: &str, secs: u32) {
 	_ = std::process::Command::new("timeout")
-		.env("FT_DB", db.to_string())
+		.env("FT_DB", db)
 		.env("ROCKET_PORT", port.to_string())
 		.arg(secs.to_string())
-		.arg("target/debug/formal-twitter".to_string())
+		.arg("target/debug/formal-twitter")
 		.spawn();
 }
 
@@ -166,10 +166,7 @@ fn body_of(raw: &str) -> String {
 #[doc = "True when the response carries a header with this name."]
 fn has_header(raw: &str, label: &str) -> bool {
 	let needle = "\r\n".to_owned() + label + ":";
-	match raw.find(&needle) {
-		None => false,
-		Some(_) => true,
-	}
+	raw.find(&needle).is_some()
 }
 
 #[doc = "Every number that appears in a JSON body."]
@@ -194,10 +191,7 @@ fn numbers_in(body: &str) -> Vec<u64> {
 
 #[doc = "Asserts the exact status line of an answer."]
 fn expect_status(raw: &str, line: &str) {
-	ensure(
-		status_line(raw) == line.to_string(),
-		"unexpected status line",
-	);
+	ensure(status_line(raw) == line, "unexpected status line");
 }
 
 #[doc = "Asserts that the declared Content-Length matches the body octets."]
@@ -220,11 +214,8 @@ fn id_of(raw: &str, key: &str) -> u64 {
 
 #[doc = "Asserts the exact status line and the exact body of an answer."]
 fn expect(raw: &str, line: &str, want: &str) {
-	ensure(
-		status_line(raw) == line.to_string(),
-		"unexpected status line",
-	);
-	ensure(body_of(raw) == want.to_string(), "unexpected body");
+	ensure(status_line(raw) == line, "unexpected status line");
+	ensure(body_of(raw) == want, "unexpected body");
 }
 
 #[doc = "Asserts the 200 answer with an empty body: the Ok response shape."]
