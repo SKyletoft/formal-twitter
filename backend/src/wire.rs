@@ -530,6 +530,105 @@ mod wire_tests {
 		);
 	}
 
+	#[doc = "wi-out-* pins of backend/ImplWire.agda: the other 7 constructors have the"]
+	#[doc = "status code, header order - Date first, Cache-Control only for the three uncached"]
+	#[doc = "bodies and Content-Type iff the body is non-empty - of spec/Interface.agda:to-response."]
+	#[test]
+	fn respond_shapes() {
+		let d = "d".to_string();
+		// wi-out-denied: 403, Date + Content-Type, no Cache-Control, exact body.
+		let r = respond(ApiResponse::PermissionError, d.clone());
+		assert!(r.status_code == 403);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"error\": \"access_denied\"}".as_bytes());
+
+		// wi-out-expired: 401, Date + Content-Type, no Cache-Control, exact body.
+		let r = respond(ApiResponse::OutdatedLoginToken, d.clone());
+		assert!(r.status_code == 401);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"error\": \"session_expired\"}".as_bytes());
+
+		// wi-out-login-failed: 401, Date + Content-Type, no Cache-Control, exact body.
+		let r = respond(ApiResponse::LoginError, d.clone());
+		assert!(r.status_code == 401);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"error\": \"login_failed\"}".as_bytes());
+
+		// wi-out-signup-failed: 400, Date + Content-Type, no Cache-Control, exact body.
+		let r = respond(ApiResponse::SignupError, d.clone());
+		assert!(r.status_code == 400);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"error\": \"signup_failed\"}".as_bytes());
+
+		// wi-out-created: 200, Date + Content-Type, no Cache-Control, exact body.
+		let r = respond(ApiResponse::TweetId(42), d.clone());
+		assert!(r.status_code == 200);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"tweet_id\": \"42\"}".as_bytes());
+
+		// wi-out-session: 200, Date + Cache-Control + Content-Type, exact body.
+		let r = respond(ApiResponse::SessionToken(9), d.clone());
+		assert!(r.status_code == 200);
+		assert!(
+			r.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Cache-Control".to_string(), "no-store".to_string()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(r.body == "{\"session_token\": \"9\"}".as_bytes());
+
+		// wi-out-post: 200, Cache-Control, escaped username and text, replies joined.
+		let post = respond(
+			ApiResponse::Tweet("a\"b".to_string(), "c\nd".to_string(), 3, vec![1, 2]),
+			d.clone(),
+		);
+		assert!(post.status_code == 200);
+		assert!(
+			post.headers
+				== vec![
+					("Date".to_string(), d.clone()),
+					("Cache-Control".to_string(), "no-store".to_string()),
+					("Content-Type".to_string(), "application/json".to_string())
+				]
+		);
+		assert!(
+		post.body
+				== "{\"username\": \"a\\\"b\", \"text\": \"c\\nd\", \"likes\": 3, \"replies\": [1, 2]}".as_bytes()
+	);
+	}
+
 	#[doc = "QuickCheck: any token and any single-line text round-trip as a post."]
 	#[quickcheck]
 	fn qc_post_round_trip(tk: u64, txt: String) -> bool {

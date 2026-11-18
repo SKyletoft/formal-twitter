@@ -47,11 +47,36 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] Task CL1 (ACCEPTED, commit follows): tests/smoke.rs clippy --all-targets cleanup — 6 findings fixed
   (2 to_string elisions, match Option -> is_some, 3 == x.to_string() -> == x), 525 -> 516 lines, logic
   byte-identical; clippy --all-targets -D warnings now exit 0.
+- [x] RV1 (research): test<->proof alignment audit — 83 theorems vs 31 unit tests; found: ORPHAN test_tick_rotation_cycle;
+  ORPHAN weak wi-out-* (7 integration-only); MISALIGNMENTS M1 prop_timeline_valid (global+uniq+len<=n vs personal-eq only),
+  M2 register theorems weaker (no nw==w half), M3 revoke missing rest-unchanged, M4 ImplReload dead tampered defs;
+  GAP: parse-level (wire.rs byte decisions) unpinned; ImplStorage not opened by ImplProofs. Fix plan = RV2a/c/f/g (wave 1),
+  RV2b+d (wave 2: ImplStorage pins + ImplProofs opens + timeline-global + M2/M3), RV2e (parse pins).
+- [x] RV2a (ACCEPTED, commit follows): ImplTick.agda (standalone, stdlib-only) — next-tick = suc % 4 mirror of main.rs:170,
+  8 shift pins th-next-tick-0..7 (4->1 etc.; brief's 4≡0 was arithmetically wrong, pinned Rust's actual (t+1)%4),
+  th-cycle-0..3 next-tick^4 = id, th-tick-hits map next-tick [0..7] ≡ [1,2,3,0,1,2,3,0] refl (lands twice each => hits [2,2,2,2]);
+  + 1 pointer #[doc] line at main.rs test_tick_rotation_cycle. agda ImplTick exit 0; 36 tests unchanged.
+- [x] RV2c (ACCEPTED, commit follows): ImplApply.agda — found th-apply-ok VACUOUS (apply-ok conflates DB with before -> always true);
+  added DB-keyed carrier apply-ok-on (disk,before,after) :456 reusing collide/inserted-pids; pins th-collide-inserted :449,
+  th-collide-disk :453, th-apply-collide :461 ≡ false (world-B-minus-1 lies RAM, collides on disk — test_apply_failure_rolls_back),
+  th-apply-collide-honest :465 ≡ true (guards always-false). Non-vacuity: flipped RHS -> agda exit 42.
+- [x] RV2f (ACCEPTED, commit follows): ImplReload.agda — verified th-reload-posts/-used ALREADY pin the restored nf 3∷2∷1 +
+  used 1∷2∷3 from tampered input; nf/used lies [9,8] unmodellable (fields are DERIVED in the row model) -> deleted dead
+  posts-tampered-nf/used defs with explanatory comment :70-76. No theorem added (would be duplicate/vacuous).
+- [x] RV2g (ACCEPTED, commit follows): wire.rs tests — new #[test] respond_shapes() in wire_tests: all 9 respond() constructors
+  unit-backed (status codes 403/401/401/400/200/200/200, header-tuple equality pinning Cache-Control presence per spec +
+  Content-Type iff non-empty body, exact body bytes incl. escaped tweet "a\"b/c\nd and quoted ids) matching ImplWire wi-out-*;
+  respond() source untouched. cargo test 37.
 
 ## Next (in order)
-- [ ] RV1 (research subagent): Review ALL tests vs ALL proofs for alignment: do they show the same thing?
-  Any orphan proofs (th-* without a matching #[test]/#[quickcheck], or vice versa)? Report list; fix mismatches
-  in a follow-up impl task.
+- [ ] RV2b+d (impl): ImplStorage — th-load-empty (fresh DB ⇒ empty world, backs test_db_empty) + load∘save round-trip
+  pin on build_world (backs test_db_roundtrip/test_db_reopen_equal); ImplProofs +open import ImplStorage +ImplTick;
+  ImplProofs +th-prop-timeline-global mirroring prop_timeline_valid's GLOBAL branch (+uniq/+len≤n conjuncts);
+  M2: add nw==w half to register-taken theorem; M3: add rest-unchanged conjunct to revoke theorem.
+- [ ] RV2e (impl, MED): new ImplParse.agda — stdlib refl pins of a modelled parse_action over concrete request bytes:
+  13 endpoint shapes, anon/token arity decision, CRLF/LF/CR equivalence, 6 malformed classifications, post-tweet
+  round-trip; + pointer comments in wire.rs test mod. Backs endpoint_shapes/anonymous_and_tokened/separator_variants/
+  malformed/qc_post_round_trip.
 - [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference (kills 2 World clones/req), one 16B
   /dev/urandom read per request (two u64s). (reopen + poison lock ALREADY DONE by DB3a/DB3c — strike those.)
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets
