@@ -69,6 +69,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   respond() source untouched. cargo test 37.
 
 ## In progress
+- [ ] TDC (coordinator): Clean up todo list
 - [x] TA (ACCEPTED, this commit; impl subagent general/medium): perf main.rs — random_u64 -> random_block() [u8;16] (ONE /dev/urandom read/req), NEW pure sample_id_from(bytes,used) core, sample_id(&World) -> (pid,sid) with ZERO World clones (was 2/req; used_pid/used_sid imports dropped, membership==World fields verified model.rs:177/182); mod qc NEW: prop_pid_fresh/prop_sid_fresh #[quickcheck] + boundaries/halves/determinism tests; ImplProofs NEW th-sample-id-fresh — ∀w: new-sid/new-pid id component ∉ used lists over SPEC definitions (Proofs uses the conjunct only inline, :828/:997). GATES: cargo test 42 (37+new) green, clippy --all-targets -D warnings clean, fmt no-op, agda ImplWire+ImplProofs exit 0.
       TA RESULTS (subagent, no commit): main.rs:128 random_u64 -> random_block() -> [u8;16] (ONE /dev/urandom read per request, 2 BE u64s);
       main.rs:151 NEW pub sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) — pure decision (first 8 bytes, r != 0 && !used.contains(&r), total on short blocks);
