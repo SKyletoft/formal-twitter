@@ -119,7 +119,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       agda ImplWire.agda + ImplProofs.agda exit 0. NOT committed.
 - [ ] Task T6 (impl, SMALL): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
   /api/{global,private}-timeline?token=&len=) -> same Action; tolerate LF/trailing-newline bodies.
-- [ ] Task T7 (impl): flake.nix — hermetic rustPlatform buildRustPackage (vendored cargo), `nix run .`
+- [x] Task T7 (impl): flake.nix — hermetic rustPlatform buildRustPackage (vendored cargo), `nix run .`
   starts the server; libsqlite3-sys bundled pin if needed.
 - [ ] Task T10 (impl, MECHANICAL): convert ALL #[doc = "..."] one-liners + stacks to /// across
   model.rs/wire.rs/db.rs/main.rs/smoke.rs; verify fmt/clippy/test/agda unchanged.
@@ -141,6 +141,34 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   raw-TCP GET vs POST twins equal status line + body, incl. token-less private refusal on both
   transports); clippy --all-targets -D warnings exit 0; agda ImplWire.agda + ImplProofs.agda exit 0
   (ImplWire gains only a pointer comment: the aliases add no Interface clause).
+- T7 (subagent, STARTED): flake nix run wiring
+- T7 (subagent, DONE, coordinator-verified green: nix build . exit 0 single 5.3M binary, timeout nix run
+  prints Rocket launch + graceful shutdown): flake nix run wiring.
+      flake.nix BEFORE: packages.default = buildRustPackage inline, no apps.default.
+      AFTER: moved the buildRustPackage into let as `package` (lines 24-40; flake-utils does not bind `packages`, so
+      `getExe packages.default` was an undefined-variable error), added buildInputs = with pkgs; [ sqlite ];
+      (diesel 2.4.0 feature sqlite -> libsqlite3-sys 0.40.0 links the system sqlite; buildInputs present in drv env),
+      dontCargoCheck = true; + comment (skipTests is IGNORED by the rust hook — verified in
+      cargo-check-hook.sh setup-hook:62, gate is `dontCargoCheck`; the package check phase had run smoke.rs spawning
+      live servers, which can never start in the no-network sandbox), meta.mainProgram = "formal-twitter";
+      (kills getExe's deprecated-name warning), packages.default = package; apps.default = { type = "app";
+      program = pkgs.lib.getExe package; } (lines 46-49; type="application" -> error "should have type 'app'";
+      flake-utils mkApp uses type="app" too — lib.nix:194).
+      BUILD: `nix build .#packages.x86_64-linux.default` and `nix build .` exit 0 (first full build: 125 crate drvs,
+      cache.nixos.org+nix-community.cachix fetches; rebuild fast). NOTE `nix build .#packages.default` (bare) FAILS on
+      flake-utils' shape — nix only tries packages.x86_64-linux.packages.default / legacyPackages.../packages.default /
+      top-level packages.default, none of which exist; the working invocations are `nix build .` and the explicit-system
+      form; `nix run .` resolves apps.x86_64-linux.default fine.
+      ARTIFACT: ./result -> /nix/store/yvbms08vg7bnpr82wzlw3y6y042n2paq-formal-twitter-0.0.1; $out/bin has EXACTLY ONE
+      binary: formal-twitter (5.3M); $out/frontend copied as before.
+      LINKAGE: nix-store --query --references $out/bin/formal-twitter =
+      glibc-2.42-61 + sqlite-3.51.2 + gcc-15.2.0-lib — all nix-store paths (vDSO implicit), NO /usr refs; sqlite
+      linkage found via buildInputs sqlite dev output.
+      RUN: `nix run .` 5s (timeout -s INT): prints "Rocket has launched from http://127.0.0.1:8000",
+      "Warning: Received SIGINT. Requesting shutdown." (graceful), exit 124 (timeout sends INT); clean rerun after
+      meta.mainProgram no longer prints the getExe mainProgram deprecation warning.
+      e2e signup curl NOT done: sandbox denies curl and script exec; smoke.rs untouched and remains the real guard.
+      Agda/cargo gates UNTOUCHED this task (no src/, no .agda edits; flake only).
 
 ## Reference: spec semantics (Twitter.agda + Interface.agda, from R4/R5)
 - `World` (:65-109): account-at String -> Maybe Account{password, default-visibility}; session-at Sid ->
