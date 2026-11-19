@@ -3,7 +3,8 @@
 //! Part 1 of this layer is pure helpers: a std-only IMF `Date` header
 //! (`http_date`), the from-output map of spec/Interface.agda taking a model
 //! `Result` to a wire `ApiResponse` (`to_output`), cryptographic `u64`
-//! randomness from `/dev/urandom` (`random_u64`) and the spec's fresh-id sampler
+//! randomness from `/dev/urandom` (`random_block`, one 16-byte read per request) and the spec's
+//! fresh-id sampler split into a pure decision (`sample_id_from`) plus that wrapper
 //! (`sample_id`).  `to_http` lifts a rendered `WireResponse` into a rocket
 //! `Response`, headers in the order the spec fixes.  The routes, state and
 //! launch come in part 2; nothing here talks to a server or to the DB.
@@ -11,7 +12,7 @@ use formal_twitter::db::{
 	apply, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
 	reload_sessions, reopen,
 };
-use formal_twitter::model::{Command, Result, World, empty_world, step, used_pid, used_sid};
+use formal_twitter::model::{Command, Result, World, empty_world, step};
 use formal_twitter::wire::{
 	ApiResponse, WireError, WireResponse, parse_action, respond, to_command,
 };
@@ -108,28 +109,51 @@ pub fn to_output(r: Result) -> ApiResponse {
 	}
 }
 
-#[doc = "Eight bytes read from /dev/urandom as a big-endian u64; zero on any failure."]
-pub fn random_u64() -> u64 {
+#[doc = "One 16-byte read from /dev/urandom: TWO big-endian u64s of entropy per call, so a"]
+#[doc = "request pays ONE random read instead of two.  All-zero on any failure, which the pure"]
+#[doc = "sampler below reports as not-fresh."]
+pub fn random_block() -> [u8; 16] {
 	// Qualified std paths keep the top-level import list minimal.
 	match std::fs::File::open("/dev/urandom") {
-		Err(_) => 0,
+		Err(_) => [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 		Ok(mut file) => {
-			let mut bytes: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
-			if std::io::Read::read_exact(&mut file, &mut bytes).is_err() {
-				0
-			} else {
-				u64::from_be_bytes(bytes)
-			}
+			let mut bytes: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+			_ = std::io::Read::read_exact(&mut file, &mut bytes);
+			bytes
 		}
 	}
 }
 
-#[doc = "The spec's fresh-id sampler: loop until a nonzero id is free."]
-pub fn sample_id(w: World, taken: fn(&World, u64) -> bool) -> u64 {
+#[doc = "The PURE fresh-id decision, split out of the /dev/urandom wrapper so QuickCheck can"]
+#[doc = "pin it: the big-endian u64 read off the FIRST EIGHT bytes of a random block, paired with"]
+#[doc = "whether it is fresh, i.e. nonzero and absent from the used list - the spec's CreateNew"]
+#[doc = "new-sid/new-pid rejecting ids already in World.used-post-ids / World.used-session-ids."]
+#[doc = "Total: a block shorter than eight bytes reports (0, false).  A used list covering the"]
+#[doc = "candidate flips ok to false (the exhaustion path), which sample_id retries.  Fully"]
+#[doc = "deterministic in both arguments, so the same bytes and used set always yield the same id."]
+pub fn sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) {
+	if bytes.len() < 8 {
+		(0, false)
+	} else {
+		let r: u64 = u64::from_be_bytes([
+			bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+		]);
+		(r, r != 0 && !used.contains(&r))
+	}
+}
+
+#[doc = "The spec's fresh-id sampler: feeds ONE 16-byte /dev/urandom block per attempt to the"]
+#[doc = "pure sample_id_from, the first u64 seeding the post id and the second the session id."]
+#[doc = "Both halves must be fresh or the whole attempt is discarded, matching the spec's CreateNew"]
+#[doc = "rejection of used ids.  The world is read by REFERENCE, so a request no longer clones it."]
+pub fn sample_id(w: &World) -> (u64, u64) {
 	loop {
-		let r = random_u64();
-		if r != 0 && !taken(&w, r) {
-			return r;
+		let bytes: [u8; 16] = random_block();
+		// The used lists are borrowed from the world, exactly what model's used_pid/used_sid test.
+		let (pid, pid_ok) = sample_id_from(&bytes[0..8], &w.used_post_ids);
+		let (sid, sid_ok) = sample_id_from(&bytes[8..16], &w.used_session_ids);
+		if pid_ok && sid_ok {
+			return (pid, sid);
 		}
 	}
 }
@@ -212,9 +236,9 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 	};
 	// A private copy of the world so step and apply see before/after values.
 	let before: World = locked.world.clone();
-	// The spec fresh-id sampler, run under the lock.
-	let fresh_pid: u64 = sample_id(before.clone(), used_pid);
-	let fresh_sid: u64 = sample_id(before.clone(), used_sid);
+	// The spec fresh-id sampler, run under the lock: ONE 16-byte read yields both ids and the
+	// world is read by reference, so neither per-request World clone survives.
+	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
 	let stepped: (World, Result) = step(&before, command, fresh_pid, fresh_sid);
 	let after: World = stepped.0;
 	let result: Result = stepped.1;
@@ -396,5 +420,121 @@ fn test_tick_rotation_cycle() {
 	// And the schedule is exactly the (i + 1) % 4 sequence for i in 0..8.
 	for i in 0..8 {
 		assert!(next_tick(i as u64) == (i as u64 + 1) % 4);
+	}
+}
+
+#[cfg(test)]
+mod qc {
+	//! QuickCheck pins for the PURE fresh-id decision `sample_id_from`: the freshness rule of
+	//! spec/Twitter.agda's CreateNew new-sid/new-pid (the sampled id must miss World.used-post-ids
+	//! and World.used-session-ids), plus its totality, exhaustion and determinism boundaries.
+	//! No /dev/urandom is read here, so the props are exact and shrinkable; the Agda mirror is
+	//! th-sample-id-fresh in ImplProofs.agda (freshness of new-sid/new-pid).
+	use super::sample_id_from;
+	use quickcheck_macros::quickcheck;
+
+	#[doc = "Clips/pads a generated block to the 16 bytes ONE random read returns, so both"]
+	#[doc = "halves of the block are exercised by the props."]
+	fn block16(bs: &[u8]) -> Vec<u8> {
+		// QuickCheck already provides Arbitrary for Vec u8, so no local Gen instance is needed.
+		// (the padding byte 1 keeps a short block from collapsing onto the zero candidate)
+		// truncate first so an oversized block still fits the 16-byte contract
+		let mut out: Vec<u8> = bs.to_vec();
+		out.truncate(16);
+		out.resize(16, 1);
+		out
+	}
+
+	#[doc = "QC prop_pid_fresh: whenever sample_id_from calls the u64 read off the leading eight"]
+	#[doc = "bytes fresh, that id is NEVER a member of the used-post-ids list it was given."]
+	#[quickcheck]
+	// (the spec's new-pid rejecting ids already in World.used-post-ids)
+	// fresh means nonzero AND absent, so a hit in `used` can never be reported fresh.
+	// `used` is borrowed, mirroring the &World field borrow that sample_id makes.
+	// QuickCheck shrinks a counterexample to the smallest used/bytes pair that breaks it.
+	fn prop_pid_fresh(used: Vec<u64>, bs: Vec<u8>) -> bool {
+		// One 16-byte block: the post id comes from the first eight bytes.
+		let (pid, ok): (u64, bool) = sample_id_from(&block16(bs.as_slice()), &used);
+		// Freshness must hold for every generated used set, not just for small ones.
+		// (this is the forall used, forall bytes of the freshness property)
+		!ok || !used.contains(&pid)
+	}
+
+	#[doc = "QC prop_sid_fresh: the same rule for the session id, i.e. the u64 read off bytes 8..16"]
+	#[doc = "of the block is never in the used-session-ids list when called fresh."]
+	#[quickcheck]
+	// (the spec's new-sid rejecting ids already in World.used-session-ids)
+	// the second half is checked against its own list, exactly as sample_id slices it.
+	// A block shorter than eight tail bytes is total: it reports not-fresh, which passes.
+	// The pairing (one read, two ids) is pinned by test_sample_id_halves below.
+	fn prop_sid_fresh(used: Vec<u64>, bs: Vec<u8>) -> bool {
+		// One 16-byte block: the session id comes from the second half.
+		// (fresh => absent from the session list, for every used set and every block)
+		// (a collision in the used set must flip ok, never be handed out)
+		// shrinking reports the smallest failing (used, bytes) pair.
+		let b: Vec<u8> = block16(bs.as_slice());
+		let (sid, ok): (u64, bool) = sample_id_from(&b[8..], &used);
+		// (the same conclusion as prop_pid_fresh, for the other half)
+		!ok || !used.contains(&sid)
+	}
+
+	#[doc = "Boundary pins: a block shorter than eight bytes and a used list covering the"]
+	#[doc = "candidate - the documented exhaustion path sample_id retries."]
+	#[test]
+	fn test_sample_id_boundaries() {
+		// Totality: no panic, just not-fresh, on an empty or short block.
+		assert!(sample_id_from(&[], &[]) == (0, false));
+		// Zero is never offered, matching the spec's nonzero ids.
+		let zeros: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+		// (so a failed urandom read stays not-fresh and the sampler retries)
+		assert!(sample_id_from(&zeros, &[]) == (0, false));
+		// The top of the u64 range is offered when the used list is empty.
+		let hi: [u8; 8] = [255, 255, 255, 255, 255, 255, 255, 255];
+		assert!(sample_id_from(&hi, &[]) == (0xffff_ffff_ffff_ffff, true));
+		// (and refused when the used list covers exactly that boundary value)
+		let (_, hi_used) = sample_id_from(&hi, &[0xffff_ffff_ffff_ffff]);
+		assert!(!hi_used);
+		// A used list covering the candidate flips ok regardless of its other members.
+		let one: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 1];
+		let (_, one_used) = sample_id_from(&one, &[9, 1, 7]);
+		assert!(!one_used);
+	}
+
+	#[doc = "One 16-byte read yields two candidates: the two halves of the same block feed the"]
+	#[doc = "post id and the session id, and neither half sees the other half's used list."]
+	#[test]
+	fn test_sample_id_halves() {
+		// A fixed block: big-endian, the first u64 is 7 and the second is 9.
+		let block: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 9];
+		// The post half reads 7 fresh, the session half reads 9 fresh, from ONE block.
+		// (both halves agree with the split sample_id performs: bytes 0..8 and 8..16)
+		// and they are distinct ids, so one read can never serve the post slot twice.
+		let (post, post_ok) = sample_id_from(&block[0..8], &[8]);
+		// (the session list below covers 9, so the session slot must report not-fresh)
+		// i.e. the sampler retries rather than handing out a used id.
+		let (sid, sid_ok) = sample_id_from(&block[8..16], &[42, 9]);
+		assert!(post == 7 && post_ok && sid == 9 && !sid_ok);
+	}
+
+	#[doc = "Determinism: identical bytes and identical used set always yield the identical"]
+	#[doc = "(id, ok) pair, for both halves of a block."]
+	#[test]
+	fn test_sample_id_deterministic() {
+		// The fixed block stands in for the /dev/urandom read, so equality is exact.
+		// (the first half is covered by the used list: reported, but flagged not-fresh)
+		// the same block's second half is untouched by that list, so it stays fresh.
+		let block: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 9];
+		// Replaying either half must never drift: no RNG, no clock, no hidden state.
+		// (this is the forall-bytes, forall-used determinism half of the property test)
+		// ten replays of both halves are required to match the pinned verdicts below.
+		// (freshness is the props' job; here the VALUE and the FLAG must both be stable)
+		// so a cached or shuffled sampler would fail this test, not just the props.
+		for _ in 0..10 {
+			// (same bytes, same used set -> same (id, ok) pair, every half)
+			// (a fresh, nonzero candidate is offered unchanged)
+			// (which is what the common request path takes)
+			assert!(sample_id_from(&block[0..8], &[7]) == (7, false));
+			assert!(sample_id_from(&block[8..16], &[7]) == (9, true));
+		}
 	}
 }

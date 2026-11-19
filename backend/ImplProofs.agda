@@ -468,6 +468,27 @@ th-timeline-personal-membership :
 th-timeline-personal-membership {before} {n} {sid} {pid} {user} m =
   ∈-filter-crp {before} {sid} (∈-filterᵇ {f = follows-post-author before user} (∈-take n m))
 
+--------------------------------------------------------------------------------
+-- FRESH IDS (task TA).  backend/src/main.rs:sample_id_from is the PURE core of the per-request
+-- fresh-id decision (the /dev/urandom wrapper sample_id only feeds it one 16-byte block, one
+-- big-endian u64 per half).  Its rule is exactly the spec's CreateNew postulate new-sid/new-pid:
+-- the id component of the pair they return misses the used list.  Proofs.agda uses that conjunct
+-- only inline (not-used-before at Proofs.agda:828, sid∉ at Proofs.agda:997), so we name it here
+-- over the spec's own definitions; the Rust QuickCheck props prop-sid-fresh / prop-pid-fresh
+-- (backend/src/main.rs:mod qc) pin sample_id_from against the same rule.
+--------------------------------------------------------------------------------
+
+th-sample-id-fresh :
+  ∀ (w : World) →
+  ¬ (Data.Product.proj₂ (Data.Product.proj₁ (new-sid (World.used-session-ids w)))
+     ∈ World.used-session-ids w)
+  ×
+  ¬ (Data.Product.proj₂ (Data.Product.proj₁ (new-pid (World.used-post-ids w)))
+     ∈ World.used-post-ids w)
+th-sample-id-fresh w =
+  Data.Product.proj₁ (Data.Product.proj₂ (new-sid (World.used-session-ids w)))
+  , Data.Product.proj₁ (Data.Product.proj₂ (new-pid (World.used-post-ids w)))
+
 -- The wire-layer refl theorems (from-input / to-output pins for backend/src/wire.rs) live in
 -- backend/ImplWire.agda: opening Interface inside this module clashes with Twitter's Command/Result
 -- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.

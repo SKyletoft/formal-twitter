@@ -69,6 +69,14 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   respond() source untouched. cargo test 37.
 
 ## In progress
+- [x] TA (ACCEPTED, this commit; impl subagent general/medium): perf main.rs — random_u64 -> random_block() [u8;16] (ONE /dev/urandom read/req), NEW pure sample_id_from(bytes,used) core, sample_id(&World) -> (pid,sid) with ZERO World clones (was 2/req; used_pid/used_sid imports dropped, membership==World fields verified model.rs:177/182); mod qc NEW: prop_pid_fresh/prop_sid_fresh #[quickcheck] + boundaries/halves/determinism tests; ImplProofs NEW th-sample-id-fresh — ∀w: new-sid/new-pid id component ∉ used lists over SPEC definitions (Proofs uses the conjunct only inline, :828/:997). GATES: cargo test 42 (37+new) green, clippy --all-targets -D warnings clean, fmt no-op, agda ImplWire+ImplProofs exit 0.
+      TA RESULTS (subagent, no commit): main.rs:128 random_u64 -> random_block() -> [u8;16] (ONE /dev/urandom read per request, 2 BE u64s);
+      main.rs:151 NEW pub sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) — pure decision (first 8 bytes, r != 0 && !used.contains(&r), total on short blocks);
+      main.rs:161 pub sample_id(&World) -> (u64, u64) (was (World, fn) — no World clone, borrows used_post_ids/used_session_ids, retries whole block on any collision);
+      serve() call site now let (fresh_pid, fresh_sid) = sample_id(&before) (was 2x sample_id(before.clone(), used_pid/used_sid)); model.rs used_pid/used_sid imports dropped (membership == the World fields, verified model.rs:177/182).
+      main.rs:mod qc (cfg test) NEW: prop_pid_fresh + prop_sid_fresh (#[quickcheck] over Vec<u64> used sets + Vec<u8> blocks padded to 16B), test_sample_id_boundaries (empty/short block + zero + 2^64-1 offered-vs-used exhaustion path), test_sample_id_halves (one 16B block -> two ids, 0..8 vs 8..16), test_sample_id_deterministic (same bytes+used -> same (id,ok), x10 replay).
+      ImplProofs.agda:481 NEW th-sample-id-fresh — ∀ w: the id component (Data.Product.proj₂∘proj₁) of new-sid (World.used-session-ids w) ∉ that list, × same for new-pid/used-post-ids; 8-line pointer comment names Proofs.agda's inline uses (:828 not-used-before, :997 sid∉) — no named lemma existed there.
+      GATES: agda ImplProofs/ImplWire exit 0; cargo fmt --check clean; cargo clippy --all-targets -D warnings exit 0; cargo test 42 passed 0 failed (31 lib + 6 bin incl new 5 + 5 smoke). db.rs/model.rs/wire.rs untouched.
 - [x] A4 snapshot (ACCEPTED b6b868b): recovery commit of the WHOLE Agda tree pre-deletion — untracked ImplLite{0,1,2,M}/ImplParse staged + kept (never typechecked; recovery only), RV2b+d ImplProofs/ImplStorage additions preserved, A4-impl import/comment edits included. All 9 doomed modules are now TRACKED, so recoverable.
 - [x] RV2b+d (impl subagent, DONE — ImplProofs half committed with A4; ImplStorage half SUPERSEDED by A4 deletion, recovery b6b868b): ImplStorage th-load-empty + load/save round-trip pin;
       ImplProofs th-prop-timeline-global + M2/M3 audit. Gate: cargo test + agda typecheck (LONG timeouts).
@@ -80,8 +88,6 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       Also landed (11d): th-timeline-global-membership / -anon-membership / -personal-membership (:459-483) closing the
       ts.iter().all(member &w.newest_first) conjunct of prop_timeline_valid via ∈-take ∘ ∈-filter-crp/ᵇ/puc; gate re-run exit 0.
 - [x] RV2e CANCELLED by A4: its target ImplParse.agda (stdlib-only parse_action pins, no Interface connection) was classified POINTLESS and deleted; ImplWire.agda already pins from-input/to-output at the SPEC level for all clauses. Recovery b6b868b keeps the file.
-- [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference (kills 2 World clones/req), one 16B
-  /dev/urandom read per request (two u64s). (reopen + poison lock ALREADY DONE by DB3a/DB3c — strike those.)
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets
   (HashMap<u64,&Post>, HashSet<&String>, HashSet<(&String,&String)>, no status/username clones).
 - [ ] Task TC (impl, MED): perf model.rs timelines — hoist active_user/account_at out of newest_first loop,
