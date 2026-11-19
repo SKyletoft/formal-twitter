@@ -84,6 +84,36 @@ fn req(port: u16, path: String, body: String) -> String {
 	}
 }
 
+#[doc = "The octets of one GET request: the frontend headers, the query inside the path, no body."]
+fn get_bytes(path: String) -> Vec<u8> {
+	("GET ".to_owned() + &path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\n\r\n")
+		.as_bytes()
+		.to_vec()
+}
+
+#[doc = "Sends one GET request and returns every octet the server answered with."]
+fn get(port: u16, path: String) -> String {
+	let mut sock = match std::net::TcpStream::connect(("127.0.0.1", port)) {
+		Err(_) => panic!("cannot reach the server"),
+		Ok(s) => s,
+	};
+	_ = std::io::Write::write_all(&mut sock, &get_bytes(path));
+	let mut got: Vec<u8> = vec![];
+	let mut one: [u8; 1] = [0];
+	while !headers_done(&got) && got.len() < 4096 {
+		_ = std::io::Read::read_exact(&mut sock, &mut one);
+		got.push(one[0]);
+	}
+	while got.len() < header_end(&got) + content_length(&got) {
+		_ = std::io::Read::read_exact(&mut sock, &mut one);
+		got.push(one[0]);
+	}
+	match String::from_utf8(got) {
+		Err(_) => "".to_string(),
+		Ok(text) => text,
+	}
+}
+
 #[doc = "True once the CRLF CRLF that closes the response headers has been read."]
 fn headers_done(xs: &[u8]) -> bool {
 	header_end(xs) != 0
@@ -513,4 +543,109 @@ fn test_reentrant_three_lifecycles() {
 		"the last timeline is incomplete",
 	);
 	ensure(wait_gone(8023), "the third server never exited");
+}
+
+#[doc = "The GET aliases the legacy frontend speaks answer with the very bytes their POST twins"]
+#[doc = "do, and a token-less private read fails identically over either transport."]
+#[test]
+fn test_get_alias_roundtrip() {
+	let db = "/tmp/ft-smoke-T6-alias.sqlite".to_string();
+	fresh_db(&db);
+	spawn_server(8024, &db, 10);
+	ensure(wait_ready(8024), "the alias server never started");
+	let signed = req(8024, "/api/signup".to_string(), "erin\r\npw".to_string());
+	// (the alias reads need a real post and a real session to answer about)
+	expect_ok(&signed);
+	let logged = req(8024, "/api/login".to_string(), "erin\r\npw".to_string());
+	expect_status(&logged, "HTTP/1.1 200 OK");
+	let token = id_of(&logged, "session_token");
+	ensure(token != 0, "login issued no session token");
+	let posted = req(
+		8024,
+		"/api/post-tweet".to_string(),
+		token.to_string() + "\r\nalias body",
+	);
+	expect_status(&posted, "HTTP/1.1 200 OK");
+	let tweet = id_of(&posted, "tweet_id");
+	ensure(tweet != 0, "publishing created no post id");
+	// anonymous global timeline: the token-less POST shape, byte for byte.
+	// (an empty token= in the query reads the public timeline like no token at all)
+	let global_post = req(8024, "/api/global-timeline".to_string(), "5".to_string());
+	let global_get = get(8024, "/api/global-timeline?len=5".to_string());
+	ensure(
+		status_line(&global_get) == status_line(&global_post),
+		"the GET global timeline status differs",
+	);
+	ensure(
+		body_of(&global_get) == body_of(&global_post),
+		"the GET global timeline body differs",
+	);
+	// one post by id with a session: the token-bearing POST shape.
+	let one_post = req(
+		8024,
+		"/api/get-tweet".to_string(),
+		token.to_string() + "\r\n" + &tweet.to_string(),
+	);
+	let one_get = get(
+		8024,
+		"/api/get-tweet?token=".to_owned() + &token.to_string() + "&id=" + &tweet.to_string(),
+	);
+	ensure(
+		status_line(&one_get) == status_line(&one_post),
+		"the GET get-tweet status differs",
+	);
+	ensure(
+		body_of(&one_get) == body_of(&one_post),
+		"the GET get-tweet body differs",
+	);
+	// anonymous get-tweet: the single-line POST shape, the empty value dropped.
+	// (token= with nothing after it is the same None the POST twin sends)
+	let anon_post = req(8024, "/api/get-tweet".to_string(), tweet.to_string());
+	let anon_get = get(
+		8024,
+		"/api/get-tweet?token=&id=".to_owned() + &tweet.to_string(),
+	);
+	ensure(
+		status_line(&anon_get) == status_line(&anon_post),
+		"the anonymous GET get-tweet status differs",
+	);
+	ensure(
+		body_of(&anon_get) == body_of(&anon_post),
+		"the anonymous GET get-tweet body differs",
+	);
+	// private timeline with the session: the two-line POST shape.
+	let priv_post = req(
+		8024,
+		"/api/private-timeline".to_string(),
+		token.to_string() + "\r\n3",
+	);
+	// (the query order the app.js sends: token first, then len)
+	let priv_get = get(
+		8024,
+		"/api/private-timeline?token=".to_owned() + &token.to_string() + "&len=3",
+	);
+	ensure(
+		status_line(&priv_get) == status_line(&priv_post),
+		"the GET private timeline status differs",
+	);
+	ensure(
+		body_of(&priv_get) == body_of(&priv_post),
+		"the GET private timeline body differs",
+	);
+	// token-less private read: the same refusal over either transport.
+	// (one line short of the arity, so MissingLine, so the one 403 shape)
+	// (never a silent anonymous private timeline)
+	let denied_post = req(8024, "/api/private-timeline".to_string(), "3".to_string());
+	let denied_get = get(8024, "/api/private-timeline?len=3".to_string());
+	ensure(
+		status_line(&denied_get) == status_line(&denied_post),
+		"the token-less private GET status differs",
+	);
+	ensure(
+		body_of(&denied_get) == body_of(&denied_post),
+		"the token-less private GET body differs",
+	);
+	// (the LF-only and trailing-newline query bodies the codec already tolerates)
+	// (are the very bytes alias_body builds, pinned in the unit tests)
+	ensure(wait_gone(8024), "the alias server never exited");
 }

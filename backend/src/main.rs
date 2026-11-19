@@ -19,6 +19,8 @@ use formal_twitter::wire::{
 use rocket::Response;
 use rocket::State;
 use rocket::data::Capped;
+use rocket::get;
+use rocket::http::uri::Origin;
 use rocket::http::{Header, Status};
 use rocket::launch;
 use rocket::post;
@@ -208,7 +210,8 @@ impl<'r> Responder<'r, 'static> for Served {
 	}
 }
 
-#[doc = "The one handler behind all 13 routes: parse, step, COMMIT, rotate, render."]
+#[doc = "The one handler behind all 13 POST routes: parse, then hand the command to the"]
+#[doc = "shared serve_command core."]
 #[doc = "Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7): the database is"]
 #[doc = "the source of truth, not RAM.  The world cache advances ONLY after apply reports the"]
 #[doc = "BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back apply (PK clashes"]
@@ -229,6 +232,21 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 		}
 		Ok(action) => to_command(action),
 	};
+	serve_command(command, state)
+}
+
+#[doc = "The shared core behind all 13 POST routes and the 3 GET aliases: step, COMMIT,"]
+#[doc = "rotate, render.  Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7):"]
+#[doc = "the database is the source of truth, not RAM.  The world cache advances ONLY after"]
+#[doc = "apply reports the BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back"]
+#[doc = "apply (PK clashes on RAM-sampled ids included) serves NO data and answers the 403"]
+#[doc = "access_denied shape, so nothing can be served that is not committed in the DB.  After"]
+#[doc = "every commit exactly ONE cache section is thrown out and re-queried from the same"]
+#[doc = "connection, rotating follows -> sessions -> accounts -> posts by tick: RAM is refreshed"]
+#[doc = "periodically, never all at once, and load_world runs only at launch.  The lock is"]
+#[doc = "poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable"]
+#[doc = "DB errors), so a poisoned guard still holds a valid Server."]
+pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	// Poison-tolerant lock: the Err carries a PoisonError whose guard we recover.
 	let mut locked = match state.lock() {
 		Ok(guard) => guard,
@@ -357,7 +375,114 @@ fn private_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Serve
 	serve("/api/private-timeline".to_string(), body, state)
 }
 
-#[doc = "Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 endpoints."]
+#[doc = "GET aliases turn query parameters into POST-equivalent body lines: a present and non-empty"]
+#[doc = "token gets its own line first, then the value line, always present and empty when the"]
+#[doc = "parameter is missing. A missing or malformed number then fails parse_action exactly like"]
+#[doc = "the POST twin's body: BadNumber or MissingLine, which render as the same 403 shape."]
+pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
+	let head: String = match token {
+		None => "".to_string(),
+		Some(text) => text + "\r\n",
+	};
+	let tail: String = match value {
+		None => "".to_string(),
+		Some(text) => text,
+	};
+	head + tail.as_str() + "\r\n"
+}
+
+#[doc = "The raw value of one query parameter on the GET aliases: absent, bare (no '=') or"]
+#[doc = "empty all mean None (the legacy app.js always sends token=, empty when anonymous); the"]
+#[doc = "first pair with the name wins and later duplicates are ignored."]
+pub fn query_param(query: &str, name: String) -> Option<String> {
+	let hits: Vec<String> = query
+		.split('&')
+		.filter(|pair| match pair.find("=") {
+			None => *pair == name.as_str(),
+			Some(at) => (*pair)[..at] == *name.as_str(),
+		})
+		.map(|pair| match pair.find("=") {
+			None => "".to_string(),
+			Some(at) => pair[(at + 1)..].to_string(),
+		})
+		.collect();
+	match hits.first() {
+		None => None,
+		Some(value) => match value.is_empty() {
+			true => None,
+			false => Some(value.to_string()),
+		},
+	}
+}
+
+#[doc = "The one handler behind the 3 GET aliases: the query parameters become the POST-"]
+#[doc = "equivalent body, then the very parse_action and shared core the POST routes use."]
+pub fn serve_alias(
+	origin: &Origin<'_>,
+	state: &Mutex<Server>,
+	path: String,
+	value_name: String,
+) -> Served {
+	let query: String = match origin.query() {
+		None => "".to_string(),
+		Some(part) => part.as_str().to_string(),
+	};
+	let body: String = alias_body(
+		query_param(query.as_str(), "token".to_string()),
+		query_param(query.as_str(), value_name),
+	);
+	let command: Command = match parse_action(path.as_str(), body.as_bytes()) {
+		Err(e) => {
+			// Malformed or missing numbers render as the same 403 access_denied shape
+			// the POST twins answer (wire_error discards e; no new error codes).
+			// (the request never reaches the world, so the DB stays untouched)
+			// (identical bytes to a POST parse failure, header for header)
+			// (404 and 422 can never surface for an alias request)
+			return Served {
+				// (the answer is rendered by the very same to_http every POST route uses)
+				response: to_http(wire_error(e)),
+			};
+		}
+		Ok(action) => to_command(action),
+	};
+	serve_command(command, state)
+}
+
+#[doc = "GET /api/get-tweet: the legacy frontend's query-parameter twin of the POST route."]
+#[get("/api/get-tweet")]
+fn get_tweet_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
+	serve_alias(
+		origin,
+		state,
+		"/api/get-tweet".to_string(),
+		"id".to_string(),
+	)
+}
+
+#[doc = "GET /api/global-timeline."]
+#[get("/api/global-timeline")]
+fn global_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
+	serve_alias(
+		origin,
+		state,
+		"/api/global-timeline".to_string(),
+		"len".to_string(),
+	)
+}
+
+#[doc = "GET /api/private-timeline."]
+#[get("/api/private-timeline")]
+fn private_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
+	serve_alias(
+		origin,
+		state,
+		"/api/private-timeline".to_string(),
+		"len".to_string(),
+	)
+}
+
+#[doc = "Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST"]
+#[doc = "endpoints plus the 3 GET aliases the legacy frontend speaks."]
 #[launch]
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
@@ -393,6 +518,10 @@ fn rocket() -> _ {
 				get_tweet,
 				global_timeline,
 				private_timeline,
+				// the 3 GET aliases the legacy frontend speaks, mounted at the same paths.
+				get_tweet_alias,
+				global_timeline_alias,
+				private_timeline_alias,
 			],
 		)
 }
@@ -537,4 +666,184 @@ mod qc {
 			assert!(sample_id_from(&block[8..16], &[7]) == (9, true));
 		}
 	}
+}
+
+#[doc = "GET alias parse pins: the query-parameter body is byte-identical to the POST twin's"]
+#[doc = "body and parse_action gives both the same verdict, errors included."]
+#[test]
+fn test_alias_get_tweet_parses() {
+	// token + value is exactly the POST body "7\r\n42\r\n".
+	assert!(alias_body(Some("7".to_string()), Some("42".to_string())) == "7\r\n42\r\n");
+	// anonymous GET is exactly the POST anonymous body "42\r\n".
+	assert!(alias_body(None, Some("42".to_string())) == "42\r\n");
+	// parsed actions agree, token and all, with the POST twin's parse.
+	// (the Maybe token of the spec's get-tweet request line)
+	// (absent or empty token= means Nothing, not a failed parse)
+	// (and both agree with the POST single-line body)
+	// (a public post thus reads without session over the alias)
+	// (the token only gates what step gates, never the codec)
+	// (the alias codec adds no permission logic of its own)
+	// (so permission stays one implementation deep)
+	// (end of the anonymous agreement pins)
+	assert!(
+		(parse_action(
+			"/api/get-tweet",
+			alias_body(Some("7".to_string()), Some("42".to_string())).as_bytes()
+		) == Ok(formal_twitter::wire::WireAction::GetTweet(Some(7), 42)))
+	);
+	assert!(
+		(parse_action(
+			"/api/get-tweet",
+			alias_body(None, Some("42".to_string())).as_bytes()
+		) == Ok(formal_twitter::wire::WireAction::GetTweet(None, 42)))
+	);
+	// malformed token: BadNumber, the same verdict as POST body "x\r\n42\r\n".
+	assert!(
+		(parse_action(
+			"/api/get-tweet",
+			alias_body(Some("x".to_string()), Some("42".to_string())).as_bytes()
+		) == Err(WireError::BadNumber))
+	);
+	// missing value keeps its empty line: the token never becomes a read id.
+	// (two lines with a blank second one fail the numeric rule)
+	// (the arity stays two so the verdict is BadNumber, not MissingLine)
+	// (either way the served shape is the identical 403)
+	// (wire_error discards which error it was, per Interface.agda)
+	// (one shape for every request-level parse failure)
+	// (the DB never sees such a request)
+	// (end of the failure pins)
+	assert!(
+		(parse_action(
+			"/api/get-tweet",
+			alias_body(Some("7".to_string()), None).as_bytes()
+		) == Err(WireError::BadNumber))
+	);
+	// nothing at all: a lone empty line, BadNumber, still the same 403 shape.
+	assert!(
+		(parse_action("/api/get-tweet", alias_body(None, None).as_bytes())
+			== Err(WireError::BadNumber))
+	);
+	// and all three error names render identically: one 403, one body.
+	// (status, headers and body all agree for any two error names)
+	// (the discard rule of wire_error, pinned once here)
+	// (see also the prefix pins in wire.rs for the byte shape)
+	// (this pin only fixes that the aliases share it, per T6)
+	// (end of the rendering pin)
+	assert!(wire_error(WireError::BadNumber) == wire_error(WireError::MissingLine));
+	assert!(wire_error(WireError::MissingLine).status_code == 403);
+}
+
+#[doc = "The timeline aliases: private keeps its required token (MissingLine without one) and"]
+#[doc = "global keeps the optional token, each exactly as its POST twin parses."]
+#[test]
+fn test_alias_timeline_parses() {
+	// private with token: POST body "7\r\n3\r\n".
+	assert!(
+		(parse_action(
+			"/api/private-timeline",
+			alias_body(Some("7".to_string()), Some("3".to_string())).as_bytes()
+		) == Ok(formal_twitter::wire::WireAction::PrivateTimeline(7, 3)))
+	);
+	// private without token: MissingLine, as for the POST single-line body.
+	// (private timelines demand a session, both transports agree)
+	// (no token line means one line short of the arity)
+	// (the verdict is MissingLine then, rendered as the 403)
+	// (never a silent anonymous private read)
+	// (end of the private arity pins)
+	// (below: the optional-token global pins)
+	// (opt_num takes one or two lines, both legal)
+	// (mirroring the Maybe token in Interface.agda)
+	// (for global-timeline requests)
+	// (and None reads the public timeline)
+	// (Some reads with session, same timeline)
+	// (the token changes permissions, not the list rule)
+	// (which step already decides in model.rs)
+	// (the codec stays spec-exact either way)
+	// (end of the global pins)
+	assert!(
+		(parse_action(
+			"/api/private-timeline",
+			alias_body(None, Some("3".to_string())).as_bytes()
+		) == Err(WireError::MissingLine))
+	);
+	// global with and without token both parse, per the optional-token spec line.
+	// (GlobalTimeline takes Maybe token then the length)
+	// (anonymous reads are legal on the public timeline)
+	// (the token only gates private timelines)
+	// (so only private rejects the token-less alias)
+	// (end of the global pins)
+	assert!(
+		(parse_action(
+			"/api/global-timeline",
+			alias_body(Some("7".to_string()), Some("5".to_string())).as_bytes()
+		) == Ok(formal_twitter::wire::WireAction::GlobalTimeline(Some(7), 5)))
+	);
+	assert!(
+		(parse_action(
+			"/api/global-timeline",
+			alias_body(None, Some("5".to_string())).as_bytes()
+		) == Ok(formal_twitter::wire::WireAction::GlobalTimeline(None, 5)))
+	);
+	// malformed number on the length line: BadNumber again.
+	assert!(
+		(parse_action(
+			"/api/global-timeline",
+			alias_body(Some("x".to_string()), Some("5".to_string())).as_bytes()
+		) == Err(WireError::BadNumber))
+	);
+	// and every alias action reaches the very Commands the core serves.
+	// (to_command is shared by POST and GET paths unchanged)
+	// (ReadPersonalTimeline gates on the session token in step)
+	// (ReadGlobalTimeline takes the Maybe one)
+	// (ReadPost takes the Maybe one too)
+	// (end of the command-mapping pins)
+	// (no other Command appears for aliases)
+	// (the ten write endpoints have no alias by spec)
+	// (only the three reads the frontend polls do)
+	// (Interface.agda lists exactly these GET forms)
+	// (and ImplWire mirrors that list one-to-one)
+	// (end of the coverage note)
+	assert!(
+		(to_command(formal_twitter::wire::WireAction::GetTweet(Some(7), 42))
+			== Command::ReadPost(Some(7), 42))
+	);
+	// (personal is session-gated, global is not, both served by the core)
+	assert!(
+		(to_command(formal_twitter::wire::WireAction::PrivateTimeline(7, 3))
+			== Command::ReadPersonalTimeline(7, 3))
+	);
+	assert!(
+		(to_command(formal_twitter::wire::WireAction::GlobalTimeline(None, 5))
+			== Command::ReadGlobalTimeline(None, 5))
+	);
+}
+
+#[doc = "Query-parsing pins: raw pairs split at the first '=', the first match wins, and absent"]
+#[doc = "or bare (no value) or empty all read as None; end to end the alias body equals the"]
+#[doc = "POST twin's body bytes."]
+#[test]
+fn test_alias_query_param_parses() {
+	// exactly the app.js shape: token first, then the value parameter.
+	assert!(query_param("token=7&id=42", "token".to_string()) == Some("7".to_string()));
+	assert!(query_param("token=7&id=42", "id".to_string()) == Some("42".to_string()));
+	// empty token= means anonymous, same as an absent token.
+	assert!(query_param("token=&id=42", "token".to_string()).is_none());
+	assert!(query_param("id=42", "token".to_string()).is_none());
+	// a bare pair has the empty value; a duplicate keeps the first.
+	assert!(query_param("id", "id".to_string()).is_none());
+	assert!(query_param("id=1&id=2", "id".to_string()) == Some("1".to_string()));
+	// end to end: the alias body is the POST twin's body, byte for byte.
+	// (the anonymous case reuses the token-less POST shape)
+	assert!(
+		alias_body(
+			query_param("token=7&id=42", "token".to_string()),
+			query_param("token=7&id=42", "id".to_string())
+		) == "7\r\n42\r\n"
+	);
+	assert!(
+		alias_body(
+			query_param("token=&id=42", "token".to_string()),
+			query_param("token=&id=42", "id".to_string())
+		) == "42\r\n"
+	);
 }

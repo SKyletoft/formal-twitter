@@ -129,6 +129,18 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] Task A4 (research): Remove pointless agda. Any agda that isn't proving (or providing lemmas for) anything in relation to the model in @spec/Twitter.agda or @spec/Interface.agda is useless and pointless.
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
   commit each accepted task with co-author maki@qwen3.8-flash-next-coder.
+- T6 (subagent, STARTED): frontend GET aliases
+- T6 (subagent, DONE, NOT committed): main.rs query_param (raw query -> first pair with name, bare/
+  empty/absent = None) + alias_body (token line only when present, then value line, CRLF, trailing) +
+  serve_alias(&Origin<'_> via Rocket's FromRequest for &Origin) + 3 #[get] aliases
+  (get_tweet_alias/global_timeline_alias/private_timeline_alias) added to routes!; they rebuild the
+  POST-equivalent body and re-enter the self-same parse_action + to_command + serve_command, so verdicts
+  and bytes match the POST twins (no new error codes). GETS: cargo fmt --check exit 0 (nightly-option
+  warnings only); cargo build 0 errors; cargo test 34 lib + 9 bin (test_alias_get_tweet_parses,
+  test_alias_timeline_parses, test_alias_query_param_parses) + 6 smoke (new test_get_alias_roundtrip:
+  raw-TCP GET vs POST twins equal status line + body, incl. token-less private refusal on both
+  transports); clippy --all-targets -D warnings exit 0; agda ImplWire.agda + ImplProofs.agda exit 0
+  (ImplWire gains only a pointer comment: the aliases add no Interface clause).
 
 ## Reference: spec semantics (Twitter.agda + Interface.agda, from R4/R5)
 - `World` (:65-109): account-at String -> Maybe Account{password, default-visibility}; session-at Sid ->

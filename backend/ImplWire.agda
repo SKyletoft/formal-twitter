@@ -16,6 +16,13 @@ import Twitter LoginToken TweetId new-sid new-pid _≟ₜ_ _≟ₗ_ as TW
 
 -- from-input: all 15 clauses of spec/Interface.agda:from-input, the shape of
 -- backend/src/wire.rs:to_command.
+-- Task T6 adds no clause here: the legacy frontend's GET aliases
+-- (backend/src/main.rs:query_param + alias_body + serve_alias) rebuild the POST-
+-- equivalent body from the query parameters and then feed the self-same parse_action
+-- + to_command, so each alias denotes exactly one request name above, the token
+-- parameter being the Maybe token these three clauses already consume.  The byte
+-- equality of the two transports is pinned in backend/src/main.rs (test_alias_*) and
+-- over the network in backend/tests/smoke.rs (test_get_alias_roundtrip).
 wi-post-tweet : ∀ (tk : LoginToken) (txt : String) →
         from-input (post-tweet tk txt) ≡ TW.publish tk txt nothing
 wi-post-tweet tk txt = refl
