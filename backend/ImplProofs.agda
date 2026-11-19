@@ -402,6 +402,15 @@ th-prop-revoke-used
 -- take ∘ filter ∘ newest-first, whose newest-first source is uniq (the World
 -- field no-duplicate-posts), so both conjuncts hold for all three timeline
 -- branches (personal, tokened global, anon global):
+--
+-- Task TC (perf, model.rs): the timeline fns were reworked to hoist the
+-- session-username/account lookup out of the newest_first loop, stop after
+-- collecting n matches (early-stop), and borrow Posts via post_at_ref.
+-- Semantics unchanged; pinned in Rust by the QuickCheck props
+-- prop_timeline_global_equiv / prop_timeline_personal_equiv comparing the new
+-- code to the pre-TC full-filter + take_n behaviour for n in {n, 0, 1, 2, big}.
+-- Hence the take ∘ filter characterisation, and the quantified theorems below
+-- (th-timeline-* uniq/len/membership), still cover the new code.
 th-timeline-global-uniq :
   ∀ {before n sid acc user} →
   ValidSession before sid acc user →

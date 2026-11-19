@@ -101,6 +101,21 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       GATES: cargo fmt --check exit 0 (nightly-option warnings only); cargo test 43 passed 0 failed (42+new, all db_tests green = behaviour guard); clippy --all-targets -D warnings exit 0; agda ImplWire+ImplProofs exit 0 (no Agda edits).
 - [ ] Task TC (impl, MED): perf model.rs timelines — hoist active_user/account_at out of newest_first loop,
   early-stop after n matches, post_at_ref -> Option<&Post> for read-only callers.
+    - TC (subagent, STARTED): timeline perf model.rs
+    - TC (subagent, RESULTS): model.rs 1051->1220 lines. NEW borrowing lookups account_at_ref :147,
+      post_at_ref :177, active_user_ref :215 (old owned fns kept). Read paths switched to refs:
+      can_read :264, is_post_public :283, follows_author :291, well_formed :423/:434/:441/:459.
+      personal_timeline rewritten :311 (hoist active_user_ref+account_at_ref guard, n==0 early return,
+      one post_at_ref per candidate, break at n matches) was :278; global_timeline :346 (was :294);
+      public_timeline :379 (was :305). qc imports +follows_author/global_timeline/is_post_public/
+      personal_timeline/public_timeline/take_n. NEW qc baselines old_global_timeline/old_public_timeline/
+      old_personal_timeline :1143-1179 (pre-TC full-filter+take_n) + #[quickcheck] prop_timeline_global_equiv
+      :1181, prop_timeline_personal_equiv :1203 (n,0,1,2,1000 each; sid/n drawn from generated Command pools
+      so the active-session branch is hit). ImplProofs.agda: 9-line pointer comment :405 (no new module) saying
+      semantics unchanged, so th-timeline-* uniq/len/membership still apply.
+      GATES: cargo fmt --check exit 0 (nightly-option warnings only); cargo test 45 passed 0 failed
+      (34 lib + 6 bin + 5 smoke = 43 baseline + 2 new props); clippy --all-targets -D warnings exit 0;
+      agda ImplWire.agda + ImplProofs.agda exit 0. NOT committed.
 - [ ] Task T6 (impl, SMALL): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
   /api/{global,private}-timeline?token=&len=) -> same Action; tolerate LF/trailing-newline bodies.
 - [ ] Task T7 (impl): flake.nix — hermetic rustPlatform buildRustPackage (vendored cargo), `nix run .`

@@ -143,6 +143,16 @@ pub fn account_at(w: &World, user: &str) -> Option<Account> {
 	None
 }
 
+#[doc = "Borrowing World.account-at for read-only callers; no Account clone."]
+pub fn account_at_ref<'a>(w: &'a World, user: &str) -> Option<&'a Account> {
+	for (name, acc) in w.accounts.iter() {
+		if *name == user {
+			return Some(acc);
+		}
+	}
+	None
+}
+
 #[doc = "World.session-at; absence means Unused."]
 pub fn session_at(w: &World, sid: u64) -> SessionStatus {
 	for (s, st) in w.sessions.iter() {
@@ -158,6 +168,16 @@ pub fn post_at(w: &World, pid: u64) -> Option<Post> {
 	for (p, post) in w.posts.iter() {
 		if *p == pid {
 			return Some(post.clone());
+		}
+	}
+	None
+}
+
+#[doc = "Borrowing World.post-at for read-only callers; no Post clone."]
+pub fn post_at_ref(w: &World, pid: u64) -> Option<&Post> {
+	for (p, post) in w.posts.iter() {
+		if *p == pid {
+			return Some(post);
 		}
 	}
 	None
@@ -189,6 +209,19 @@ pub fn active_user(w: &World, sid: u64) -> Option<String> {
 		SessionStatus::Active(user) => Some(user.clone()),
 		_ => None,
 	}
+}
+
+#[doc = "Borrowing the username of an active session for read-only callers; no String clone."]
+pub fn active_user_ref(w: &World, sid: u64) -> Option<&String> {
+	for (s, st) in w.sessions.iter() {
+		if *s == sid {
+			match st {
+				SessionStatus::Active(user) => return Some(user),
+				_ => return None,
+			}
+		}
+	}
+	None
 }
 
 #[doc = "Spec can-have-valid-session: sid is active for a user with an account."]
@@ -228,17 +261,17 @@ pub fn access_ok(w: &World, cmd: Command) -> bool {
 
 #[doc = "Spec can-read-post w sid pid."]
 pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
-	match active_user(w, sid) {
+	match active_user_ref(w, sid) {
 		None => false,
 		Some(user) => {
-			account_at(w, &user).is_some()
-				&& match post_at(w, pid) {
+			account_at_ref(w, user).is_some()
+				&& match post_at_ref(w, pid) {
 					None => false,
 					Some(post) => {
 						post.status == PostStatus::Other
 							&& (post.visibility == Visibility::Everyone
 								|| (post.visibility == Visibility::FollowersOnly
-									&& follows(w, &user, &post.author)))
+									&& follows(w, user, &post.author)))
 					}
 				}
 		}
@@ -247,7 +280,7 @@ pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 
 #[doc = "Spec is-post-public: exists with Everyone visibility and live status."]
 pub fn is_post_public(w: &World, pid: u64) -> bool {
-	match post_at(w, pid) {
+	match post_at_ref(w, pid) {
 		None => false,
 		Some(post) => post.visibility == Visibility::Everyone && post.status == PostStatus::Other,
 	}
@@ -255,7 +288,7 @@ pub fn is_post_public(w: &World, pid: u64) -> bool {
 
 #[doc = "Spec follows-post-author: user follows the author of pid."]
 pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
-	match post_at(w, pid) {
+	match post_at_ref(w, pid) {
 		None => false,
 		Some(post) => follows(w, user, &post.author),
 	}
@@ -276,40 +309,97 @@ pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
 
 #[doc = "get-personal-timeline: newest-first, keep readable posts by followed authors."]
 pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
-	match active_user(w, sid) {
+	// Hoist: username and account presence are loop-invariant for the newest_first scan;
+	// their absence makes can-read false for every pid, i.e. the old code yielded [].
+	match active_user_ref(w, sid) {
 		None => vec![],
 		Some(user) => {
+			if account_at_ref(w, user).is_none() {
+				return vec![];
+			}
+			if n == 0 {
+				return vec![];
+			}
 			let mut acc = vec![];
 			for pid in &w.newest_first {
-				if can_read(w, sid, *pid) && follows_author(w, &user, *pid) {
+				// Early-stop: collect at most n matches, then stop; the prefix equals take_n of
+				// the old full-filter output. Fused test shares ONE borrowing post lookup:
+				// can-read && follows-author == live, author followed, visibility in the enum.
+				let readable: bool = match post_at_ref(w, *pid) {
+					None => false,
+					Some(post) => {
+						post.status == PostStatus::Other
+							&& follows(w, user, &post.author)
+							&& (post.visibility == Visibility::Everyone
+								|| post.visibility == Visibility::FollowersOnly)
+					}
+				};
+				if readable {
 					acc.push(*pid);
+					if acc.len() as u64 >= n {
+						break;
+					}
 				}
 			}
-			take_n(acc, n)
+			acc
 		}
 	}
 }
 
 #[doc = "get-private-global: newest-first readable posts."]
 pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
-	let mut acc = vec![];
-	for pid in &w.newest_first {
-		if can_read(w, sid, *pid) {
-			acc.push(*pid);
+	// Same hoisting/early-stop shape as personal_timeline: the session username and account
+	// presence are loop-invariant; absence made can-read false for every pid (old result []).
+	match active_user_ref(w, sid) {
+		None => vec![],
+		Some(user) => {
+			if account_at_ref(w, user).is_none() {
+				return vec![];
+			}
+			if n == 0 {
+				return vec![];
+			}
+			let mut acc = vec![];
+			for pid in &w.newest_first {
+				// can-read for the hoisted user, one borrowing post lookup per candidate.
+				let readable: bool = match post_at_ref(w, *pid) {
+					None => false,
+					Some(post) => {
+						post.status == PostStatus::Other
+							&& (post.visibility == Visibility::Everyone
+								|| (post.visibility == Visibility::FollowersOnly
+									&& follows(w, user, &post.author)))
+					}
+				};
+				if readable {
+					acc.push(*pid);
+					if acc.len() as u64 >= n {
+						break;
+					}
+				}
+			}
+			acc
 		}
 	}
-	take_n(acc, n)
 }
 
 #[doc = "get-public-global: newest-first public posts."]
 pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
+	// Early-stop: stop scanning once n public posts are collected; the prefix equals
+	// take_n of the old full-filter output. n == 0 yields [] without scanning at all.
+	if n == 0 {
+		return vec![];
+	}
 	let mut acc = vec![];
 	for pid in &w.newest_first {
 		if is_post_public(w, *pid) {
 			acc.push(*pid);
+			if acc.len() as u64 >= n {
+				break;
+			}
 		}
 	}
-	take_n(acc, n)
+	acc
 }
 
 #[doc = "Spec empty-world."]
@@ -338,7 +428,7 @@ pub fn well_formed(w: &World) -> bool {
 			if *child == *pid {
 				return false;
 			}
-			match post_at(w, *child) {
+			match post_at_ref(w, *child) {
 				None => return false,
 				Some(cp) => {
 					if cp.parent != Some(*pid) {
@@ -349,14 +439,14 @@ pub fn well_formed(w: &World) -> bool {
 		}
 	}
 	for pid in &w.used_post_ids {
-		if post_at(w, *pid).is_none() {
+		if post_at_ref(w, *pid).is_none() {
 			return false;
 		}
 	}
 	for (sid, st) in &w.sessions {
 		match st {
 			SessionStatus::Active(user) => {
-				if account_at(w, user).is_none() {
+				if account_at_ref(w, user).is_none() {
 					return false;
 				}
 			}
@@ -374,7 +464,7 @@ pub fn well_formed(w: &World) -> bool {
 		}
 	}
 	for pid in &w.newest_first {
-		if post_at(w, *pid).is_none() {
+		if post_at_ref(w, *pid).is_none() {
 			return false;
 		}
 	}
@@ -587,7 +677,8 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 mod qc {
 	use super::{
 		Account, Command, Post, PostStatus, Result, SessionStatus, Visibility, World, account_at,
-		active_user, can_read, empty_world, extract_sid, follows, len_u64, member, post_at, step,
+		active_user, can_read, empty_world, extract_sid, follows, follows_author, global_timeline,
+		is_post_public, len_u64, member, personal_timeline, post_at, public_timeline, step, take_n,
 		unique, valid_session, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
@@ -1047,5 +1138,83 @@ mod qc {
 			},
 			_ => true,
 		}
+	}
+
+	#[doc = "Pre-perf baseline (full filter, then take_n) pinning the hoisted/early-stopped timelines."]
+	fn old_global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+		let mut acc = vec![];
+		for pid in &w.newest_first {
+			if can_read(w, sid, *pid) {
+				acc.push(*pid);
+			}
+		}
+		take_n(acc, n)
+	}
+
+	#[doc = "Pre-perf baseline for the anonymous global timeline."]
+	fn old_public_timeline(w: &World, n: u64) -> Vec<u64> {
+		let mut acc = vec![];
+		for pid in &w.newest_first {
+			if is_post_public(w, *pid) {
+				acc.push(*pid);
+			}
+		}
+		take_n(acc, n)
+	}
+
+	#[doc = "Pre-perf baseline for the personal timeline (owned active_user, per-candidate can_read)."]
+	fn old_personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+		match active_user(w, sid) {
+			None => vec![],
+			Some(user) => {
+				let mut acc = vec![];
+				for pid in &w.newest_first {
+					if can_read(w, sid, *pid) && follows_author(w, &user, *pid) {
+						acc.push(*pid);
+					}
+				}
+				take_n(acc, n)
+			}
+		}
+	}
+
+	#[doc = "QC early-stop equivalence: hoisted global (logged-in + anon) timelines equal take_n of the full filter."]
+	#[quickcheck]
+	fn prop_timeline_global_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
+		// sid and n come from the Command generator pools (SIDS/NS) so the active-session
+		// branch is exercised, not only the trivial no-session case.
+		let sid: u64 = match extract_sid(cmd.clone()) {
+			None => ids.sid,
+			Some(s) => s,
+		};
+		let mut n: u64 = 3;
+		if let Command::ReadGlobalTimeline(_, k) = cmd {
+			n = k;
+		}
+		let mut ok: bool = true;
+		for nn in &[n, 0, 1, 2, 1000] {
+			ok = ok
+				&& global_timeline(&w, sid, *nn) == old_global_timeline(&w, sid, *nn)
+				&& public_timeline(&w, *nn) == old_public_timeline(&w, *nn);
+		}
+		ok
+	}
+
+	#[doc = "QC early-stop equivalence: hoisted personal (follows-based) timeline equals take_n of the full filter."]
+	#[quickcheck]
+	fn prop_timeline_personal_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
+		let sid: u64 = match extract_sid(cmd.clone()) {
+			None => ids.sid,
+			Some(s) => s,
+		};
+		let mut n: u64 = 3;
+		if let Command::ReadPersonalTimeline(_, k) = cmd {
+			n = k;
+		}
+		personal_timeline(&w, sid, n) == old_personal_timeline(&w, sid, n)
+			&& personal_timeline(&w, sid, 0) == old_personal_timeline(&w, sid, 0)
+			&& personal_timeline(&w, sid, 1) == old_personal_timeline(&w, sid, 1)
+			&& personal_timeline(&w, sid, 2) == old_personal_timeline(&w, sid, 2)
+			&& personal_timeline(&w, sid, 1000) == old_personal_timeline(&w, sid, 1000)
 	}
 }
