@@ -99,8 +99,8 @@ pub fn enc_sess_row(st: SessionStatus) -> (i32, Option<String>) {
 	}
 }
 
-#[doc = "Borrowed sibling of enc_sess_row (task TB): the status arrives by reference, so apply()'s"]
-#[doc = "borrowed views never copy it; only the Active username is copied, where this runs."]
+/// Borrowed sibling of enc_sess_row (task TB): the status arrives by reference, so apply()'s
+/// borrowed views never copy it; only the Active username is copied, where this runs.
 pub fn enc_sess_row_ref(st: &SessionStatus) -> (i32, Option<String>) {
 	match st {
 		SessionStatus::Active(username) => (1, Some(username.clone())),
@@ -508,16 +508,16 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 
 // ---- Write-through diff (task T4) ----
 
-#[doc = "Bounded write-through: the DB must already mirror `before`; we mutate only"]
-#[doc = "the delta to `after`. Accounts only ever get INSERTs (password/visibility of"]
-#[doc = "an existing account never changes). Sessions UPDATE on status/user change,"]
-#[doc = "INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed"]
-#[doc = "with seq = (max existing seq in the DB) + 1, growing by one per insertion, so"]
-#[doc = "ORDER BY seq DESC keeps newest_first (new posts prepend); existing seqs stay put."]
-#[doc = "Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;"]
-#[doc = "follows likewise. Nothing existing is rewritten, so this is O(delta)."]
-#[doc = "The whole batch is one sqlite transaction (raw BEGIN/COMMIT or ROLLBACK pragmas);"]
-#[doc = "the Bool reports whether the batch committed, i.e. false means the DB is unchanged."]
+/// Bounded write-through: the DB must already mirror `before`; we mutate only
+/// the delta to `after`. Accounts only ever get INSERTs (password/visibility of
+/// an existing account never changes). Sessions UPDATE on status/user change,
+/// INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed
+/// with seq = (max existing seq in the DB) + 1, growing by one per insertion, so
+/// ORDER BY seq DESC keeps newest_first (new posts prepend); existing seqs stay put.
+/// Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;
+/// follows likewise. Nothing existing is rewritten, so this is O(delta).
+/// The whole batch is one sqlite transaction (raw BEGIN/COMMIT or ROLLBACK pragmas);
+/// the Bool reports whether the batch committed, i.e. false means the DB is unchanged.
 pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool {
 	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
 	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
@@ -768,8 +768,8 @@ mod db_tests {
 	};
 	use crate::model::empty_world;
 
-	#[doc = "Canonical well-formed World for the save/load tests; rows are pre-sorted in the"]
-	#[doc = "order load_world returns them, so equality holds after a full save/reopen round-trip."]
+	/// Canonical well-formed World for the save/load tests; rows are pre-sorted in the
+	/// order load_world returns them, so equality holds after a full save/reopen round-trip.
 	fn build_world() -> World {
 		World {
 			accounts: vec![
@@ -840,17 +840,17 @@ mod db_tests {
 		}
 	}
 
-	#[doc = "init_or_open creates the DB file; load_world on a fresh DB gives the empty World."]
+	/// init_or_open creates the DB file; load_world on a fresh DB gives the empty World.
 	#[test]
-	#[doc = "T3 gate: fresh database loads as the empty World."]
+	/// T3 gate: fresh database loads as the empty World.
 	fn test_db_empty() {
 		let mut conn = init_or_open("/tmp/ft-db-test-empty.sqlite".to_string()).unwrap();
 		assert!(load_world(&mut conn) == empty_world());
 	}
 
-	#[doc = "save_world then reopen init_or_open + load_world: loaded == w (full round-trip)."]
+	/// save_world then reopen init_or_open + load_world: loaded == w (full round-trip).
 	#[test]
-	#[doc = "T3 gate: save_world then load_world reproduces the World exactly."]
+	/// T3 gate: save_world then load_world reproduces the World exactly.
 	fn test_db_roundtrip() {
 		let path = "/tmp/ft-db-test-roundtrip.sqlite";
 		let w = build_world();
@@ -860,9 +860,9 @@ mod db_tests {
 		assert!(load_world(&mut again) == w);
 	}
 
-	#[doc = "Reopening the same file twice yields equal Worlds (reentrancy)."]
+	/// Reopening the same file twice yields equal Worlds (reentrancy).
 	#[test]
-	#[doc = "T3 gate: two reopened loads agree on the same DB file."]
+	/// T3 gate: two reopened loads agree on the same DB file.
 	fn test_db_reopen_equal() {
 		let path = "/tmp/ft-db-test-reopen.sqlite";
 		let w = build_world();
@@ -875,9 +875,9 @@ mod db_tests {
 		assert!(a == b);
 	}
 
-	#[doc = "A Revoked session row (NULL user) survives save+load."]
+	/// A Revoked session row (NULL user) survives save+load.
 	#[test]
-	#[doc = "T3 gate: Revoked sessions (no user) are preserved."]
+	/// T3 gate: Revoked sessions (no user) are preserved.
 	fn test_db_revoked_preserved() {
 		let path = "/tmp/ft-db-test-revoked.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -888,11 +888,11 @@ mod db_tests {
 		assert!(loaded.sessions[1] == (200, SessionStatus::Revoked));
 	}
 
-	#[doc = "The after-World for the bounded-diff test: signup zoe (INSERT),"]
-	#[doc = "session 100 Active->Revoked (UPDATE), 200 dropped (DELETE), 300 inserted"]
-	#[doc = "(INSERT, Unused), post 1 liked by carol and replied to by pid 500 (whose"]
-	#[doc = "parent stays 1), post 2 flipped to deleted, follows changed. Rows stay in"]
-	#[doc = "load_world's canonical sorted order."]
+	/// The after-World for the bounded-diff test: signup zoe (INSERT),
+	/// session 100 Active->Revoked (UPDATE), 200 dropped (DELETE), 300 inserted
+	/// (INSERT, Unused), post 1 liked by carol and replied to by pid 500 (whose
+	/// parent stays 1), post 2 flipped to deleted, follows changed. Rows stay in
+	/// load_world's canonical sorted order.
 	fn build_after() -> World {
 		World {
 			accounts: vec![
@@ -980,8 +980,8 @@ mod db_tests {
 	}
 
 	#[test]
-	#[doc = "T4 gate: apply on an empty DB (before = empty) INSERTs every row of after;"]
-	#[doc = "new pids get seq = max+1 from scratch, and reload reproduces after."]
+	/// T4 gate: apply on an empty DB (before = empty) INSERTs every row of after;
+	/// new pids get seq = max+1 from scratch, and reload reproduces after.
 	fn test_apply_inserts_all() {
 		let path = "/tmp/ft-apply-empty.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -994,10 +994,10 @@ mod db_tests {
 	}
 
 	#[test]
-	#[doc = "T4 gate: bounded diff from a saved before-world: INSERTs, UPDATEs (session"]
-	#[doc = "status, post status, likes, replies, follows), DELETEs (session 200, follow"]
-	#[doc = "(bob,alice)); reload equals after, newest_first [500,3,2,1] (newest-first"]
-	#[doc = "preserved, existing seqs untouched) and the reply's parent is still 1."]
+	/// T4 gate: bounded diff from a saved before-world: INSERTs, UPDATEs (session
+	/// status, post status, likes, replies, follows), DELETEs (session 200, follow
+	/// (bob,alice)); reload equals after, newest_first [500,3,2,1] (newest-first
+	/// preserved, existing seqs untouched) and the reply's parent is still 1.
 	fn test_apply_diff() {
 		let path = "/tmp/ft-apply-diff.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1012,8 +1012,8 @@ mod db_tests {
 		assert!(load_world(&mut conn).posts[3].1.parent == Some(1));
 	}
 	#[test]
-	#[doc = "DB3a gate: a clean diff COMMITs (apply returns true) and the new rows are visible"]
-	#[doc = "from a brand-new connection, so write-through really reached the DB."]
+	/// DB3a gate: a clean diff COMMITs (apply returns true) and the new rows are visible
+	/// from a brand-new connection, so write-through really reached the DB.
 	fn test_apply_returns_true() {
 		let path = "/tmp/ft-apply-true.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1028,10 +1028,10 @@ mod db_tests {
 	}
 
 	#[test]
-	#[doc = "DB3a gate: the RAM cache lies (post 1 is missing from BEFORE, but the DB has it),"]
-	#[doc = "so apply() re-INSERTs pid 1 and hits the PRIMARY KEY, then INSERTs its like and"]
-	#[doc = "reply pairs (likes/replies have no PK, so they would leak). The batch must ROLLBACK:"]
-	#[doc = "apply reports failure and the pre-state is intact on disk."]
+	/// DB3a gate: the RAM cache lies (post 1 is missing from BEFORE, but the DB has it),
+	/// so apply() re-INSERTs pid 1 and hits the PRIMARY KEY, then INSERTs its like and
+	/// reply pairs (likes/replies have no PK, so they would leak). The batch must ROLLBACK:
+	/// apply reports failure and the pre-state is intact on disk.
 	fn test_apply_failure_rolls_back() {
 		let path = "/tmp/ft-apply-rollback.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1140,10 +1140,10 @@ mod db_tests {
 		assert!(reloaded.used_session_ids == tampered.used_session_ids);
 	}
 	#[test]
-	#[doc = "TB REDO perf-scale gate: 500 posts (pids 1 to 500, ids also in used_post_ids, newest_first "]
-	#[doc = "reversed) round-trip via save_world (seqs stamped 1 to 500), then apply of the diff: "]
-	#[doc = "delete pid 7, flip pid 11 to Deleted, insert pid 900 (seq 501). Batch COMMITS, load_world "]
-	#[doc = "equals after exactly (newest_first [900,500..8,6..1]) and a reopen loads it again."]
+	/// TB REDO perf-scale gate: 500 posts (pids 1 to 500, ids also in used_post_ids, newest_first
+	/// reversed) round-trip via save_world (seqs stamped 1 to 500), then apply of the diff:
+	/// delete pid 7, flip pid 11 to Deleted, insert pid 900 (seq 501). Batch COMMITS, load_world
+	/// equals after exactly (newest_first [900,500..8,6..1]) and a reopen loads it again.
 	fn test_apply_perf_scale() {
 		let path = "/tmp/ft-apply-perf-scale.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();

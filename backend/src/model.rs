@@ -6,7 +6,7 @@ pub enum Visibility {
 	FollowersOnly,
 }
 
-#[doc = "PostStatus; Other is the spec's live."]
+/// PostStatus; Other is the spec's live.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PostStatus {
 	Other,
@@ -23,7 +23,7 @@ pub enum SessionStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Account {
 	pub password: String,
-	#[doc = "Account.default-visibility"]
+	/// Account.default-visibility
 	pub default_visibility: Visibility,
 }
 
@@ -32,36 +32,36 @@ pub struct Post {
 	pub author: String,
 	pub text: String,
 	pub visibility: Visibility,
-	#[doc = "Post.status"]
+	/// Post.status
 	pub status: PostStatus,
-	#[doc = "Post.likes: unique user names"]
+	/// Post.likes: unique user names
 	pub likes: Vec<String>,
-	#[doc = "Post.replies: unique child pids"]
+	/// Post.replies: unique child pids
 	pub replies: Vec<u64>,
-	#[doc = "Post.parent"]
+	/// Post.parent
 	pub parent: Option<u64>,
 }
 
-#[doc = "World: every map is stored as an association list; absence means nothing, unused or false."]
+/// World: every map is stored as an association list; absence means nothing, unused or false.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
-	#[doc = "World.account-at"]
+	/// World.account-at
 	pub accounts: Vec<(String, Account)>,
-	#[doc = "World.session-at"]
+	/// World.session-at
 	pub sessions: Vec<(u64, SessionStatus)>,
-	#[doc = "World.post-at"]
+	/// World.post-at
 	pub posts: Vec<(u64, Post)>,
-	#[doc = "World.follows: exactly the true (follower, followee) pairs"]
+	/// World.follows: exactly the true (follower, followee) pairs
 	pub follows: Vec<(String, String)>,
-	#[doc = "World.newest-first: the head is the newest post"]
+	/// World.newest-first: the head is the newest post
 	pub newest_first: Vec<u64>,
-	#[doc = "World.used-post-ids"]
+	/// World.used-post-ids
 	pub used_post_ids: Vec<u64>,
-	#[doc = "World.used-session-ids"]
+	/// World.used-session-ids
 	pub used_session_ids: Vec<u64>,
 }
 
-#[doc = "Command mirrors the Command data type of spec/Twitter.agda."]
+/// Command mirrors the Command data type of spec/Twitter.agda.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
 	Publish(u64, String, Option<u64>),
@@ -79,7 +79,7 @@ pub enum Command {
 	TimePasses,
 }
 
-#[doc = "Result mirrors the Result data type of spec/Twitter.agda."]
+/// Result mirrors the Result data type of spec/Twitter.agda.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Result {
 	Success,
@@ -93,7 +93,7 @@ pub enum Result {
 	ReturnedPost(String, String, u64, Vec<u64>),
 }
 
-#[doc = "Spec helper: list membership (Agda's ∈)."]
+/// Spec helper: list membership (Agda's ∈).
 pub fn member<T: PartialEq>(xs: &[T], x: T) -> bool {
 	for y in xs {
 		if *y == x {
@@ -104,7 +104,7 @@ pub fn member<T: PartialEq>(xs: &[T], x: T) -> bool {
 	false
 }
 
-#[doc = "Spec helper: no-duplicates on a list."]
+/// Spec helper: no-duplicates on a list.
 pub fn unique<T: PartialEq>(xs: &[T]) -> bool {
 	// quadratic; worlds are small
 	for (i, x) in xs.iter().enumerate() {
@@ -118,13 +118,13 @@ pub fn unique<T: PartialEq>(xs: &[T]) -> bool {
 	true
 }
 
-#[doc = "Spec helper: unique keys in an association list."]
+/// Spec helper: unique keys in an association list.
 pub fn key_unique<K: PartialEq + Clone, V>(xs: &[(K, V)]) -> bool {
 	let keys: Vec<K> = (xs.iter()).map(|(key, _)| key.clone()).collect();
 	unique(&keys)
 }
 
-#[doc = "List length as u64 without lossy casts."]
+/// List length as u64 without lossy casts.
 pub fn len_u64<T>(xs: &[T]) -> u64 {
 	let mut n: u64 = 0;
 	for _ in xs {
@@ -133,7 +133,7 @@ pub fn len_u64<T>(xs: &[T]) -> u64 {
 	n
 }
 
-#[doc = "World.account-at; absence means nothing."]
+/// World.account-at; absence means nothing.
 pub fn account_at(w: &World, user: &str) -> Option<Account> {
 	for (name, acc) in w.accounts.iter() {
 		if *name == user {
@@ -143,7 +143,7 @@ pub fn account_at(w: &World, user: &str) -> Option<Account> {
 	None
 }
 
-#[doc = "Borrowing World.account-at for read-only callers; no Account clone."]
+/// Borrowing World.account-at for read-only callers; no Account clone.
 pub fn account_at_ref<'a>(w: &'a World, user: &str) -> Option<&'a Account> {
 	for (name, acc) in w.accounts.iter() {
 		if *name == user {
@@ -153,7 +153,7 @@ pub fn account_at_ref<'a>(w: &'a World, user: &str) -> Option<&'a Account> {
 	None
 }
 
-#[doc = "World.session-at; absence means Unused."]
+/// World.session-at; absence means Unused.
 pub fn session_at(w: &World, sid: u64) -> SessionStatus {
 	for (s, st) in w.sessions.iter() {
 		if *s == sid {
@@ -163,7 +163,7 @@ pub fn session_at(w: &World, sid: u64) -> SessionStatus {
 	SessionStatus::Unused
 }
 
-#[doc = "World.post-at; absence means nothing."]
+/// World.post-at; absence means nothing.
 pub fn post_at(w: &World, pid: u64) -> Option<Post> {
 	for (p, post) in w.posts.iter() {
 		if *p == pid {
@@ -173,7 +173,7 @@ pub fn post_at(w: &World, pid: u64) -> Option<Post> {
 	None
 }
 
-#[doc = "Borrowing World.post-at for read-only callers; no Post clone."]
+/// Borrowing World.post-at for read-only callers; no Post clone.
 pub fn post_at_ref(w: &World, pid: u64) -> Option<&Post> {
 	for (p, post) in w.posts.iter() {
 		if *p == pid {
@@ -183,7 +183,7 @@ pub fn post_at_ref(w: &World, pid: u64) -> Option<&Post> {
 	None
 }
 
-#[doc = "World.follows; absence means false."]
+/// World.follows; absence means false.
 pub fn follows(w: &World, follower: &str, followee: &str) -> bool {
 	for (f, g) in w.follows.iter() {
 		if *f == follower && *g == followee {
@@ -193,17 +193,17 @@ pub fn follows(w: &World, follower: &str, followee: &str) -> bool {
 	false
 }
 
-#[doc = "World.used-post-ids membership."]
+/// World.used-post-ids membership.
 pub fn used_pid(w: &World, pid: u64) -> bool {
 	member(&w.used_post_ids, pid)
 }
 
-#[doc = "World.used-session-ids membership."]
+/// World.used-session-ids membership.
 pub fn used_sid(w: &World, sid: u64) -> bool {
 	member(&w.used_session_ids, sid)
 }
 
-#[doc = "The username of an active session, if any."]
+/// The username of an active session, if any.
 pub fn active_user(w: &World, sid: u64) -> Option<String> {
 	match session_at(w, sid) {
 		SessionStatus::Active(user) => Some(user.clone()),
@@ -211,7 +211,7 @@ pub fn active_user(w: &World, sid: u64) -> Option<String> {
 	}
 }
 
-#[doc = "Borrowing the username of an active session for read-only callers; no String clone."]
+/// Borrowing the username of an active session for read-only callers; no String clone.
 pub fn active_user_ref(w: &World, sid: u64) -> Option<&String> {
 	for (s, st) in w.sessions.iter() {
 		if *s == sid {
@@ -224,7 +224,7 @@ pub fn active_user_ref(w: &World, sid: u64) -> Option<&String> {
 	None
 }
 
-#[doc = "Spec can-have-valid-session: sid is active for a user with an account."]
+/// Spec can-have-valid-session: sid is active for a user with an account.
 pub fn valid_session(w: &World, sid: u64) -> bool {
 	match active_user(w, sid) {
 		None => false,
@@ -232,7 +232,7 @@ pub fn valid_session(w: &World, sid: u64) -> bool {
 	}
 }
 
-#[doc = "Spec extract-sid: the session a command acts through."]
+/// Spec extract-sid: the session a command acts through.
 pub fn extract_sid(cmd: Command) -> Option<u64> {
 	match cmd {
 		Command::Publish(sid, _, _) => Some(sid),
@@ -251,7 +251,7 @@ pub fn extract_sid(cmd: Command) -> Option<u64> {
 	}
 }
 
-#[doc = "Whether a command passes the failed-access check."]
+/// Whether a command passes the failed-access check.
 pub fn access_ok(w: &World, cmd: Command) -> bool {
 	match extract_sid(cmd.clone()) {
 		None => true,
@@ -259,7 +259,7 @@ pub fn access_ok(w: &World, cmd: Command) -> bool {
 	}
 }
 
-#[doc = "Spec can-read-post w sid pid."]
+/// Spec can-read-post w sid pid.
 pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 	match active_user_ref(w, sid) {
 		None => false,
@@ -278,7 +278,7 @@ pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 	}
 }
 
-#[doc = "Spec is-post-public: exists with Everyone visibility and live status."]
+/// Spec is-post-public: exists with Everyone visibility and live status.
 pub fn is_post_public(w: &World, pid: u64) -> bool {
 	match post_at_ref(w, pid) {
 		None => false,
@@ -286,7 +286,7 @@ pub fn is_post_public(w: &World, pid: u64) -> bool {
 	}
 }
 
-#[doc = "Spec follows-post-author: user follows the author of pid."]
+/// Spec follows-post-author: user follows the author of pid.
 pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
 	match post_at_ref(w, pid) {
 		None => false,
@@ -294,7 +294,7 @@ pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
 	}
 }
 
-#[doc = "Data.List.take on Vec."]
+/// Data.List.take on Vec.
 pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
 	let mut res = vec![];
 	let mut count: u64 = 0;
@@ -307,7 +307,7 @@ pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
 	res
 }
 
-#[doc = "get-personal-timeline: newest-first, keep readable posts by followed authors."]
+/// get-personal-timeline: newest-first, keep readable posts by followed authors.
 pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	// Hoist: username and account presence are loop-invariant for the newest_first scan;
 	// their absence makes can-read false for every pid, i.e. the old code yielded [].
@@ -346,7 +346,7 @@ pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	}
 }
 
-#[doc = "get-private-global: newest-first readable posts."]
+/// get-private-global: newest-first readable posts.
 pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	// Same hoisting/early-stop shape as personal_timeline: the session username and account
 	// presence are loop-invariant; absence made can-read false for every pid (old result []).
@@ -383,7 +383,7 @@ pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	}
 }
 
-#[doc = "get-public-global: newest-first public posts."]
+/// get-public-global: newest-first public posts.
 pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
 	// Early-stop: stop scanning once n public posts are collected; the prefix equals
 	// take_n of the old full-filter output. n == 0 yields [] without scanning at all.
@@ -402,7 +402,7 @@ pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
 	acc
 }
 
-#[doc = "Spec empty-world."]
+/// Spec empty-world.
 pub fn empty_world() -> World {
 	World {
 		accounts: vec![],
@@ -415,7 +415,7 @@ pub fn empty_world() -> World {
 	}
 }
 
-#[doc = "Spec WellFormed invariants."]
+/// Spec WellFormed invariants.
 pub fn well_formed(w: &World) -> bool {
 	for (pid, post) in &w.posts {
 		if !member(&w.used_post_ids, *pid) {
@@ -474,7 +474,7 @@ pub fn well_formed(w: &World) -> bool {
 	true
 }
 
-#[doc = "Deterministic Step: (before, cmd, fresh ids) -> (after, result). Failed-access is checked first."]
+/// Deterministic Step: (before, cmd, fresh ids) -> (after, result). Failed-access is checked first.
 pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, Result) {
 	let expired: bool = match extract_sid(cmd.clone()) {
 		Some(sid) => !valid_session(w, sid),
@@ -684,14 +684,14 @@ mod qc {
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
 
-	#[doc = "Constant pools: generated worlds and commands share id and user pools so tests interact."]
+	/// Constant pools: generated worlds and commands share id and user pools so tests interact.
 	const SIDS: [u64; 4] = [1, 2, 3, 4];
 	const PIDS: [u64; 5] = [1, 2, 3, 4, 5];
 	const NS: [u64; 4] = [0, 1, 2, 3];
 	const VIS: [Visibility; 2] = [Visibility::Everyone, Visibility::FollowersOnly];
 	const STA: [PostStatus; 2] = [PostStatus::Other, PostStatus::Deleted];
 
-	#[doc = "Choose an element, falling back to the first if the generator declines."]
+	/// Choose an element, falling back to the first if the generator declines.
 	fn pick<T: Clone>(g: &mut Gen, xs: &[T]) -> T {
 		if let Some(ok) = g.choose(xs) {
 			return ok.clone();
@@ -712,7 +712,7 @@ mod qc {
 		]
 	}
 
-	#[doc = "Session status after a revoke/time-passes application."]
+	/// Session status after a revoke/time-passes application.
 	fn expected_revoke(st: SessionStatus) -> SessionStatus {
 		match st {
 			SessionStatus::Active(_) => SessionStatus::Revoked,
@@ -720,7 +720,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "Command destructors for the properties."]
+	/// Command destructors for the properties.
 	fn as_register(cmd: Command) -> Option<String> {
 		match cmd {
 			Command::Register(user, _) => Some(user.clone()),
@@ -756,16 +756,16 @@ mod qc {
 		}
 	}
 
-	#[doc = "Fresh post/session ids handed to step."]
+	/// Fresh post/session ids handed to step.
 	#[derive(Clone, Debug)]
 	struct StepArgs {
-		#[doc = "pid: fresh post id candidate"]
+		/// pid: fresh post id candidate
 		pid: u64,
-		#[doc = "sid: fresh session id candidate"]
+		/// sid: fresh session id candidate
 		sid: u64,
 	}
 
-	#[doc = "Build a world that is well-formed by construction: accounts first, then sessions whose users have accounts, then posts with reply parents pointing back, then ids."]
+	/// Build a world that is well-formed by construction: accounts first, then sessions whose users have accounts, then posts with reply parents pointing back, then ids.
 	fn build_world(g: &mut Gen) -> World {
 		let mut w: World = empty_world();
 		for u in users_pool() {
@@ -841,7 +841,7 @@ mod qc {
 	}
 
 	impl Arbitrary for World {
-		#[doc = "Generated worlds are always well-formed; the retry is defensive."]
+		/// Generated worlds are always well-formed; the retry is defensive.
 		fn arbitrary(g: &mut Gen) -> Self {
 			let mut tries: u64 = 0;
 			while tries < 20 {
@@ -854,7 +854,7 @@ mod qc {
 			empty_world()
 		}
 
-		#[doc = "No shrinking: shrinking could break well-formedness invariants."]
+		/// No shrinking: shrinking could break well-formedness invariants.
 		fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
 			let empty: Vec<Self> = vec![];
 			Box::new(empty.into_iter())
@@ -914,7 +914,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "QC of expired-access: a command run through a session lacking a valid session leaves the world unchanged and yields Expired."]
+	/// QC of expired-access: a command run through a session lacking a valid session leaves the world unchanged and yields Expired.
 	#[quickcheck]
 	fn prop_expired_access(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -933,7 +933,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "QC of register-new: an unused username gains an account with Everyone visibility."]
+	/// QC of register-new: an unused username gains an account with Everyone visibility.
 	#[quickcheck]
 	fn prop_register_creates(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -953,7 +953,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of register-taken: an existing username yields SignupFailed and no change."]
+	/// QC of register-taken: an existing username yields SignupFailed and no change.
 	#[quickcheck]
 	fn prop_register_taken(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -968,7 +968,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of revoke-token: only the named session changes, and only to Revoked."]
+	/// QC of revoke-token: only the named session changes, and only to Revoked.
 	#[quickcheck]
 	fn prop_revoke_token(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -990,7 +990,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of time-passes: every active session becomes revoked, nothing else changes."]
+	/// QC of time-passes: every active session becomes revoked, nothing else changes.
 	#[quickcheck]
 	fn prop_time_passes(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1007,7 +1007,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of follow-new: following records the pair for the session user."]
+	/// QC of follow-new: following records the pair for the session user.
 	#[quickcheck]
 	fn prop_follow(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1022,7 +1022,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of like-denied: an unreadable post rejects likes without change."]
+	/// QC of like-denied: an unreadable post rejects likes without change.
 	#[quickcheck]
 	fn prop_like_denied(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1038,7 +1038,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of like-appends: a readable post gains the session user in its likes."]
+	/// QC of like-appends: a readable post gains the session user in its likes.
 	#[quickcheck]
 	fn prop_like_ok(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1058,7 +1058,7 @@ mod qc {
 		true
 	}
 
-	#[doc = "QC of delete-author: an author may delete their post, and doing so twice leaves it deleted."]
+	/// QC of delete-author: an author may delete their post, and doing so twice leaves it deleted.
 	#[quickcheck]
 	fn prop_delete_author(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1091,7 +1091,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "QC of timeline-ids: timelines return unique, existing post ids of length at most n."]
+	/// QC of timeline-ids: timelines return unique, existing post ids of length at most n.
 	#[quickcheck]
 	fn prop_timeline_valid(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {
@@ -1140,7 +1140,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "Pre-perf baseline (full filter, then take_n) pinning the hoisted/early-stopped timelines."]
+	/// Pre-perf baseline (full filter, then take_n) pinning the hoisted/early-stopped timelines.
 	fn old_global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 		let mut acc = vec![];
 		for pid in &w.newest_first {
@@ -1151,7 +1151,7 @@ mod qc {
 		take_n(acc, n)
 	}
 
-	#[doc = "Pre-perf baseline for the anonymous global timeline."]
+	/// Pre-perf baseline for the anonymous global timeline.
 	fn old_public_timeline(w: &World, n: u64) -> Vec<u64> {
 		let mut acc = vec![];
 		for pid in &w.newest_first {
@@ -1162,7 +1162,7 @@ mod qc {
 		take_n(acc, n)
 	}
 
-	#[doc = "Pre-perf baseline for the personal timeline (owned active_user, per-candidate can_read)."]
+	/// Pre-perf baseline for the personal timeline (owned active_user, per-candidate can_read).
 	fn old_personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 		match active_user(w, sid) {
 			None => vec![],
@@ -1178,7 +1178,7 @@ mod qc {
 		}
 	}
 
-	#[doc = "QC early-stop equivalence: hoisted global (logged-in + anon) timelines equal take_n of the full filter."]
+	/// QC early-stop equivalence: hoisted global (logged-in + anon) timelines equal take_n of the full filter.
 	#[quickcheck]
 	fn prop_timeline_global_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
 		// sid and n come from the Command generator pools (SIDS/NS) so the active-session
@@ -1200,7 +1200,7 @@ mod qc {
 		ok
 	}
 
-	#[doc = "QC early-stop equivalence: hoisted personal (follows-based) timeline equals take_n of the full filter."]
+	/// QC early-stop equivalence: hoisted personal (follows-based) timeline equals take_n of the full filter.
 	#[quickcheck]
 	fn prop_timeline_personal_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
 		let sid: u64 = match extract_sid(cmd.clone()) {

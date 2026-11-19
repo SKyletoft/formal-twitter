@@ -121,9 +121,10 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   /api/{global,private}-timeline?token=&len=) -> same Action; tolerate LF/trailing-newline bodies.
 - [x] Task T7 (impl): flake.nix — hermetic rustPlatform buildRustPackage (vendored cargo), `nix run .`
   starts the server; libsqlite3-sys bundled pin if needed.
-- [ ] Task T10 (impl, MECHANICAL): convert ALL #[doc = "..."] one-liners + stacks to /// across
-  model.rs/wire.rs/db.rs/main.rs/smoke.rs; verify fmt/clippy/test/agda unchanged.
-- [ ] Task T9 (impl): review whole implementation for non-idiomatic code + perf issues (after TA-TB-TC landed).
+- [x] Task T10 (impl, MECHANICAL): convert ALL #[doc = "..."] one-liners + stacks to /// across
+  model.rs/wire.rs/db.rs/main.rs/smoke.rs; verify fmt/clippy/test/agda unchanged. (ACCEPTED, committed
+  below; 274 attrs, gates identical 49 tests)
+- [x] Task T9 (impl): review whole implementation for non-idiomatic code + perf issues (after TA-TB-TC landed). (RESEARCH DONE: 12 findings, queued as F1..F12 + D1 below)
 - [ ] Task T10 (research): Is frontend spec-conformant?
 - [ ] Task T11 (research): Remove compat aliases?
 - [ ] Task A4 (research): Remove pointless agda. Any agda that isn't proving (or providing lemmas for) anything in relation to the model in @spec/Twitter.agda or @spec/Interface.agda is useless and pointless.
@@ -142,8 +143,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   transports); clippy --all-targets -D warnings exit 0; agda ImplWire.agda + ImplProofs.agda exit 0
   (ImplWire gains only a pointer comment: the aliases add no Interface clause).
 - T7 (subagent, STARTED): flake nix run wiring
-- T7 (subagent, DONE, coordinator-verified green: nix build . exit 0 single 5.3M binary, timeout nix run
-  prints Rocket launch + graceful shutdown): flake nix run wiring.
+- T7 (subagent, ACCEPTED, committed b90d112 — see flake-nix-t7 memory): flake nix run wiring.
       flake.nix BEFORE: packages.default = buildRustPackage inline, no apps.default.
       AFTER: moved the buildRustPackage into let as `package` (lines 24-40; flake-utils does not bind `packages`, so
       `getExe packages.default` was an undefined-variable error), added buildInputs = with pkgs; [ sqlite ];
@@ -169,6 +169,37 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       meta.mainProgram no longer prints the getExe mainProgram deprecation warning.
       e2e signup curl NOT done: sandbox denies curl and script exec; smoke.rs untouched and remains the real guard.
       Agda/cargo gates UNTOUCHED this task (no src/, no .agda edits; flake only).
+- T10-doc (subagent, STARTED): convert ALL #[doc = "..."] one-liners + stacks to /// across model.rs/
+  wire.rs/db.rs/main.rs/smoke.rs; gates must stay identical (49 tests, agda x2).
+- T10-doc (subagent, ACCEPTED, committed below): 274 #[doc] attrs -> /// line-for-line: model.rs 68,
+  wire.rs 32, db.rs 43, main.rs 99, smoke.rs 32; all five files 0 remaining; escaped quotes unescaped
+  (main.rs:48), 3 trailing-space literals trimmed (db.rs:1143-1145); line counts unchanged 1220/641/1197/849/651;
+  gates identical: fmt 0, build 0, clippy --all-targets -D warnings 0, cargo test 34 lib + 9 bin + 6 smoke = 49,
+  agda ImplProofs + ImplWire 0. Coordinator reran fmt/build/clippy/test/agda myself: all green.
+- T9 (research subagent, DONE, 12 findings): F1 main.rs:256 before=locked.world.clone() + 23 step-clone
+  sites = 2+ full World copies/request; F2 db.rs:521-760 apply rebuilds 6 hash collections over ENTIRE
+  world per request incl reads; F3 db.rs:595-604 full SELECT seq + max-fold per request (hand-rolled max);
+  F4 model.rs timelines O(P^2+P*F): Vec-based World, post_at_ref/follows linear; F5 db.rs:219-228/:379-388
+  reload attaches likes/replies by filtering ALL rows per post O(P*(L+R)); F6 db.rs:657-666/:680-702 like/reply
+  diff old.likes.iter().any inside post.likes.iter O(L^2)/O(R^2); F7 db.rs:358-365/:201-208 reload_posts issues
+  4 full-table queries incl redundant ORDER BY seq DESC re-scan (sort loaded rows in RAM); F8 db.rs:628-644 etc
+  one insert/delete statement per changed pair (batch .values(&rows) pattern exists at save_world:466);
+  F9 main.rs:265 reopen(db_path.clone()) = new SqliteConnection establish + String alloc per request;
+  F10 wire.rs:270/:272 out += ", "/&x.to_string() quadratic show_tweets (+ main.rs:386/:391 alias_body, :37 two());
+  F11 idioms: model.rs:97-105 member loop->.iter().any (also like-check clone at :646), :128-134 len_u64->xs.len(),
+  :298-308 take_n->.take(n), :632-636/:660 Unfollow/Unlike re-collect+clone -> retain, main.rs:397-415 query_param
+  collect-all-then-first -> .find_map, :426 origin.query()->String copy, :49 http_date year-scan, wire.rs:233-262
+  escape_json no capacity; F12 dead: key_unique never called, follows_author/take_n test-only, save_world test-only
+  + LOSSY (stamps seq=0 for pids absent from newest-first), wire_error(e) discards arg, well_formed never runs.
+  D1 discipline gap: on reopen/apply FAIL main.rs:266/:286 skip re-querying the other RAM sections (AGENTS.md
+  periodic re-query violated on failure path); well_formed unchecked. Verdict: DB-truth holds on happy path,
+  reentrancy plausible (FT_DB + init_or_open + smoke restarts), cache cost dominates DB work at O(DB)/request.
+- F-queue (impl subagents, sequential, one per finding unless batched H1/H2): H1=F10+F11 hygiene (wire.rs/main.rs/model.rs,
+  mechanical, gates identical 49 tests); H2=F12 dead-code (key_unique remove, wire_error arg, keep test-only
+  helpers, note save_world lossy in doc); F3 max_seq in Server; F9 hold conn in Server (reopen only on failure);
+  F7 sort loaded rows in RAM (kill 4th query); F5 groupby rows once; F6 HashSet per touched post; F4 World HashMap/HashSet
+  side-caches (periodic reload rebuilds); F1 step(&World)->(Result,Delta) single-copy; F2 delta-driven apply (touched
+  keys only); D1 re-query ALL sections on reopen/apply failure.
 
 ## Reference: spec semantics (Twitter.agda + Interface.agda, from R4/R5)
 - `World` (:65-109): account-at String -> Maybe Account{password, default-visibility}; session-at Sid ->

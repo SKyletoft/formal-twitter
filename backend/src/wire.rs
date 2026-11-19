@@ -6,7 +6,7 @@
 //! Content-Length itself. Everything else (order, spelling, body bytes) is exact.
 use crate::model::Command;
 
-#[doc = "Parse errors: unknown path, wrong line count, non-numeric line."]
+/// Parse errors: unknown path, wrong line count, non-numeric line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WireError {
 	UnknownEndpoint,
@@ -15,7 +15,7 @@ pub enum WireError {
 	BadNumber,
 }
 
-#[doc = "The 13 parsed actions of spec/Interface.agda."]
+/// The 13 parsed actions of spec/Interface.agda.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WireAction {
 	PostTweet(u64, String),
@@ -33,7 +33,7 @@ pub enum WireAction {
 	Signup(String, String),
 }
 
-#[doc = "The 9 possible public-API responses of spec/Interface.agda."]
+/// The 9 possible public-API responses of spec/Interface.agda.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApiResponse {
 	Ok,
@@ -47,7 +47,7 @@ pub enum ApiResponse {
 	Tweet(String, String, u64, Vec<u64>),
 }
 
-#[doc = "A rendered response without the status line and without Content-Length."]
+/// A rendered response without the status line and without Content-Length.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WireResponse {
 	pub status_code: u16,
@@ -55,7 +55,7 @@ pub struct WireResponse {
 	pub body: Vec<u8>,
 }
 
-#[doc = "Parse a line as u64: ASCII digits only, no sign, no space, no overflow."]
+/// Parse a line as u64: ASCII digits only, no sign, no space, no overflow.
 fn parse_u64(s: &str) -> Option<u64> {
 	if s.is_empty() {
 		return None;
@@ -68,7 +68,7 @@ fn parse_u64(s: &str) -> Option<u64> {
 	s.parse::<u64>().ok()
 }
 
-#[doc = "Decode one line of the body; empty string when the bytes are not UTF-8."]
+/// Decode one line of the body; empty string when the bytes are not UTF-8.
 fn line_text(bytes: Vec<u8>) -> String {
 	match String::from_utf8(bytes) {
 		Ok(text) => text,
@@ -76,7 +76,7 @@ fn line_text(bytes: Vec<u8>) -> String {
 	}
 }
 
-#[doc = "Split a body on CRLF, LF or bare CR; drop exactly one trailing empty line."]
+/// Split a body on CRLF, LF or bare CR; drop exactly one trailing empty line.
 fn split_lines(body: &[u8]) -> Vec<String> {
 	let mut lines: Vec<String> = vec![];
 	let mut current: Vec<u8> = vec![];
@@ -107,7 +107,7 @@ fn split_lines(body: &[u8]) -> Vec<String> {
 	lines
 }
 
-#[doc = "The arity error for a body with the wrong number of lines."]
+/// The arity error for a body with the wrong number of lines.
 fn count_err(lines: &[String], want: usize) -> WireError {
 	if lines.len() < want {
 		return WireError::MissingLine;
@@ -115,7 +115,7 @@ fn count_err(lines: &[String], want: usize) -> WireError {
 	WireError::UnexpectedLine
 }
 
-#[doc = "Body of exactly two numeric lines."]
+/// Body of exactly two numeric lines.
 fn two_nums(lines: &[String]) -> Result<(u64, u64), WireError> {
 	if lines.len() != 2 {
 		return Err(count_err(lines, 2));
@@ -126,7 +126,7 @@ fn two_nums(lines: &[String]) -> Result<(u64, u64), WireError> {
 	}
 }
 
-#[doc = "Body of a token followed by free text."]
+/// Body of a token followed by free text.
 fn token_text(lines: &[String]) -> Result<(u64, String), WireError> {
 	if lines.len() != 2 {
 		return Err(count_err(lines, 2));
@@ -137,7 +137,7 @@ fn token_text(lines: &[String]) -> Result<(u64, String), WireError> {
 	}
 }
 
-#[doc = "Body of two free-text lines (login and signup)."]
+/// Body of two free-text lines (login and signup).
 fn two_texts(lines: &[String]) -> Result<(String, String), WireError> {
 	if lines.len() != 2 {
 		return Err(count_err(lines, 2));
@@ -145,7 +145,7 @@ fn two_texts(lines: &[String]) -> Result<(String, String), WireError> {
 	Ok((lines[0].clone(), lines[1].clone()))
 }
 
-#[doc = "Body of exactly one numeric line."]
+/// Body of exactly one numeric line.
 fn one_num(lines: &[String]) -> Result<u64, WireError> {
 	if lines.len() != 1 {
 		return Err(count_err(lines, 1));
@@ -156,7 +156,7 @@ fn one_num(lines: &[String]) -> Result<u64, WireError> {
 	}
 }
 
-#[doc = "Body <token> <text> <tweet-id> of to-request post-reply."]
+/// Body <token> <text> <tweet-id> of to-request post-reply.
 fn reply(lines: &[String]) -> Result<(u64, String, u64), WireError> {
 	if lines.len() != 3 {
 		return Err(count_err(lines, 3));
@@ -167,7 +167,7 @@ fn reply(lines: &[String]) -> Result<(u64, String, u64), WireError> {
 	}
 }
 
-#[doc = "A single numeric line is anonymous; two numeric lines carry a token."]
+/// A single numeric line is anonymous; two numeric lines carry a token.
 fn opt_num(lines: &[String]) -> Result<(Option<u64>, u64), WireError> {
 	if lines.len() == 1 {
 		match parse_u64(&lines[0]) {
@@ -181,7 +181,7 @@ fn opt_num(lines: &[String]) -> Result<(Option<u64>, u64), WireError> {
 	}
 }
 
-#[doc = "Parse a request body for one of the 13 endpoints."]
+/// Parse a request body for one of the 13 endpoints.
 pub fn parse_action(path: &str, body: &[u8]) -> Result<WireAction, WireError> {
 	let lines = split_lines(body);
 	match path {
@@ -206,7 +206,7 @@ pub fn parse_action(path: &str, body: &[u8]) -> Result<WireAction, WireError> {
 	}
 }
 
-#[doc = "from-input of spec/Interface.agda."]
+/// from-input of spec/Interface.agda.
 pub fn to_command(a: WireAction) -> Command {
 	match a {
 		WireAction::PostTweet(tk, txt) => Command::Publish(tk, txt, None),
@@ -225,7 +225,7 @@ pub fn to_command(a: WireAction) -> Command {
 	}
 }
 
-#[doc = "The escape postulate of spec/Interface.agda, made concrete: JSON escaping."]
+/// The escape postulate of spec/Interface.agda, made concrete: JSON escaping.
 pub fn escape_json(s: String) -> String {
 	let hex: [char; 16] = [
 		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
@@ -262,7 +262,7 @@ pub fn escape_json(s: String) -> String {
 	out
 }
 
-#[doc = "show-tweets of spec/Interface.agda: ids joined by a comma and a space."]
+/// show-tweets of spec/Interface.agda: ids joined by a comma and a space.
 fn show_tweets(xs: Vec<u64>) -> String {
 	let mut out: String = String::new();
 	for (i, x) in xs.iter().enumerate() {
@@ -274,9 +274,9 @@ fn show_tweets(xs: Vec<u64>) -> String {
 	out
 }
 
-#[doc = "Render one of the 9 responses. The status line and Content-Length are"]
-#[doc = "left to rocket; Date is always first, Cache-Control second (only for the"]
-#[doc = "three uncached bodies) and Content-Type last (never for the empty ok body)."]
+/// Render one of the 9 responses. The status line and Content-Length are
+/// left to rocket; Date is always first, Cache-Control second (only for the
+/// three uncached bodies) and Content-Type last (never for the empty ok body).
 pub fn respond(r: ApiResponse, date: String) -> WireResponse {
 	let (code, cached, body) = match r {
 		ApiResponse::Ok => (200, false, "".to_string()),
@@ -327,7 +327,7 @@ mod wire_tests {
 	use crate::model::Command;
 	use quickcheck_macros::quickcheck;
 
-	#[doc = "Every endpoint: the exact body shape of to-request parses to the expected action."]
+	/// Every endpoint: the exact body shape of to-request parses to the expected action.
 	#[test]
 	fn endpoint_shapes() {
 		let cases: Vec<(&str, &str, WireAction)> = vec![
@@ -390,7 +390,7 @@ mod wire_tests {
 		}
 	}
 
-	#[doc = "get-tweet and global-timeline: one line is anonymous, two lines carry a token."]
+	/// get-tweet and global-timeline: one line is anonymous, two lines carry a token.
 	#[test]
 	fn anonymous_and_tokened() {
 		assert!(
@@ -410,7 +410,7 @@ mod wire_tests {
 		);
 	}
 
-	#[doc = "to_command agrees with from-input on all 13 actions."]
+	/// to_command agrees with from-input on all 13 actions.
 	#[test]
 	fn commands() {
 		let cases: Vec<(WireAction, Command)> = vec![
@@ -465,7 +465,7 @@ mod wire_tests {
 		}
 	}
 
-	#[doc = "CRLF, LF and bare CR separators agree, up to one trailing separator."]
+	/// CRLF, LF and bare CR separators agree, up to one trailing separator.
 	#[test]
 	fn separator_variants() {
 		let want = Ok(WireAction::PostReply(7, "hi".to_string(), 42));
@@ -474,7 +474,7 @@ mod wire_tests {
 		assert!(parse_action("/api/post-reply", "7\rhi\r42".as_bytes()) == want);
 	}
 
-	#[doc = "Malformed requests are rejected with an error, and parsing never panics."]
+	/// Malformed requests are rejected with an error, and parsing never panics.
 	#[test]
 	fn malformed() {
 		assert!(parse_action("/api/like-tweet", "x\n42".as_bytes()) == Err(WireError::BadNumber));
@@ -490,7 +490,7 @@ mod wire_tests {
 		assert!(parse_action("/api/nope", "7".as_bytes()) == Err(WireError::UnknownEndpoint));
 	}
 
-	#[doc = "escape_json of a tweet body."]
+	/// escape_json of a tweet body.
 	#[test]
 	fn escaping() {
 		let bs = "\\".to_string();
@@ -500,7 +500,7 @@ mod wire_tests {
 		assert!(escape_json("a\u{0}b\u{1f}c".to_string()) == format!("a{}u0000b{}u001fc", bs, bs));
 	}
 
-	#[doc = "timeline bodies byte-exact for empty, singleton and many ids."]
+	/// timeline bodies byte-exact for empty, singleton and many ids.
 	#[test]
 	fn timeline_bodies() {
 		let d = "d".to_string();
@@ -530,9 +530,9 @@ mod wire_tests {
 		);
 	}
 
-	#[doc = "wi-out-* pins of backend/ImplWire.agda: the other 7 constructors have the"]
-	#[doc = "status code, header order - Date first, Cache-Control only for the three uncached"]
-	#[doc = "bodies and Content-Type iff the body is non-empty - of spec/Interface.agda:to-response."]
+	/// wi-out-* pins of backend/ImplWire.agda: the other 7 constructors have the
+	/// status code, header order - Date first, Cache-Control only for the three uncached
+	/// bodies and Content-Type iff the body is non-empty - of spec/Interface.agda:to-response.
 	#[test]
 	fn respond_shapes() {
 		let d = "d".to_string();
@@ -629,7 +629,7 @@ mod wire_tests {
 	);
 	}
 
-	#[doc = "QuickCheck: any token and any single-line text round-trip as a post."]
+	/// QuickCheck: any token and any single-line text round-trip as a post.
 	#[quickcheck]
 	fn qc_post_round_trip(tk: u64, txt: String) -> bool {
 		if txt.contains('\n') || txt.contains('\r') {

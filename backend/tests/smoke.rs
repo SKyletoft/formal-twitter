@@ -1,5 +1,5 @@
-#[doc = "Integration smoke tests: the real target/debug/formal-twitter server over raw TCP."]
-#[doc = "Starts the server on one port and DB file, killed by timeout after secs."]
+/// Integration smoke tests: the real target/debug/formal-twitter server over raw TCP.
+/// Starts the server on one port and DB file, killed by timeout after secs.
 fn spawn_server(port: u16, db: &str, secs: u32) {
 	_ = std::process::Command::new("timeout")
 		.env("FT_DB", db)
@@ -9,7 +9,7 @@ fn spawn_server(port: u16, db: &str, secs: u32) {
 		.spawn();
 }
 
-#[doc = "Waits until something answers on the port; false when the server never starts."]
+/// Waits until something answers on the port; false when the server never starts.
 fn wait_ready(port: u16) -> bool {
 	let mut tries = 0;
 	while tries < 50 {
@@ -22,7 +22,7 @@ fn wait_ready(port: u16) -> bool {
 	false
 }
 
-#[doc = "Waits until the port stops answering, i.e. the wrapper killed the server."]
+/// Waits until the port stops answering, i.e. the wrapper killed the server.
 fn wait_gone(port: u16) -> bool {
 	let mut misses = 0;
 	let mut rounds = 0;
@@ -38,17 +38,17 @@ fn wait_gone(port: u16) -> bool {
 	misses >= 5
 }
 
-#[doc = "Deletes a DB file from an earlier run so the server starts from an empty world."]
+/// Deletes a DB file from an earlier run so the server starts from an empty world.
 fn fresh_db(db: &str) {
 	_ = std::fs::remove_file(db);
 }
 
-#[doc = "Fails a test with a message when a condition is false."]
+/// Fails a test with a message when a condition is false.
 fn ensure(cond: bool, what: &str) {
 	assert!(cond, "{}", what);
 }
 
-#[doc = "The octets of one POST request: the frontend headers and the CRLF body."]
+/// The octets of one POST request: the frontend headers and the CRLF body.
 fn request_bytes(path: String, body: String) -> Vec<u8> {
 	let mut out = "POST ".to_owned();
 	out += &path;
@@ -61,7 +61,7 @@ fn request_bytes(path: String, body: String) -> Vec<u8> {
 	out.as_bytes().to_vec()
 }
 
-#[doc = "Sends one request and returns every octet the server answered with."]
+/// Sends one request and returns every octet the server answered with.
 fn req(port: u16, path: String, body: String) -> String {
 	let mut sock = match std::net::TcpStream::connect(("127.0.0.1", port)) {
 		Err(_) => panic!("cannot reach the server"),
@@ -84,14 +84,14 @@ fn req(port: u16, path: String, body: String) -> String {
 	}
 }
 
-#[doc = "The octets of one GET request: the frontend headers, the query inside the path, no body."]
+/// The octets of one GET request: the frontend headers, the query inside the path, no body.
 fn get_bytes(path: String) -> Vec<u8> {
 	("GET ".to_owned() + &path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\n\r\n")
 		.as_bytes()
 		.to_vec()
 }
 
-#[doc = "Sends one GET request and returns every octet the server answered with."]
+/// Sends one GET request and returns every octet the server answered with.
 fn get(port: u16, path: String) -> String {
 	let mut sock = match std::net::TcpStream::connect(("127.0.0.1", port)) {
 		Err(_) => panic!("cannot reach the server"),
@@ -114,12 +114,12 @@ fn get(port: u16, path: String) -> String {
 	}
 }
 
-#[doc = "True once the CRLF CRLF that closes the response headers has been read."]
+/// True once the CRLF CRLF that closes the response headers has been read.
 fn headers_done(xs: &[u8]) -> bool {
 	header_end(xs) != 0
 }
 
-#[doc = "The octet count of the header block, blank line included; zero while unseen."]
+/// The octet count of the header block, blank line included; zero while unseen.
 fn header_end(xs: &[u8]) -> usize {
 	let mut i: usize = 0;
 	while i + 3 < xs.len() {
@@ -131,7 +131,7 @@ fn header_end(xs: &[u8]) -> usize {
 	0
 }
 
-#[doc = "The first number in the text at or after a byte index; zero when absent."]
+/// The first number in the text at or after a byte index; zero when absent.
 fn number_after(text: &str, start: usize) -> u64 {
 	let bs = text.as_bytes();
 	let mut i: usize = start;
@@ -149,7 +149,7 @@ fn number_after(text: &str, start: usize) -> u64 {
 	0
 }
 
-#[doc = "The first number that follows a label in the text; zero when the label is absent."]
+/// The first number that follows a label in the text; zero when the label is absent.
 fn label_number(text: &str, label: &str) -> u64 {
 	match text.find(label) {
 		None => 0,
@@ -157,7 +157,7 @@ fn label_number(text: &str, label: &str) -> u64 {
 	}
 }
 
-#[doc = "The Content-Length the server declared; zero while the header is unseen."]
+/// The Content-Length the server declared; zero while the header is unseen.
 fn content_length(xs: &[u8]) -> usize {
 	match String::from_utf8(xs.to_vec()) {
 		Err(_) => 0,
@@ -165,7 +165,7 @@ fn content_length(xs: &[u8]) -> usize {
 	}
 }
 
-#[doc = "The status line: the text before the first CRLF."]
+/// The status line: the text before the first CRLF.
 fn status_line(raw: &str) -> String {
 	let bs = raw.as_bytes();
 	let mut out = "".to_owned();
@@ -177,7 +177,7 @@ fn status_line(raw: &str) -> String {
 	out
 }
 
-#[doc = "The body: everything after the blank line that closes the headers."]
+/// The body: everything after the blank line that closes the headers.
 fn body_of(raw: &str) -> String {
 	let bs = raw.as_bytes();
 	let end = header_end(bs);
@@ -193,13 +193,13 @@ fn body_of(raw: &str) -> String {
 	out
 }
 
-#[doc = "True when the response carries a header with this name."]
+/// True when the response carries a header with this name.
 fn has_header(raw: &str, label: &str) -> bool {
 	let needle = "\r\n".to_owned() + label + ":";
 	raw.find(&needle).is_some()
 }
 
-#[doc = "Every number that appears in a JSON body."]
+/// Every number that appears in a JSON body.
 fn numbers_in(body: &str) -> Vec<u64> {
 	let bs = body.as_bytes();
 	let mut out: Vec<u64> = vec![];
@@ -219,12 +219,12 @@ fn numbers_in(body: &str) -> Vec<u64> {
 	out
 }
 
-#[doc = "Asserts the exact status line of an answer."]
+/// Asserts the exact status line of an answer.
 fn expect_status(raw: &str, line: &str) {
 	ensure(status_line(raw) == line, "unexpected status line");
 }
 
-#[doc = "Asserts that the declared Content-Length matches the body octets."]
+/// Asserts that the declared Content-Length matches the body octets.
 fn expect_length(raw: &str) {
 	ensure(
 		label_number(raw, "content-length") == body_of(raw).len() as u64,
@@ -232,23 +232,23 @@ fn expect_length(raw: &str) {
 	);
 }
 
-#[doc = "The post ids in a timeline answer."]
+/// The post ids in a timeline answer.
 fn ids_of(raw: &str) -> Vec<u64> {
 	numbers_in(&body_of(raw))
 }
 
-#[doc = "The session or post id a JSON answer carries; zero when there is none."]
+/// The session or post id a JSON answer carries; zero when there is none.
 fn id_of(raw: &str, key: &str) -> u64 {
 	label_number(&body_of(raw), key)
 }
 
-#[doc = "Asserts the exact status line and the exact body of an answer."]
+/// Asserts the exact status line and the exact body of an answer.
 fn expect(raw: &str, line: &str, want: &str) {
 	ensure(status_line(raw) == line, "unexpected status line");
 	ensure(body_of(raw) == want, "unexpected body");
 }
 
-#[doc = "Asserts the 200 answer with an empty body: the Ok response shape."]
+/// Asserts the 200 answer with an empty body: the Ok response shape.
 fn expect_ok(raw: &str) {
 	expect(raw, "HTTP/1.1 200 OK", "");
 	ensure(
@@ -257,7 +257,7 @@ fn expect_ok(raw: &str) {
 	);
 }
 
-#[doc = "Signup answers empty, login issues a session token, a wrong password answers 401."]
+/// Signup answers empty, login issues a session token, a wrong password answers 401.
 #[test]
 fn test_signup_login() {
 	let db = "/tmp/ft-smoke-signup.sqlite".to_string();
@@ -294,7 +294,7 @@ fn test_signup_login() {
 	);
 }
 
-#[doc = "Publishing a post, reading it back anonymously, liking it, and logging out."]
+/// Publishing a post, reading it back anonymously, liking it, and logging out.
 #[test]
 fn test_post_tweet() {
 	let db = "/tmp/ft-smoke-post.sqlite".to_string();
@@ -338,7 +338,7 @@ fn test_post_tweet() {
 	expect_ok(&out);
 }
 
-#[doc = "Every reachable failure: duplicate signup, bad login, stale token, denied access."]
+/// Every reachable failure: duplicate signup, bad login, stale token, denied access.
 #[test]
 fn test_errors() {
 	let db = "/tmp/ft-smoke-errors.sqlite".to_string();
@@ -407,7 +407,7 @@ fn test_errors() {
 	);
 }
 
-#[doc = "The HTTP framing rocket adds: status line, headers, and Content-Length."]
+/// The HTTP framing rocket adds: status line, headers, and Content-Length.
 #[test]
 fn test_http_framing() {
 	let db = "/tmp/ft-smoke-framing.sqlite".to_string();
@@ -453,7 +453,7 @@ fn test_http_framing() {
 	expect_length(&rejected);
 }
 
-#[doc = "Three server lifecycles share one DB file: the world is re-read at each start."]
+/// Three server lifecycles share one DB file: the world is re-read at each start.
 #[test]
 fn test_reentrant_three_lifecycles() {
 	let db = "/tmp/ft-smoke-T5.sqlite".to_string();
@@ -545,8 +545,8 @@ fn test_reentrant_three_lifecycles() {
 	ensure(wait_gone(8023), "the third server never exited");
 }
 
-#[doc = "The GET aliases the legacy frontend speaks answer with the very bytes their POST twins"]
-#[doc = "do, and a token-less private read fails identically over either transport."]
+/// The GET aliases the legacy frontend speaks answer with the very bytes their POST twins
+/// do, and a token-less private read fails identically over either transport.
 #[test]
 fn test_get_alias_roundtrip() {
 	let db = "/tmp/ft-smoke-T6-alias.sqlite".to_string();

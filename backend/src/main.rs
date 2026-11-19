@@ -31,7 +31,7 @@ use std::io::Cursor;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[doc = "Two-digit decimal, zero-padded (as the IMF-date needs dd, HH, mm, ss)."]
+/// Two-digit decimal, zero-padded (as the IMF-date needs dd, HH, mm, ss).
 fn two(v: u64) -> String {
 	if v < 10 {
 		"0".to_string() + &v.to_string()
@@ -40,12 +40,12 @@ fn two(v: u64) -> String {
 	}
 }
 
-#[doc = "Gregorian leap-year test."]
+/// Gregorian leap-year test.
 fn leap(y: u64) -> bool {
 	y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
 }
 
-#[doc = "The current moment rendered as an IMF date: \"Thu, 01 Jan 1970 00:00:00 GMT\"."]
+/// The current moment rendered as an IMF date: "Thu, 01 Jan 1970 00:00:00 GMT".
 pub fn http_date() -> String {
 	let secs: u64 = SystemTime::now()
 		.duration_since(UNIX_EPOCH)
@@ -96,7 +96,7 @@ pub fn http_date() -> String {
 	)
 }
 
-#[doc = "from-output of Interface.agda: a model Result rendered as a wire ApiResponse."]
+/// from-output of Interface.agda: a model Result rendered as a wire ApiResponse.
 pub fn to_output(r: Result) -> ApiResponse {
 	match r {
 		Result::Success => ApiResponse::Ok,
@@ -111,9 +111,9 @@ pub fn to_output(r: Result) -> ApiResponse {
 	}
 }
 
-#[doc = "One 16-byte read from /dev/urandom: TWO big-endian u64s of entropy per call, so a"]
-#[doc = "request pays ONE random read instead of two.  All-zero on any failure, which the pure"]
-#[doc = "sampler below reports as not-fresh."]
+/// One 16-byte read from /dev/urandom: TWO big-endian u64s of entropy per call, so a
+/// request pays ONE random read instead of two.  All-zero on any failure, which the pure
+/// sampler below reports as not-fresh.
 pub fn random_block() -> [u8; 16] {
 	// Qualified std paths keep the top-level import list minimal.
 	match std::fs::File::open("/dev/urandom") {
@@ -126,13 +126,13 @@ pub fn random_block() -> [u8; 16] {
 	}
 }
 
-#[doc = "The PURE fresh-id decision, split out of the /dev/urandom wrapper so QuickCheck can"]
-#[doc = "pin it: the big-endian u64 read off the FIRST EIGHT bytes of a random block, paired with"]
-#[doc = "whether it is fresh, i.e. nonzero and absent from the used list - the spec's CreateNew"]
-#[doc = "new-sid/new-pid rejecting ids already in World.used-post-ids / World.used-session-ids."]
-#[doc = "Total: a block shorter than eight bytes reports (0, false).  A used list covering the"]
-#[doc = "candidate flips ok to false (the exhaustion path), which sample_id retries.  Fully"]
-#[doc = "deterministic in both arguments, so the same bytes and used set always yield the same id."]
+/// The PURE fresh-id decision, split out of the /dev/urandom wrapper so QuickCheck can
+/// pin it: the big-endian u64 read off the FIRST EIGHT bytes of a random block, paired with
+/// whether it is fresh, i.e. nonzero and absent from the used list - the spec's CreateNew
+/// new-sid/new-pid rejecting ids already in World.used-post-ids / World.used-session-ids.
+/// Total: a block shorter than eight bytes reports (0, false).  A used list covering the
+/// candidate flips ok to false (the exhaustion path), which sample_id retries.  Fully
+/// deterministic in both arguments, so the same bytes and used set always yield the same id.
 pub fn sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) {
 	if bytes.len() < 8 {
 		(0, false)
@@ -144,10 +144,10 @@ pub fn sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) {
 	}
 }
 
-#[doc = "The spec's fresh-id sampler: feeds ONE 16-byte /dev/urandom block per attempt to the"]
-#[doc = "pure sample_id_from, the first u64 seeding the post id and the second the session id."]
-#[doc = "Both halves must be fresh or the whole attempt is discarded, matching the spec's CreateNew"]
-#[doc = "rejection of used ids.  The world is read by REFERENCE, so a request no longer clones it."]
+/// The spec's fresh-id sampler: feeds ONE 16-byte /dev/urandom block per attempt to the
+/// pure sample_id_from, the first u64 seeding the post id and the second the session id.
+/// Both halves must be fresh or the whole attempt is discarded, matching the spec's CreateNew
+/// rejection of used ids.  The world is read by REFERENCE, so a request no longer clones it.
 pub fn sample_id(w: &World) -> (u64, u64) {
 	loop {
 		let bytes: [u8; 16] = random_block();
@@ -160,7 +160,7 @@ pub fn sample_id(w: &World) -> (u64, u64) {
 	}
 }
 
-#[doc = "Lift a rendered WireResponse into a rocket Response, headers in the order the spec fixes."]
+/// Lift a rendered WireResponse into a rocket Response, headers in the order the spec fixes.
 pub fn to_http(reply: WireResponse) -> Response<'static> {
 	// Fold the spec's wire headers, in order, onto an empty rocket Response.
 	let mut built = Response::build();
@@ -177,32 +177,32 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
-#[doc = "Server state: the world cache, the DB it mirrors, and the tick that drives"]
-#[doc = "the rotating PARTIAL cache reload (one section re-queried every four requests)."]
+/// Server state: the world cache, the DB it mirrors, and the tick that drives
+/// the rotating PARTIAL cache reload (one section re-queried every four requests).
 pub struct Server {
 	pub world: World,
 	pub db_path: String,
 	pub tick: u64,
 }
 
-#[doc = "Parse failures answer with the spec's 403 access_denied shape: the Interface"]
-#[doc = "grammar is total, so a malformed body is treated as a denied request."]
+/// Parse failures answer with the spec's 403 access_denied shape: the Interface
+/// grammar is total, so a malformed body is treated as a denied request.
 pub fn wire_error(e: WireError) -> WireResponse {
 	_ = e;
 	respond(ApiResponse::PermissionError, http_date())
 }
 
-#[doc = "The cache-reload schedule: a pure 4-cycle 0 -> 1 -> 2 -> 3 -> 0."]
+/// The cache-reload schedule: a pure 4-cycle 0 -> 1 -> 2 -> 3 -> 0.
 pub fn next_tick(t: u64) -> u64 {
 	(t + 1) % 4
 }
 
-#[doc = "A pre-rendered rocket response lifted into a handler return type."]
+/// A pre-rendered rocket response lifted into a handler return type.
 pub struct Served {
 	pub response: Response<'static>,
 }
 
-#[doc = "The trivial responder: always Ok with the pre-rendered response."]
+/// The trivial responder: always Ok with the pre-rendered response.
 impl<'r> Responder<'r, 'static> for Served {
 	// The request is irrelevant; the response is fully rendered.
 	fn respond_to(self, _req: &'r Request<'_>) -> rocket::response::Result<'static> {
@@ -210,18 +210,18 @@ impl<'r> Responder<'r, 'static> for Served {
 	}
 }
 
-#[doc = "The one handler behind all 13 POST routes: parse, then hand the command to the"]
-#[doc = "shared serve_command core."]
-#[doc = "Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7): the database is"]
-#[doc = "the source of truth, not RAM.  The world cache advances ONLY after apply reports the"]
-#[doc = "BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back apply (PK clashes"]
-#[doc = "on RAM-sampled ids included) serves NO data and answers the 403 access_denied shape,"]
-#[doc = "so nothing can be served that is not committed in the DB.  After every commit exactly"]
-#[doc = "ONE cache section is thrown out and re-queried from the same connection, rotating"]
-#[doc = "follows -> sessions -> accounts -> posts by tick: RAM is refreshed periodically, never"]
-#[doc = "all at once, and load_world runs only at launch.  The lock is poison-tolerant: the"]
-#[doc = "guarded region keeps its invariants (clone + step + recoverable DB errors), so a"]
-#[doc = "poisoned guard still holds a valid Server."]
+/// The one handler behind all 13 POST routes: parse, then hand the command to the
+/// shared serve_command core.
+/// Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7): the database is
+/// the source of truth, not RAM.  The world cache advances ONLY after apply reports the
+/// BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back apply (PK clashes
+/// on RAM-sampled ids included) serves NO data and answers the 403 access_denied shape,
+/// so nothing can be served that is not committed in the DB.  After every commit exactly
+/// ONE cache section is thrown out and re-queried from the same connection, rotating
+/// follows -> sessions -> accounts -> posts by tick: RAM is refreshed periodically, never
+/// all at once, and load_world runs only at launch.  The lock is poison-tolerant: the
+/// guarded region keeps its invariants (clone + step + recoverable DB errors), so a
+/// poisoned guard still holds a valid Server.
 pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Served {
 	// Parse first so malformed bodies never touch the world.
 	let command: Command = match parse_action(path.as_str(), body.value.as_bytes()) {
@@ -235,17 +235,17 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 	serve_command(command, state)
 }
 
-#[doc = "The shared core behind all 13 POST routes and the 3 GET aliases: step, COMMIT,"]
-#[doc = "rotate, render.  Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7):"]
-#[doc = "the database is the source of truth, not RAM.  The world cache advances ONLY after"]
-#[doc = "apply reports the BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back"]
-#[doc = "apply (PK clashes on RAM-sampled ids included) serves NO data and answers the 403"]
-#[doc = "access_denied shape, so nothing can be served that is not committed in the DB.  After"]
-#[doc = "every commit exactly ONE cache section is thrown out and re-queried from the same"]
-#[doc = "connection, rotating follows -> sessions -> accounts -> posts by tick: RAM is refreshed"]
-#[doc = "periodically, never all at once, and load_world runs only at launch.  The lock is"]
-#[doc = "poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable"]
-#[doc = "DB errors), so a poisoned guard still holds a valid Server."]
+/// The shared core behind all 13 POST routes and the 3 GET aliases: step, COMMIT,
+/// rotate, render.  Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7):
+/// the database is the source of truth, not RAM.  The world cache advances ONLY after
+/// apply reports the BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back
+/// apply (PK clashes on RAM-sampled ids included) serves NO data and answers the 403
+/// access_denied shape, so nothing can be served that is not committed in the DB.  After
+/// every commit exactly ONE cache section is thrown out and re-queried from the same
+/// connection, rotating follows -> sessions -> accounts -> posts by tick: RAM is refreshed
+/// periodically, never all at once, and load_world runs only at launch.  The lock is
+/// poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable
+/// DB errors), so a poisoned guard still holds a valid Server.
 pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	// Poison-tolerant lock: the Err carries a PoisonError whose guard we recover.
 	let mut locked = match state.lock() {
@@ -297,88 +297,88 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	}
 }
 
-#[doc = "POST /api/signup."]
+/// POST /api/signup.
 #[post("/api/signup", data = "<body>")]
 fn signup(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/signup".to_string(), body, state)
 }
 
-#[doc = "POST /api/login."]
+/// POST /api/login.
 #[post("/api/login", data = "<body>")]
 fn login(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/login".to_string(), body, state)
 }
 
-#[doc = "POST /api/logout."]
+/// POST /api/logout.
 #[post("/api/logout", data = "<body>")]
 fn logout(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/logout".to_string(), body, state)
 }
 
-#[doc = "POST /api/post-tweet."]
+/// POST /api/post-tweet.
 #[post("/api/post-tweet", data = "<body>")]
 fn post_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/post-tweet".to_string(), body, state)
 }
 
-#[doc = "POST /api/post-reply."]
+/// POST /api/post-reply.
 #[post("/api/post-reply", data = "<body>")]
 fn post_reply(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/post-reply".to_string(), body, state)
 }
 
-#[doc = "POST /api/delete-tweet."]
+/// POST /api/delete-tweet.
 #[post("/api/delete-tweet", data = "<body>")]
 fn delete_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/delete-tweet".to_string(), body, state)
 }
 
-#[doc = "POST /api/like-tweet."]
+/// POST /api/like-tweet.
 #[post("/api/like-tweet", data = "<body>")]
 fn like_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/like-tweet".to_string(), body, state)
 }
 
-#[doc = "POST /api/unlike-tweet."]
+/// POST /api/unlike-tweet.
 #[post("/api/unlike-tweet", data = "<body>")]
 fn unlike_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/unlike-tweet".to_string(), body, state)
 }
 
-#[doc = "POST /api/follow-user."]
+/// POST /api/follow-user.
 #[post("/api/follow-user", data = "<body>")]
 fn follow_user(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/follow-user".to_string(), body, state)
 }
 
-#[doc = "POST /api/unfollow-user."]
+/// POST /api/unfollow-user.
 #[post("/api/unfollow-user", data = "<body>")]
 fn unfollow_user(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/unfollow-user".to_string(), body, state)
 }
 
-#[doc = "POST /api/get-tweet."]
+/// POST /api/get-tweet.
 #[post("/api/get-tweet", data = "<body>")]
 fn get_tweet(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/get-tweet".to_string(), body, state)
 }
 
-#[doc = "POST /api/global-timeline."]
+/// POST /api/global-timeline.
 #[post("/api/global-timeline", data = "<body>")]
 fn global_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/global-timeline".to_string(), body, state)
 }
 
-#[doc = "POST /api/private-timeline."]
+/// POST /api/private-timeline.
 #[post("/api/private-timeline", data = "<body>")]
 fn private_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Served {
 	serve("/api/private-timeline".to_string(), body, state)
 }
 
-#[doc = "GET aliases turn query parameters into POST-equivalent body lines: a present and non-empty"]
-#[doc = "token gets its own line first, then the value line, always present and empty when the"]
-#[doc = "parameter is missing. A missing or malformed number then fails parse_action exactly like"]
-#[doc = "the POST twin's body: BadNumber or MissingLine, which render as the same 403 shape."]
+/// GET aliases turn query parameters into POST-equivalent body lines: a present and non-empty
+/// token gets its own line first, then the value line, always present and empty when the
+/// parameter is missing. A missing or malformed number then fails parse_action exactly like
+/// the POST twin's body: BadNumber or MissingLine, which render as the same 403 shape.
 pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
 	let head: String = match token {
 		None => "".to_string(),
@@ -391,9 +391,9 @@ pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
 	head + tail.as_str() + "\r\n"
 }
 
-#[doc = "The raw value of one query parameter on the GET aliases: absent, bare (no '=') or"]
-#[doc = "empty all mean None (the legacy app.js always sends token=, empty when anonymous); the"]
-#[doc = "first pair with the name wins and later duplicates are ignored."]
+/// The raw value of one query parameter on the GET aliases: absent, bare (no '=') or
+/// empty all mean None (the legacy app.js always sends token=, empty when anonymous); the
+/// first pair with the name wins and later duplicates are ignored.
 pub fn query_param(query: &str, name: String) -> Option<String> {
 	let hits: Vec<String> = query
 		.split('&')
@@ -415,8 +415,8 @@ pub fn query_param(query: &str, name: String) -> Option<String> {
 	}
 }
 
-#[doc = "The one handler behind the 3 GET aliases: the query parameters become the POST-"]
-#[doc = "equivalent body, then the very parse_action and shared core the POST routes use."]
+/// The one handler behind the 3 GET aliases: the query parameters become the POST-
+/// equivalent body, then the very parse_action and shared core the POST routes use.
 pub fn serve_alias(
 	origin: &Origin<'_>,
 	state: &Mutex<Server>,
@@ -448,7 +448,7 @@ pub fn serve_alias(
 	serve_command(command, state)
 }
 
-#[doc = "GET /api/get-tweet: the legacy frontend's query-parameter twin of the POST route."]
+/// GET /api/get-tweet: the legacy frontend's query-parameter twin of the POST route.
 #[get("/api/get-tweet")]
 fn get_tweet_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
 	serve_alias(
@@ -459,7 +459,7 @@ fn get_tweet_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served 
 	)
 }
 
-#[doc = "GET /api/global-timeline."]
+/// GET /api/global-timeline.
 #[get("/api/global-timeline")]
 fn global_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
 	serve_alias(
@@ -470,7 +470,7 @@ fn global_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> S
 	)
 }
 
-#[doc = "GET /api/private-timeline."]
+/// GET /api/private-timeline.
 #[get("/api/private-timeline")]
 fn private_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
 	serve_alias(
@@ -481,8 +481,8 @@ fn private_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> 
 	)
 }
 
-#[doc = "Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST"]
-#[doc = "endpoints plus the 3 GET aliases the legacy frontend speaks."]
+/// Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST
+/// endpoints plus the 3 GET aliases the legacy frontend speaks.
 #[launch]
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
@@ -526,10 +526,10 @@ fn rocket() -> _ {
 		)
 }
 
-#[doc = "Server-layer test pointer: the DB-facing rules (DB3a apply-commits-gate, DB3b one-section"]
-#[doc = "reload, RV2a next-tick^4 = id) were pinned in stdlib-only Agda companion modules since"]
-#[doc = "removed per A4 (they never mention Twitter/Interface); what remains testable here is the"]
-#[doc = "pure tick schedule: forall tick in {0,1,2,3}, next_tick^4 tick == tick."]
+/// Server-layer test pointer: the DB-facing rules (DB3a apply-commits-gate, DB3b one-section
+/// reload, RV2a next-tick^4 = id) were pinned in stdlib-only Agda companion modules since
+/// removed per A4 (they never mention Twitter/Interface); what remains testable here is the
+/// pure tick schedule: forall tick in {0,1,2,3}, next_tick^4 tick == tick.
 #[test]
 fn test_tick_rotation_cycle() {
 	// Stepping eight times from tick 0 hits each of the four sections exactly twice, so
@@ -562,8 +562,8 @@ mod qc {
 	use super::sample_id_from;
 	use quickcheck_macros::quickcheck;
 
-	#[doc = "Clips/pads a generated block to the 16 bytes ONE random read returns, so both"]
-	#[doc = "halves of the block are exercised by the props."]
+	/// Clips/pads a generated block to the 16 bytes ONE random read returns, so both
+	/// halves of the block are exercised by the props.
 	fn block16(bs: &[u8]) -> Vec<u8> {
 		// QuickCheck already provides Arbitrary for Vec u8, so no local Gen instance is needed.
 		// (the padding byte 1 keeps a short block from collapsing onto the zero candidate)
@@ -574,8 +574,8 @@ mod qc {
 		out
 	}
 
-	#[doc = "QC prop_pid_fresh: whenever sample_id_from calls the u64 read off the leading eight"]
-	#[doc = "bytes fresh, that id is NEVER a member of the used-post-ids list it was given."]
+	/// QC prop_pid_fresh: whenever sample_id_from calls the u64 read off the leading eight
+	/// bytes fresh, that id is NEVER a member of the used-post-ids list it was given.
 	#[quickcheck]
 	// (the spec's new-pid rejecting ids already in World.used-post-ids)
 	// fresh means nonzero AND absent, so a hit in `used` can never be reported fresh.
@@ -589,8 +589,8 @@ mod qc {
 		!ok || !used.contains(&pid)
 	}
 
-	#[doc = "QC prop_sid_fresh: the same rule for the session id, i.e. the u64 read off bytes 8..16"]
-	#[doc = "of the block is never in the used-session-ids list when called fresh."]
+	/// QC prop_sid_fresh: the same rule for the session id, i.e. the u64 read off bytes 8..16
+	/// of the block is never in the used-session-ids list when called fresh.
 	#[quickcheck]
 	// (the spec's new-sid rejecting ids already in World.used-session-ids)
 	// the second half is checked against its own list, exactly as sample_id slices it.
@@ -607,8 +607,8 @@ mod qc {
 		!ok || !used.contains(&sid)
 	}
 
-	#[doc = "Boundary pins: a block shorter than eight bytes and a used list covering the"]
-	#[doc = "candidate - the documented exhaustion path sample_id retries."]
+	/// Boundary pins: a block shorter than eight bytes and a used list covering the
+	/// candidate - the documented exhaustion path sample_id retries.
 	#[test]
 	fn test_sample_id_boundaries() {
 		// Totality: no panic, just not-fresh, on an empty or short block.
@@ -629,8 +629,8 @@ mod qc {
 		assert!(!one_used);
 	}
 
-	#[doc = "One 16-byte read yields two candidates: the two halves of the same block feed the"]
-	#[doc = "post id and the session id, and neither half sees the other half's used list."]
+	/// One 16-byte read yields two candidates: the two halves of the same block feed the
+	/// post id and the session id, and neither half sees the other half's used list.
 	#[test]
 	fn test_sample_id_halves() {
 		// A fixed block: big-endian, the first u64 is 7 and the second is 9.
@@ -645,8 +645,8 @@ mod qc {
 		assert!(post == 7 && post_ok && sid == 9 && !sid_ok);
 	}
 
-	#[doc = "Determinism: identical bytes and identical used set always yield the identical"]
-	#[doc = "(id, ok) pair, for both halves of a block."]
+	/// Determinism: identical bytes and identical used set always yield the identical
+	/// (id, ok) pair, for both halves of a block.
 	#[test]
 	fn test_sample_id_deterministic() {
 		// The fixed block stands in for the /dev/urandom read, so equality is exact.
@@ -668,8 +668,8 @@ mod qc {
 	}
 }
 
-#[doc = "GET alias parse pins: the query-parameter body is byte-identical to the POST twin's"]
-#[doc = "body and parse_action gives both the same verdict, errors included."]
+/// GET alias parse pins: the query-parameter body is byte-identical to the POST twin's
+/// body and parse_action gives both the same verdict, errors included.
 #[test]
 fn test_alias_get_tweet_parses() {
 	// token + value is exactly the POST body "7\r\n42\r\n".
@@ -733,8 +733,8 @@ fn test_alias_get_tweet_parses() {
 	assert!(wire_error(WireError::MissingLine).status_code == 403);
 }
 
-#[doc = "The timeline aliases: private keeps its required token (MissingLine without one) and"]
-#[doc = "global keeps the optional token, each exactly as its POST twin parses."]
+/// The timeline aliases: private keeps its required token (MissingLine without one) and
+/// global keeps the optional token, each exactly as its POST twin parses.
 #[test]
 fn test_alias_timeline_parses() {
 	// private with token: POST body "7\r\n3\r\n".
@@ -818,9 +818,9 @@ fn test_alias_timeline_parses() {
 	);
 }
 
-#[doc = "Query-parsing pins: raw pairs split at the first '=', the first match wins, and absent"]
-#[doc = "or bare (no value) or empty all read as None; end to end the alias body equals the"]
-#[doc = "POST twin's body bytes."]
+/// Query-parsing pins: raw pairs split at the first '=', the first match wins, and absent
+/// or bare (no value) or empty all read as None; end to end the alias body equals the
+/// POST twin's body bytes.
 #[test]
 fn test_alias_query_param_parses() {
 	// exactly the app.js shape: token first, then the value parameter.
