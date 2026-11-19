@@ -99,6 +99,16 @@ pub fn enc_sess_row(st: SessionStatus) -> (i32, Option<String>) {
 	}
 }
 
+#[doc = "Borrowed sibling of enc_sess_row (task TB): the status arrives by reference, so apply()'s"]
+#[doc = "borrowed views never copy it; only the Active username is copied, where this runs."]
+pub fn enc_sess_row_ref(st: &SessionStatus) -> (i32, Option<String>) {
+	match st {
+		SessionStatus::Active(username) => (1, Some(username.clone())),
+		SessionStatus::Revoked => (2, None),
+		SessionStatus::Unused => (0, None),
+	}
+}
+
 /// Session row decoding: (1, just u) -> Active u, (2, nothing) -> Revoked,
 /// (0, nothing) -> Unused; malformed rows decode to Unused.
 pub fn dec_sess_row(code: i32, user: Option<String>) -> SessionStatus {
@@ -512,18 +522,18 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
 	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
 	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
-	let prev_users: HashMap<String, bool> = before
+	let prev_users: HashSet<&String> = before
 		.accounts
 		.iter()
-		.map(|(username, _)| (username.clone(), true))
+		.map(|(username, _)| username)
 		.collect();
-	let next_users: HashMap<String, bool> = after
+	let next_users: HashSet<&String> = after
 		.accounts
 		.iter()
-		.map(|(username, _)| (username.clone(), true))
+		.map(|(username, _)| username)
 		.collect();
 	for (username, account) in after.accounts.iter() {
-		if !prev_users.contains_key(username) {
+		if !prev_users.contains(&username) {
 			ok &= insert_into(accounts::dsl::accounts)
 				.values((
 					accounts::dsl::username.eq(username),
@@ -535,27 +545,23 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 		}
 	}
 	for (username, _) in before.accounts.iter() {
-		if !next_users.contains_key(username) {
+		if !next_users.contains(&username) {
 			ok &= delete(accounts::dsl::accounts)
 				.filter(accounts::dsl::username.eq(username))
 				.execute(conn)
 				.is_ok();
 		}
 	}
-	let prev_sessions: HashMap<u64, SessionStatus> = before
+	let prev_sessions: HashMap<u64, &SessionStatus> = before
 		.sessions
 		.iter()
-		.map(|(sid, status)| (*sid, status.clone()))
+		.map(|(sid, status)| (*sid, status))
 		.collect();
-	let next_sessions: HashMap<u64, SessionStatus> = after
-		.sessions
-		.iter()
-		.map(|(sid, status)| (*sid, status.clone()))
-		.collect();
+	let next_sids: HashSet<u64> = after.sessions.iter().map(|(sid, _)| *sid).collect();
 	for (sid, status) in after.sessions.iter() {
-		let (code, user) = enc_sess_row(status.clone());
 		match prev_sessions.get(sid) {
 			None => {
+				let (code, user) = enc_sess_row_ref(status);
 				ok &= insert_into(sessions::dsl::sessions)
 					.values((
 						sessions::dsl::sid.eq(*sid as i64),
@@ -566,7 +572,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 					.is_ok();
 			}
 			Some(old) => {
-				if old != status {
+				if **old != *status {
+					let (code, user) = enc_sess_row_ref(status);
 					ok &= update(sessions::dsl::sessions)
 						.filter(sessions::dsl::sid.eq(*sid as i64))
 						.set((sessions::dsl::status.eq(code), sessions::dsl::user.eq(user)))
@@ -577,7 +584,7 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 		}
 	}
 	for (sid, _) in before.sessions.iter() {
-		if !next_sessions.contains_key(sid) {
+		if !next_sids.contains(sid) {
 			ok &= delete(sessions::dsl::sessions)
 				.filter(sessions::dsl::sid.eq(*sid as i64))
 				.execute(conn)
@@ -595,10 +602,10 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 			next_seq = s + 1;
 		}
 	}
-	let prev_posts: HashMap<u64, Post> = before
+	let prev_posts: HashMap<u64, &Post> = before
 		.posts
 		.iter()
-		.map(|(pid, post)| (*pid, post.clone()))
+		.map(|(pid, post)| (*pid, post))
 		.collect();
 	let next_pids: HashSet<u64> = after.posts.iter().map(|(pid, _)| *pid).collect();
 	for (pid, post) in after.posts.iter() {
@@ -712,18 +719,18 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 				.is_ok();
 		}
 	}
-	let prev_follows: HashSet<(String, String)> = before
+	let prev_follows: HashSet<(&String, &String)> = before
 		.follows
 		.iter()
-		.map(|(follower, followee)| (follower.clone(), followee.clone()))
+		.map(|(follower, followee)| (follower, followee))
 		.collect();
-	let next_follows: HashSet<(String, String)> = after
+	let next_follows: HashSet<(&String, &String)> = after
 		.follows
 		.iter()
-		.map(|(follower, followee)| (follower.clone(), followee.clone()))
+		.map(|(follower, followee)| (follower, followee))
 		.collect();
 	for (follower, followee) in after.follows.iter() {
-		if !prev_follows.contains(&(follower.clone(), followee.clone())) {
+		if !prev_follows.contains(&(follower, followee)) {
 			ok &= insert_into(follows::dsl::follows)
 				.values((
 					follows::dsl::follower.eq(follower),
@@ -734,7 +741,7 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 		}
 	}
 	for (follower, followee) in before.follows.iter() {
-		if !next_follows.contains(&(follower.clone(), followee.clone())) {
+		if !next_follows.contains(&(follower, followee)) {
 			ok &= delete(follows::dsl::follows)
 				.filter(
 					follows::dsl::follower
@@ -1131,5 +1138,60 @@ mod db_tests {
 		assert!(reloaded.sessions == tampered.sessions);
 		assert!(reloaded.follows == tampered.follows);
 		assert!(reloaded.used_session_ids == tampered.used_session_ids);
+	}
+	#[test]
+	#[doc = "TB REDO perf-scale gate: 500 posts (pids 1 to 500, ids also in used_post_ids, newest_first "]
+	#[doc = "reversed) round-trip via save_world (seqs stamped 1 to 500), then apply of the diff: "]
+	#[doc = "delete pid 7, flip pid 11 to Deleted, insert pid 900 (seq 501). Batch COMMITS, load_world "]
+	#[doc = "equals after exactly (newest_first [900,500..8,6..1]) and a reopen loads it again."]
+	fn test_apply_perf_scale() {
+		let path = "/tmp/ft-apply-perf-scale.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		save_world(&mut conn, empty_world());
+		let mut before = empty_world();
+		for index in 1..501 {
+			let pid = index as u64;
+			before.posts.push((
+				pid,
+				Post {
+					author: "alice".to_string(),
+					text: index.to_string(),
+					visibility: Visibility::Everyone,
+					status: PostStatus::Other,
+					likes: vec![],
+					replies: vec![],
+					parent: None,
+				},
+			));
+			before.newest_first.push(pid);
+			before.used_post_ids.push(pid);
+		}
+		before.newest_first.reverse();
+		let mut after = before.clone();
+		after.posts.retain(|entry| entry.0 != 7);
+		after.newest_first.retain(|pid| *pid != 7);
+		after.used_post_ids.retain(|id| *id != 7);
+		assert!(after.posts[9].0 == 11);
+		after.posts[9].1.status = PostStatus::Deleted;
+		after.posts.push((
+			900,
+			Post {
+				author: "alice".to_string(),
+				text: "extra".to_string(),
+				visibility: Visibility::Everyone,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent: None,
+			},
+		));
+		after.used_post_ids.push(900);
+		after.newest_first.insert(0, 900);
+		save_world(&mut conn, before.clone());
+		let committed = apply(&mut conn, &before, &after);
+		assert!(committed);
+		assert!(load_world(&mut conn) == after);
+		let mut fresh = reopen(path.to_string()).unwrap();
+		assert!(load_world(&mut fresh) == after);
 	}
 }

@@ -90,6 +90,15 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] RV2e CANCELLED by A4: its target ImplParse.agda (stdlib-only parse_action pins, no Interface connection) was classified POINTLESS and deleted; ImplWire.agda already pins from-input/to-output at the SPEC level for all clauses. Recovery b6b868b keeps the file.
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets
   (HashMap<u64,&Post>, HashSet<&String>, HashSet<(&String,&String)>, no status/username clones).
+      TB REDO RESULTS (subagent, no commit; clean baseline 4356374, db.rs 1135 -> 1197 lines):
+      enc_sess_row sibling enc_sess_row_ref(&SessionStatus) at HEAD:94 -> now :104; enc moved INTO executed branches (now :564 None, :576 Some-changed), pre-loop enc (HEAD :556) gone.
+      views: users HashMap<String,bool> HEAD:515/520 -> HashSet<&String> now :525/530 (probes contains(&username) HEAD:526/538 -> :536/548);
+      prev_sessions HEAD:545 -> HashMap<u64,&SessionStatus> now :555 (no status.clone); next_sessions map HEAD:550-554 -> next_sids HashSet<u64> one-liner now :560 (probe HEAD:580 -> :587 contains(sid));
+      prev_posts HEAD:598 -> HashMap<u64,&Post> now :605 (no post.clone); next_pids already keys-only (HEAD:603 -> now :610);
+      follows HEAD:715/720 -> HashSet<(&String,&String)> now :722/727; probes without clones HEAD:726/737 -> now :733/744.
+      PRESERVATION: LCS diff of the whole apply() span shows ONLY view/probe/let lines changed; the 23-statement seq (insert_into/update/delete chains, BEGIN/COMMIT/ROLLBACK pragmas, ok &=, return bool) is byte-identical (programmatic A==B check True).
+      NEW #[test] test_apply_perf_scale at now :1147: 500 posts pids 1..500 (used_post_ids, newest_first reverse), save_world(empty) wipe + save_world(before) (seqs 1..500), diff DELETE pid7 / UPDATE pid11->Deleted / INSERT pid900 (seq 501), committed==true, load_world==after (newest_first [900,500..8,6..1]), reopen agrees.
+      GATES: cargo fmt --check exit 0 (nightly-option warnings only); cargo test 43 passed 0 failed (42+new, all db_tests green = behaviour guard); clippy --all-targets -D warnings exit 0; agda ImplWire+ImplProofs exit 0 (no Agda edits).
 - [ ] Task TC (impl, MED): perf model.rs timelines — hoist active_user/account_at out of newest_first loop,
   early-stop after n matches, post_at_ref -> Option<&Post> for read-only callers.
 - [ ] Task T6 (impl, SMALL): frontend-conformant GET aliases (/api/get-tweet?token=&id=,
