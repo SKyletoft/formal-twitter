@@ -69,8 +69,8 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   respond() source untouched. cargo test 37.
 
 ## In progress
-- [~] A4-impl (impl subagent general/medium, RESTARTED after cancel; edits ONLY — deletions handed to user): remove ImplProofs.agda's 5 dead local imports (ImplWire/ImplApply/ImplReload/ImplStorage/ImplTick) preserving all uncommitted spec-useful additions; rewrite ImplProofs:481-497 dangling trailer comments; scrub Rust comments/doc-pointers naming deleted modules in src/ + tests/. agda gate verified by coordinator AFTER user deletes the files; cargo gates by the subagent. DELETE LIST (user runs): rm backend/ImplLite{0,1,2,M}.agda backend/ImplParse.agda (untracked) + git rm backend/Impl{Tick,Storage,Reload,Apply}.agda (tracked).
-- [~] RV2b+d (impl, subagent general/medium, STARTED): ImplStorage th-load-empty + load/save round-trip pin;
+- [x] A4 snapshot (ACCEPTED b6b868b): recovery commit of the WHOLE Agda tree pre-deletion — untracked ImplLite{0,1,2,M}/ImplParse staged + kept (never typechecked; recovery only), RV2b+d ImplProofs/ImplStorage additions preserved, A4-impl import/comment edits included. All 9 doomed modules are now TRACKED, so recoverable.
+- [x] RV2b+d (impl subagent, DONE — ImplProofs half committed with A4; ImplStorage half SUPERSEDED by A4 deletion, recovery b6b868b): ImplStorage th-load-empty + load/save round-trip pin;
       ImplProofs th-prop-timeline-global + M2/M3 audit. Gate: cargo test + agda typecheck (LONG timeouts).
       ImplProofs half DONE (subagent, gate `agda ImplProofs.agda` exit 0): th-prop-revoke-used (:365, ∃-witness logout step
       preserving used-post-ids/used-session-ids — spec's logout constructor leaves those fields free so the ∀ nw==want
@@ -79,10 +79,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       take-uniq, take-len, filterᵇ-uniq, crp/puc-filter-uniq (:291-346). Existing theorems untouched.
       Also landed (11d): th-timeline-global-membership / -anon-membership / -personal-membership (:459-483) closing the
       ts.iter().all(member &w.newest_first) conjunct of prop_timeline_valid via ∈-take ∘ ∈-filter-crp/ᵇ/puc; gate re-run exit 0.
-- [ ] RV2e (impl, MED): new ImplParse.agda — stdlib refl pins of a modelled parse_action over concrete request bytes:
-  13 endpoint shapes, anon/token arity decision, CRLF/LF/CR equivalence, 6 malformed classifications, post-tweet
-  round-trip; + pointer comments in wire.rs test mod. Backs endpoint_shapes/anonymous_and_tokened/separator_variants/
-  malformed/qc_post_round_trip.
+- [x] RV2e CANCELLED by A4: its target ImplParse.agda (stdlib-only parse_action pins, no Interface connection) was classified POINTLESS and deleted; ImplWire.agda already pins from-input/to-output at the SPEC level for all clauses. Recovery b6b868b keeps the file.
 - [ ] Task TA (impl, SMALL): perf main.rs+db.rs — sample_id by reference (kills 2 World clones/req), one 16B
   /dev/urandom read per request (two u64s). (reopen + poison lock ALREADY DONE by DB3a/DB3c — strike those.)
 - [ ] Task TB (impl, SMALL): perf db.rs apply() — borrows instead of deep-clone HashMaps/HashSets

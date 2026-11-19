@@ -472,17 +472,7 @@ th-timeline-personal-membership {before} {n} {sid} {pid} {user} m =
 -- backend/ImplWire.agda: opening Interface inside this module clashes with Twitter's Command/Result
 -- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.
 
--- the db.rs load∘save row-model pins (an empty-db load yields the empty world, six per-table
--- empty-load pins, a save∘load roundtrip on sample row lists, and a deterministic load) back
--- db.rs test_db_empty/test_db_roundtrip/test_db_reopen_equal over the six tables' raw and
--- decoded row lists; they live in a companion module that sees only the stdlib, since db.rs's
--- row-model would clash with Twitter's World here.
-
--- the next_tick schedule pins (next-tick on each of 0..7, four-cycle on {0,1,2,3}, and the
--- eight-step landing sequence) for main.rs:next_tick, the cache-rotation schedule of DB3c,
--- live in a companion module that sees only the stdlib and Helpers.
-
--- the bounded write-through diff pins for db.rs:apply (INSERT/UPDATE/DELETE per table,
--- seq = max + 1) are refl theorems over sample session/post/like/reply/follow tables; db.rs's
--- row-model would clash with Twitter's World in this module, so those pins live in a companion
--- module that sees only the stdlib.
+-- Per A4 the stdlib-only companion pins for db.rs (apply diff, load∘save, reload_* pins,
+-- next-tick schedule) were removed: they never referenced Twitter/Interface, hence prove
+-- nothing about the spec model. The Rust unit tests they backed (test_apply_*, test_db_*,
+-- test_tick_rotation_cycle) still guard that behaviour; recovery commit b6b868b keeps them.

@@ -1,7 +1,8 @@
 //! Diesel/SQLite persistence for the formal-twitter backend (task T3; no Rocket here).
 //!
 //! Six SQL tables mirror the DB schema note in todo.md. Encodings mirror
-//! spec/Twitter.agda; the encoding pins are proved in the Agda development beside this backend.
+//! spec/Twitter.agda; the stdlib-only encoding-pin module was removed per A4
+//! (recovery commit b6b868b keeps it).
 
 #![allow(clippy::cast_lossless, clippy::cast_possible_truncation)]
 
@@ -53,7 +54,7 @@ table!(follows (follower, followee) {
 	 followee -> Text,
 });
 
-// ---- Encodings (proved pins: see this module's header) ----
+// ---- Encodings ----
 
 /// enc-vis: Everyone = 0, FollowersOnly = 1.
 pub fn enc_vis(vis: Visibility) -> i32 {
