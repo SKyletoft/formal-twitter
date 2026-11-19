@@ -68,11 +68,17 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   Content-Type iff non-empty body, exact body bytes incl. escaped tweet "a\"b/c\nd and quoted ids) matching ImplWire wi-out-*;
   respond() source untouched. cargo test 37.
 
-## Next (in order)
-- [ ] RV2b+d (impl): ImplStorage — th-load-empty (fresh DB ⇒ empty world, backs test_db_empty) + load∘save round-trip
-  pin on build_world (backs test_db_roundtrip/test_db_reopen_equal); ImplProofs +open import ImplStorage +ImplTick;
-  ImplProofs +th-prop-timeline-global mirroring prop_timeline_valid's GLOBAL branch (+uniq/+len≤n conjuncts);
-  M2: add nw==w half to register-taken theorem; M3: add rest-unchanged conjunct to revoke theorem.
+## In progress
+- [~] A4-impl (impl subagent general/medium, RESTARTED after cancel; edits ONLY — deletions handed to user): remove ImplProofs.agda's 5 dead local imports (ImplWire/ImplApply/ImplReload/ImplStorage/ImplTick) preserving all uncommitted spec-useful additions; rewrite ImplProofs:481-497 dangling trailer comments; scrub Rust comments/doc-pointers naming deleted modules in src/ + tests/. agda gate verified by coordinator AFTER user deletes the files; cargo gates by the subagent. DELETE LIST (user runs): rm backend/ImplLite{0,1,2,M}.agda backend/ImplParse.agda (untracked) + git rm backend/Impl{Tick,Storage,Reload,Apply}.agda (tracked).
+- [~] RV2b+d (impl, subagent general/medium, STARTED): ImplStorage th-load-empty + load/save round-trip pin;
+      ImplProofs th-prop-timeline-global + M2/M3 audit. Gate: cargo test + agda typecheck (LONG timeouts).
+      ImplProofs half DONE (subagent, gate `agda ImplProofs.agda` exit 0): th-prop-revoke-used (:365, ∃-witness logout step
+      preserving used-post-ids/used-session-ids — spec's logout constructor leaves those fields free so the ∀ nw==want
+      conjuncts are NOT derivable, pinned as witness instead); th-timeline-global-uniq/len, -anon-uniq/len, -personal-uniq/len
+      (:421-470) closing M1 uniq+len<=n conjuncts of prop_timeline_valid via general lemmas ∈-filterᵇ/crp/puc, ∈-take,
+      take-uniq, take-len, filterᵇ-uniq, crp/puc-filter-uniq (:291-346). Existing theorems untouched.
+      Also landed (11d): th-timeline-global-membership / -anon-membership / -personal-membership (:459-483) closing the
+      ts.iter().all(member &w.newest_first) conjunct of prop_timeline_valid via ∈-take ∘ ∈-filter-crp/ᵇ/puc; gate re-run exit 0.
 - [ ] RV2e (impl, MED): new ImplParse.agda — stdlib refl pins of a modelled parse_action over concrete request bytes:
   13 endpoint shapes, anon/token arity decision, CRLF/LF/CR equivalence, 6 malformed classifications, post-tweet
   round-trip; + pointer comments in wire.rs test mod. Backs endpoint_shapes/anonymous_and_tokened/separator_variants/

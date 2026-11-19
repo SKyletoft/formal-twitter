@@ -374,12 +374,12 @@ fn rocket() -> _ {
 }
 
 #[doc = "Server-layer test pointer: the DB-facing rules are proven in Agda, not in Rust."]
-#[doc = "ImplApply.agda (DB3a): apply returns true iff the batch committed (th-apply-ok), and"]
-#[doc = "rolls back otherwise; ImplStorage.agda + ImplProofs.agda pin load_world and the"]
-#[doc = "reload_* fns to the DB view; ImplReload.agda (DB3b): each reload_* replaces exactly"]
+#[doc = "DB3a in the Agda development: apply returns true iff the batch committed (th-apply-ok), and"]
+#[doc = "rolls back otherwise; the storage pins plus ImplProofs.agda pin load_world and the"]
+#[doc = "reload_* fns to the DB view; DB3b there: each reload_* replaces exactly"]
 #[doc = "one cache section and leaves the rest of the cache alone.  The residue testable here"]
 #[doc = "is the pure tick schedule: forall tick in {0,1,2,3}, next_tick^4 tick == tick."]
-#[doc = "ImplTick.agda (RV2a): next-tick^4 = id on {0,1,2,3} and the pinned 8-step landing sequence backs the [2,2,2,2] hit count."]
+#[doc = "RV2a in the Agda development: next-tick^4 = id on {0,1,2,3} and the pinned 8-step landing sequence backs the [2,2,2,2] hit count."]
 #[test]
 fn test_tick_rotation_cycle() {
 	// Stepping eight times from tick 0 hits each of the four sections exactly twice, so

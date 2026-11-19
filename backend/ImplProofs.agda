@@ -2,9 +2,11 @@ open import Agda.Builtin.Bool
 open import Agda.Builtin.Maybe                        using (just; nothing)
 open import Agda.Builtin.Sigma
 open import Data.Empty                                using (⊥-elim)
-open import Data.List                                 using (List; []; _∷_; take; filter; filterᵇ)
+open import Data.List                                 using (List; []; _∷_; length; take; filter; filterᵇ)
+open import Data.Nat                                  using (ℕ; zero; suc; _≤_; z≤n; s≤s)
 open import Data.Product                              using (∃-syntax)
 open import Data.String                               using (String; _≟_)
+open import Data.Unit                                 using (tt)
 open import Relation.Binary.Definitions               using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality     using (_≡_; _≢_; refl; cong;
                                                          sym; trans; subst)
@@ -12,12 +14,6 @@ open import Relation.Nullary.Negation.Core             using (¬_)
 open import Relation.Nullary.Decidable.Core            using (Dec; yes; no)
 
 open import Helpers
-
-open import ImplWire
-
-open import ImplApply
-
-open import ImplReload
 
 module ImplProofs
   (SessionId PostId : Set)
@@ -30,6 +26,12 @@ module ImplProofs
 open import Twitter SessionId PostId new-sid new-pid _≟ₚ_ _≟ₛᵢ_
 
 open import Proofs SessionId PostId new-sid new-pid _≟ₚ_ _≟ₛᵢ_
+
+-- Keyed-table update (same instance Proofs uses when it builds the logout world).
+open import Update SessionId _≟ₛᵢ_ SessionStatus unused
+  using () renaming (update to add-session-at; update-same to add-session-same;
+                     update-no to add-session-no;
+                     update-used-keep to add-session-used-keep)
 
 -- Helper: membership is preserved by equal element and equal list.
 ∈-cong : ∀ {u u′ : String} {ls ls′ : List String} →
@@ -80,6 +82,22 @@ th-prop-register-taken :
   World.account-at after username ≢ nothing
 th-prop-register-taken _ (failed-create-account h) = h
 
+-- (3b) prop_register_taken (model.rs:866) asserts nw == w OUTRIGHT: the failed
+-- create-account constructor steps to BEFORE itself, so every remaining section
+-- is unchanged (the after-world unifies with the before-world by the match).
+th-prop-register-taken-id :
+  ∀ {before after username passwd} →
+  World.account-at before username ≢ nothing →
+  Step before (register username passwd) after signup-failed →
+  (World.session-at after ≡ World.session-at before)
+  × (World.post-at after ≡ World.post-at before)
+  × (World.follows after ≡ World.follows before)
+  × (World.newest-first after ≡ World.newest-first before)
+  × (World.used-post-ids after ≡ World.used-post-ids before)
+  × (World.used-session-ids after ≡ World.used-session-ids before)
+th-prop-register-taken-id _ (failed-create-account _) =
+  refl , refl , refl , refl , refl , refl
+
 -- (4) prop_revoke_token: a successful logout revokes exactly the session that
 -- was active for that token before the step (inversion).
 th-prop-revoke-logout :
@@ -88,6 +106,22 @@ th-prop-revoke-logout :
   Step before (revoke-token sid) after success →
   World.session-at after sid ≡ revoked
 th-prop-revoke-logout h (logout _ h₂ _) = h₂
+
+-- (4b) prop_revoke_token (model.rs:882) asserts nw == want outright: only the
+-- one session flips (to Revoked, pinned above) and every other section stays
+-- put.  The logout constructor pins the rest under a sid ≢ other-sid premise,
+-- mirrored below (session-at elsewhere, accounts/posts/follows/newest-first).
+th-prop-revoke-rest :
+  ∀ {before after sid user other-sid} →
+  World.session-at before sid ≡ active user →
+  Step before (revoke-token sid) after success →
+  sid ≢ other-sid →
+  World.session-at before other-sid ≡ World.session-at after other-sid
+  ∧ World.account-at before ≡ World.account-at after
+  ∧ World.post-at before ≡ World.post-at after
+  ∧ World.follows before ≡ World.follows after
+  ∧ World.newest-first before ≡ World.newest-first after
+th-prop-revoke-rest _ (logout _ _ rest) ne = rest ne
 
 -- (5) prop_follow: following adds (session-user, followee) to the follow
 -- relation and changes nothing else; the after-world is constructed here.
@@ -223,13 +257,232 @@ th-prop-timeline-personal :
                            (World.newest-first before)))))
 th-prop-timeline-personal = get-personal-timeline
 
+-- (11b) prop_timeline_valid (model.rs:1005), GLOBAL branches: the tokened global
+-- timeline is take n of the readable newest-first ids (get-private-global-timeline)
+-- and the anon one take n of the publicly readable ones; the Rust check also
+-- demands membership in newest_first, uniqueness and len <= n, which hold here
+-- because the timeline is a take ∘ filter of the well-formed uniq newest-first
+-- list, and nw == w because the step keeps the world.
+th-prop-timeline-global :
+  ∀ {before n sid acc user} →
+  ValidSession before sid acc user →
+  Step before (read-global-timeline (just sid) n) before
+    (returned-timeline
+      (take n (filter (can-read-post before sid) (World.newest-first before))))
+th-prop-timeline-global = get-private-global-timeline
+
+th-prop-timeline-global-anon :
+  ∀ {before n} →
+  Step before (read-global-timeline nothing n) before
+    (returned-timeline
+      (take n (filter (is-post-public before) (World.newest-first before))))
+th-prop-timeline-global-anon = get-public-global-timeline
+
+-- Membership reflects back through filter / filterᵇ / take; uniq survives all three.
+∈-filterᵇ : ∀ {f : PostId → Bool} {xs : List PostId} {pid : PostId} →
+            pid ∈ filterᵇ f xs → pid ∈ xs
+∈-filterᵇ {f} {[]} ()
+∈-filterᵇ {f} {x ∷ xs} m with f x | m
+... | true  | here = here
+... | true  | there m′ = there (∈-filterᵇ m′)
+... | false | m′ = there (∈-filterᵇ m′)
+
+-- (predicate-generic membership/uniq lemmas clash levels with the indexed CanReadPost,
+-- so each spec predicate gets its own copy; only two are ever used by timelines)
+∈-filter-crp : ∀ {w : World} {sid : SessionId} {xs : List PostId} {pid : PostId} →
+               pid ∈ filter (can-read-post w sid) xs → pid ∈ xs
+∈-filter-crp {w} {sid} {[]} ()
+∈-filter-crp {w} {sid} {x ∷ xs} m with can-read-post w sid x | m
+... | yes _ | here = here
+... | yes _ | there m′ = there (∈-filter-crp {w} {sid} m′)
+... | no _  | m′ = there (∈-filter-crp {w} {sid} m′)
+
+crp-filter-uniq : ∀ {w : World} {sid : SessionId} {xs : List PostId} →
+                  uniq xs → uniq (filter (can-read-post w sid) xs)
+crp-filter-uniq {w} {sid} {[]} tt = tt
+crp-filter-uniq {w} {sid} {x ∷ xs} (x∉xs , uxs) with can-read-post w sid x
+... | yes _ = (λ m → x∉xs (∈-filter-crp {w} {sid} m)) , crp-filter-uniq {w} {sid} {xs} uxs
+... | no _ = crp-filter-uniq {w} {sid} {xs} uxs
+
+∈-filter-puc : ∀ {w : World} {xs : List PostId} {pid : PostId} →
+               pid ∈ filter (is-post-public w) xs → pid ∈ xs
+∈-filter-puc {w} {[]} ()
+∈-filter-puc {w} {x ∷ xs} m with is-post-public w x | m
+... | yes _ | here = here
+... | yes _ | there m′ = there (∈-filter-puc {w} m′)
+... | no _  | m′ = there (∈-filter-puc {w} m′)
+
+puc-filter-uniq : ∀ {w : World} {xs : List PostId} →
+                  uniq xs → uniq (filter (is-post-public w) xs)
+puc-filter-uniq {w} {[]} tt = tt
+puc-filter-uniq {w} {x ∷ xs} (x∉xs , uxs) with is-post-public w x
+... | yes _ = (λ m → x∉xs (∈-filter-puc {w} m)) , puc-filter-uniq {w} {xs} uxs
+... | no _ = puc-filter-uniq {w} {xs} uxs
+
+∈-take : ∀ {xs : List PostId} {pid : PostId} → (n : ℕ) →
+         pid ∈ take n xs → pid ∈ xs
+∈-take {[]} {_} zero ()
+∈-take {[]} {_} (suc n) ()
+∈-take {x ∷ xs} {_} zero ()
+∈-take {x ∷ xs} {_} (suc n) m with m
+... | here = here
+... | there m′ = there (∈-take {xs} {_} n m′)
+
+filterᵇ-uniq : ∀ {f : PostId → Bool} {xs : List PostId} →
+               uniq xs → uniq (filterᵇ f xs)
+filterᵇ-uniq {f} {[]} tt = tt
+filterᵇ-uniq {f} {x ∷ xs} (x∉xs , uxs) with f x
+... | true = (λ m → x∉xs (∈-filterᵇ {f} {xs} m)) , filterᵇ-uniq {f} {xs} uxs
+... | false = filterᵇ-uniq {f} {xs} uxs
+
+take-uniq : ∀ {xs : List PostId} (n : ℕ) → uniq xs → uniq (take n xs)
+take-uniq {[]} zero u = tt
+take-uniq {[]} (suc n) u = tt
+take-uniq {x ∷ xs} zero _ = tt
+take-uniq {x ∷ xs} (suc n) (x∉xs , uxs) =
+  (λ m → x∉xs (∈-take {xs} {_} n m)) , take-uniq {xs} n uxs
+
+take-len : ∀ {xs : List PostId} (n : ℕ) → length (take n xs) ≤ n
+take-len {[]} zero = z≤n
+take-len {[]} (suc n) = z≤n
+take-len {x ∷ xs} zero = z≤n
+take-len {x ∷ xs} (suc n) = s≤s (take-len {xs} n)
+
+-- (4c) prop_revoke_token (model.rs:882) asserts nw == want, i.e. on top of the
+-- session flip (th-prop-revoke-logout/rest) it keeps used-post-ids and used-
+-- session-ids.  The spec's logout Step constructor leaves those two World fields
+-- unconstrained (they do not appear in its premises), so the equality is NOT
+-- derivable from an arbitrary derivation.  What the Rust step actually does -
+-- flip session-at sid via keyed update, keep every other field - is pinned
+-- existentially as a logout step preserving both used-id lists:
+th-prop-revoke-used :
+  ∀ {before sid acc user} →
+  ValidSession before sid acc user →
+  ∃[ after ] ∃[ result ]
+    Step before (revoke-token sid) after result
+  × World.session-at after sid ≡ revoked
+  × World.used-post-ids before ≡ World.used-post-ids after
+  × World.used-session-ids before ≡ World.used-session-ids after
+th-prop-revoke-used
+  {before@(world account-at session-at post-at follows newest-first
+            used-post-ids used-session-ids only-used-pids only-used-sids
+            only-valid-sessions only-valid-posts only-valid-replies
+            no-duplicate-replies no-duplicate-likes no-duplicate-posts)}
+  {sid} {acc} {user} vs =
+  after , (success ,
+    (logout (ValidSession.session-unchanged vs)
+       (add-session-same {f = session-at} {k = sid} {v = revoked})
+       (λ {other-sid} ne →
+          sym (add-session-no {f = session-at} {k = sid} {v = revoked} ne)
+            , refl , refl , refl , refl)
+            , add-session-same {f = session-at} {k = sid} {v = revoked}
+            , refl , refl))
+  where
+    after : World
+    after = world account-at
+                  (add-session-at session-at sid revoked)
+                  post-at
+                  follows
+                  newest-first
+                  used-post-ids
+                  used-session-ids
+                  only-used-pids
+                  (add-session-used-keep revoked
+                    (ValidSession.session-unchanged vs) active≢unused revoked≢unused
+                    only-used-sids)
+                  (add-session-valid-revoke only-valid-sessions)
+                  only-valid-posts
+                  only-valid-replies
+                  no-duplicate-replies
+                  no-duplicate-likes
+                  no-duplicate-posts
+
+-- (11c) prop_timeline_valid (model.rs:1005) additionally demands unique(&ts) and
+-- len(ts) <= n on the returned timeline ts.  The pins above identify ts with a
+-- take ∘ filter ∘ newest-first, whose newest-first source is uniq (the World
+-- field no-duplicate-posts), so both conjuncts hold for all three timeline
+-- branches (personal, tokened global, anon global):
+th-timeline-global-uniq :
+  ∀ {before n sid acc user} →
+  ValidSession before sid acc user →
+  uniq (take n (filter (can-read-post before sid) (World.newest-first before)))
+th-timeline-global-uniq {before} {n} {sid} _ =
+  take-uniq n (crp-filter-uniq {before} {sid} (World.no-duplicate-posts before))
+
+th-timeline-global-len :
+  ∀ {before n sid acc user} →
+  ValidSession before sid acc user →
+  length (take n (filter (can-read-post before sid) (World.newest-first before))) ≤ n
+th-timeline-global-len {before} {n} {sid} _ = take-len n
+
+th-timeline-global-anon-uniq :
+  ∀ {before n} →
+  uniq (take n (filter (is-post-public before) (World.newest-first before)))
+th-timeline-global-anon-uniq {before} {n} =
+  take-uniq n (puc-filter-uniq {before} (World.no-duplicate-posts before))
+
+th-timeline-global-anon-len :
+  ∀ {before n} →
+  length (take n (filter (is-post-public before) (World.newest-first before))) ≤ n
+th-timeline-global-anon-len {before} {n} = take-len n
+
+th-timeline-personal-uniq :
+  ∀ {before n sid acc user} →
+  ValidSession before sid acc user →
+  uniq (take n (filterᵇ (follows-post-author before user)
+                       (filter (can-read-post before sid) (World.newest-first before))))
+th-timeline-personal-uniq {before} {n} {sid} {acc} {user} _ =
+  take-uniq n (filterᵇ-uniq {f = follows-post-author before user}
+    (crp-filter-uniq {before} {sid} (World.no-duplicate-posts before)))
+
+th-timeline-personal-len :
+  ∀ {before n sid acc user} →
+  ValidSession before sid acc user →
+  length (take n (filterᵇ (follows-post-author before user)
+                        (filter (can-read-post before sid) (World.newest-first before)))) ≤ n
+th-timeline-personal-len {before} {n} {sid} {acc} {user} _ = take-len n
+
+-- (11d) prop_timeline_valid (model.rs:1005) additionally demands the ts.iter().all(member
+-- &w.newest_first) conjunct: every returned timeline id is a member of newest-first.
+-- Holds unconditionally (stronger than the valid-session guard), by membership
+-- reflecting back through ∈-take / ∈-filter-crp / ∈-filterᵇ / ∈-filter-puc:
+th-timeline-global-membership :
+  ∀ {before n sid pid} →
+  pid ∈ take n (filter (can-read-post before sid) (World.newest-first before)) →
+  pid ∈ World.newest-first before
+th-timeline-global-membership {before} {n} {sid} {pid} m =
+  ∈-filter-crp {before} {sid} (∈-take n m)
+
+th-timeline-global-anon-membership :
+  ∀ {before n pid} →
+  pid ∈ take n (filter (is-post-public before) (World.newest-first before)) →
+  pid ∈ World.newest-first before
+th-timeline-global-anon-membership {before} {n} {pid} m =
+  ∈-filter-puc {before} (∈-take n m)
+
+th-timeline-personal-membership :
+  ∀ {before n sid pid user} →
+  pid ∈ take n (filterᵇ (follows-post-author before user)
+                       (filter (can-read-post before sid) (World.newest-first before))) →
+  pid ∈ World.newest-first before
+th-timeline-personal-membership {before} {n} {sid} {pid} {user} m =
+  ∈-filter-crp {before} {sid} (∈-filterᵇ {f = follows-post-author before user} (∈-take n m))
+
 -- The wire-layer refl theorems (from-input / to-output pins for backend/src/wire.rs) live in
 -- backend/ImplWire.agda: opening Interface inside this module clashes with Twitter's Command/Result
 -- at the SessionId/PostId instantiation, so they are proven in a module that sees only Interface.
 
--- storage encodings proved in ImplStorage.agda
+-- the db.rs load∘save row-model pins (an empty-db load yields the empty world, six per-table
+-- empty-load pins, a save∘load roundtrip on sample row lists, and a deterministic load) back
+-- db.rs test_db_empty/test_db_roundtrip/test_db_reopen_equal over the six tables' raw and
+-- decoded row lists; they live in a companion module that sees only the stdlib, since db.rs's
+-- row-model would clash with Twitter's World here.
 
--- the bounded write-through diff pins for backend/src/db.rs:apply (INSERT/UPDATE/DELETE per table,
--- seq = max + 1) are refl theorems over sample session/post/like/reply/follow tables in ImplApply.agda:
--- opening db.rs's World shape inside this module would clash with Twitter's World, so the pins live in a
+-- the next_tick schedule pins (next-tick on each of 0..7, four-cycle on {0,1,2,3}, and the
+-- eight-step landing sequence) for main.rs:next_tick, the cache-rotation schedule of DB3c,
+-- live in a companion module that sees only the stdlib and Helpers.
+
+-- the bounded write-through diff pins for db.rs:apply (INSERT/UPDATE/DELETE per table,
+-- seq = max + 1) are refl theorems over sample session/post/like/reply/follow tables; db.rs's
+-- row-model would clash with Twitter's World in this module, so those pins live in a companion
 -- module that sees only the stdlib.
