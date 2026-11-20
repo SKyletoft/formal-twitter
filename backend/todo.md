@@ -121,10 +121,25 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       new_post_count replaced by delta-derived k for max_seq bump (old fn kept test-only doc); +one bin pin test; smoke green.
       == step via built index + reload-site round-trip hit/miss); 60->61 tests (44 lib + 11 bin + 6 smoke); gates
       fmt/build/clippy -D warnings silent/test/agda x2 rc 0; main.rs only touched.
-- [ ] F4b (impl subagent): main.rs Server +index field (built at launch from loaded World), rebuilt after every
-      reload assignment, serve_command calls step_ix(&before, &locked.index, ..); gates incl. smoke suite.
-- [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
-- [ ] F2 (impl subagent): delta-driven apply() touching only changed keys (was full-world diff views).
+- [x] F4b (eafb425, impl subagent, ACCEPTED): main.rs Server +index: WorldIndex — launch build_index(&world), rebuilt
+      after ALL THREE reload arms; serve_command steps via step_ix(&before,&locked.index,..); +test_serve_index_consistency.
+- [x] F1 (F1a 525c028 + F1b 6d2209b, impl subagents, ACCEPTED): Delta sum-type + step_d -> (Result,Delta) + patch_world;
+      serve_command runs step_d/patch_world, delta-derived k drives the max_seq bump; prop_delta_equiv + pins.
+- [x] F2 (impl subagent, ACCEPTED, THIS COMMIT): db.rs apply_delta(conn,&before,delta,max_hint) :882-1058 + doc; per-branch
+      diesel statements mirroring apply's per-row idioms verbatim: None_ zero-stmt COMMIT true; Publish INSERTs posts(seq=max_hint+1)+used_pids
+      (+replies row reply_pid=pid,parent when parent is Some — patch appends reply to parent list); Delete UPDATEs posts
+      cols apply's UPDATE sets (status+visibility, verify by reading); Authenticate/RevokeToken/TimePasses session-row ops
+      (one per sid); Register accounts INSERT cols; Follow/Unfollow follows-branch op; Like INSERT / Unlike DELETE likes row;
+      PK clash -> ROLLBACK false unchanged. apply() doc -> "test-only reference" (tests kept). serve_command :392 ->
+      apply_delta(&mut conn,&before,delta,locked.max_seq); after stays (moved into reload arms); import +1 (F2) comment.
+      6 db.rs scenario tests (publish seq=hint+1 + newest_first head, publish_reply load==want-PLUS-row (patch lags by the
+      row; reload_posts converges), delete UPDATE-only idempotent tombstone, follow/unfollow/ghost successive, collision
+      Publish+Register -> false&DB-unchanged&conn-reusable, None_/empty TimePasses/TimePasses/Authenticate/RevokeToken/
+      Like/Unlike pins) :1664-1939; apply_delta :882-1058; main.rs :392->apply_delta + import swap (apply dropped from top
+      import, test modules keep local imports) + delta.clone() for patch (commented) + (F1b) comment corrected; ImplProofs
+      7-line (F2) pointer comment ONLY (A4); 65->71 tests (53 lib + 12 bin + 6 smoke 31.7s), gates fmt/build/clippy/agda x2
+      all rc 0. Note: neither step_ix nor patch_world appends to a parent's replies FIELD — the replies ROW is the DB encoding
+      of child.parent, load_world re-derives it; Follow/Like deltas guarded by *_ix probes so INSERTs never re-clash.
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
   commit each accepted task with co-author maki@qwen3.8-flash-next-coder.
 

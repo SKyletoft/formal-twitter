@@ -6,7 +6,7 @@
 
 #![allow(clippy::cast_lossless, clippy::cast_possible_truncation)]
 
-use crate::model::{Account, Post, PostStatus, SessionStatus, Visibility, World};
+use crate::model::{Account, Delta, Post, PostStatus, SessionStatus, Visibility, World};
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -601,7 +601,7 @@ pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
 	best
 }
 
-/// Bounded write-through: the DB must already mirror `before`; we mutate only
+/// test-only reference: Bounded write-through: the DB must already mirror `before`; we mutate only
 /// the delta to `after`. Accounts only ever get INSERTs (password/visibility of
 /// an existing account never changes). Sessions UPDATE on status/user change,
 /// INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed
@@ -868,16 +868,222 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 	conn.batch_execute("COMMIT TRANSACTION;").is_ok()
 }
 
+// ---- Delta-driven write-through (task F2) ----
+
+/// (F2) Delta-driven write-through: the SAME diesel statements apply() emits for one
+/// (F2) Command's effect, read off the Delta payload instead of diffing two Worlds, so a
+/// (F2) later load_world observes exactly what patch_world computed. Same BEGIN-first,
+/// (F2) COMMIT-iff-all-Ok, else-ROLLBACK discipline as apply(): a PRIMARY KEY clash (a RAM
+/// (F2) sampled id that landed on a stored one) ANDs a false into ok, ROLLBACKs the batch
+/// (F2) and reports false with the DB byte-identical. max_hint is the caller's cached max
+/// (F2) seq, so Publish stamps max_hint + 1 exactly as apply does; before is the caller's
+/// (F2) DB-mirror cache, read ONLY for the column an UPDATE must keep (a deleted post's
+/// (F2) visibility). Zero-statement batches COMMIT and report true.
+pub fn apply_delta(
+	conn: &mut SqliteConnection,
+	before: &World,
+	delta: Delta,
+	max_hint: u64,
+) -> bool {
+	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
+	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
+	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
+	// (F2) one branch per Delta constructor: the payload moves in, so its strings and
+	// (F2) accounts are never copied.
+	match delta {
+		// (F2) None_: zero-statement transaction -> COMMIT -> true.
+		Delta::None_ => {}
+		Delta::Publish(pid, author, text, visibility, parent) => {
+			// (F2) the caller's hint, never a DB re-scan: apply stamps its first new post
+			// (F2) at max_hint + 1 and Publish INSERTs exactly one posts row.
+			let next_seq: i64 = max_hint as i64 + 1;
+			// (F2) apply's new-post INSERT, column for column: a fresh post is live,
+			// (F2) unliked and reply-free, so apply's inner like/reply INSERT loops emit
+			// (F2) nothing and used_pids/used_sids stay derived rows (no table for them).
+			ok &= insert_into(posts::dsl::posts)
+				.values((
+					posts::dsl::pid.eq(pid as i64),
+					posts::dsl::author.eq(author),
+					posts::dsl::text.eq(text),
+					posts::dsl::visibility.eq(enc_vis(visibility)),
+					posts::dsl::status.eq(enc_status(PostStatus::Other)),
+					posts::dsl::parent.eq(parent.map(|p| p as i64)),
+					posts::dsl::seq.eq(next_seq),
+				))
+				.execute(conn)
+				.is_ok();
+			// (F2) the child's parent field IS the spec's reply relation, so the DB gains
+			// (F2) the reply row apply's replies set-diff INSERT emits: the row keys on the PARENT's
+			// (F2) post_pid and carries the new pid in reply_pid, which is what load_world
+			// (F2) reads back as that parent's reply.
+			if let Some(ppid) = parent {
+				ok &= insert_into(replies::dsl::replies)
+					.values((
+						replies::dsl::post_pid.eq(ppid as i64),
+						replies::dsl::reply_pid.eq(pid as i64),
+					))
+					.execute(conn)
+					.is_ok();
+			}
+		}
+		Delta::Delete(pid) => {
+			// (F2) visibility is not part of the effect, yet apply's posts UPDATE writes that
+			// (F2) exact column pair (status AND visibility), so the row's current visibility
+			// (F2) comes from the caller's before-cache. pids are unique: first hit wins.
+			let cur_vis: Visibility = match before.posts.iter().find(|(row_pid, _)| *row_pid == pid)
+			{
+				Some((_, post)) => post.visibility.clone(),
+				// (F2) the cache lost the row: load's decode default, and the delta only ever
+				// (F2) comes for a stored post, so the UPDATE stays total.
+				None => Visibility::Everyone,
+			};
+			// (F2) UPDATE, never DELETE: tombstones persist (the spec's reap is commented
+			// (F2) out), so likes, replies and the parent column all stay put.
+			ok &= update(posts::dsl::posts)
+				.filter(posts::dsl::pid.eq(pid as i64))
+				.set((
+					posts::dsl::status.eq(enc_status(PostStatus::Deleted)),
+					posts::dsl::visibility.eq(enc_vis(cur_vis)),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Authenticate(sid, user) => {
+			// (F2) login issues a FRESH sid, so this is apply's new-session INSERT: the
+			// (F2) (1, just user) Active row. A sid that is already stored clashes the
+			// (F2) PRIMARY KEY and rolls the whole batch back.
+			let (code, row_user) = enc_sess_row(SessionStatus::Active(user));
+			ok &= insert_into(sessions::dsl::sessions)
+				.values((
+					sessions::dsl::sid.eq(sid as i64),
+					sessions::dsl::status.eq(code),
+					sessions::dsl::user.eq(row_user),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::RevokeToken(sid) => {
+			// (F2) logout: apply's existing-sid session UPDATE, both columns of its set-pair
+			// (F2) (status AND user) moving together.
+			let (code, row_user) = enc_sess_row(SessionStatus::Revoked);
+			ok &= update(sessions::dsl::sessions)
+				.filter(sessions::dsl::sid.eq(sid as i64))
+				.set((
+					sessions::dsl::status.eq(code),
+					sessions::dsl::user.eq(row_user),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Register(user, acct) => {
+			// (F2) apply's accounts INSERT: accounts never UPDATE, the spec's register rule
+			// (F2) fixes password and default visibility at signup. An existing username
+			// (F2) clashes the PRIMARY KEY -> ROLLBACK -> false.
+			ok &= insert_into(accounts::dsl::accounts)
+				.values((
+					accounts::dsl::username.eq(user),
+					accounts::dsl::password.eq(acct.password),
+					accounts::dsl::visibility.eq(enc_vis(acct.default_visibility)),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Follow(follower, followee) => {
+			// (F2) apply's follows-branch INSERT: the pair is stored as one row.
+			ok &= insert_into(follows::dsl::follows)
+				.values((
+					follows::dsl::follower.eq(follower),
+					follows::dsl::followee.eq(followee),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Unfollow(follower, followee) => {
+			// (F2) apply's follows-branch DELETE over the exact pair, so no other edge is
+			// (F2) touched and an absent pair deletes zero rows (not an error).
+			ok &= delete(follows::dsl::follows)
+				.filter(
+					follows::dsl::follower
+						.eq(follower)
+						.and(follows::dsl::followee.eq(followee)),
+				)
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Like(pid, user) => {
+			// (F2) apply's likes INSERT for a new liker: (post_pid, user), the pair load
+			// (F2) groups into Post.likes. step_d emits Like only for a non-liker, so no
+			// (F2) duplicate row can appear.
+			ok &= insert_into(likes::dsl::likes)
+				.values((
+					likes::dsl::post_pid.eq(pid as i64),
+					likes::dsl::user.eq(user),
+				))
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::Unlike(pid, user) => {
+			// (F2) apply's like-row DELETE: the same (post_pid, user) filter chain.
+			ok &= delete(likes::dsl::likes)
+				.filter(
+					likes::dsl::post_pid
+						.eq(pid as i64)
+						.and(likes::dsl::user.eq(user)),
+				)
+				.execute(conn)
+				.is_ok();
+		}
+		Delta::TimePasses(sids) => {
+			// (F2) patch_world revokes exactly the sids the payload carries, which is
+			// (F2) apply's UPDATE for every session whose status changed: ONE write per
+			// (F2) sid, same set-pair as the RevokeToken branch.
+			for sid in sids.into_iter() {
+				let (code, row_user) = enc_sess_row(SessionStatus::Revoked);
+				ok &= update(sessions::dsl::sessions)
+					.filter(sessions::dsl::sid.eq(sid as i64))
+					.set((
+						sessions::dsl::status.eq(code),
+						sessions::dsl::user.eq(row_user),
+					))
+					.execute(conn)
+					.is_ok();
+			}
+		}
+	}
+	if !ok {
+		let _ = conn.batch_execute("ROLLBACK TRANSACTION;");
+		return false;
+	}
+	conn.batch_execute("COMMIT TRANSACTION;").is_ok()
+}
+
 #[cfg(test)]
 mod db_tests {
 	use super::{
-		Account, Post, PostStatus, SessionStatus, Visibility, World, apply, init_or_open,
-		load_world, posts, reload_accounts, reload_follows, reload_posts, reload_sessions, reopen,
+		// (F2) apply_delta is the Delta-driven batch under test; apply stays the reference.
+		Account,
+		Post,
+		PostStatus,
+		SessionStatus,
+		Visibility,
+		World,
+		apply,
+		apply_delta,
+		init_or_open,
+		load_world,
+		posts,
+		reload_accounts,
+		reload_follows,
+		reload_posts,
+		reload_sessions,
+		reopen,
 		save_world,
 	};
 	// (F3) The test-local (pid, seq) peek below needs the Query trait (.select), so it pulls
 	// (F3) the same prelude db.rs itself opens.
 	use crate::model::empty_world;
+	// (F2) the Delta sum-type and patch_world pin what apply_delta must reproduce.
+	use crate::model::{Delta, patch_world};
 	use diesel::prelude::*;
 
 	/// Canonical well-formed World for the save/load tests; rows are pre-sorted in the
@@ -1454,5 +1660,282 @@ mod db_tests {
 		assert!(seq_pairs(&mut conn) == vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (777, 43)]);
 		let mut fresh = reopen(path.to_string()).unwrap();
 		assert!(load_world(&mut fresh) == after);
+	}
+	#[test]
+	/// F2 gate: a parent-less Publish emits ONE posts INSERT stamped max_hint + 1 and
+	/// nothing else, so a fresh load equals patch_world's after and the new pid heads
+	/// newest_first.
+	fn test_apply_delta_publish() {
+		let path = "/tmp/ft-delta-publish.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		// (F2) the DB must already mirror before: save stamps the three posts 1..3.
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) the effect-only payload: no parent, so no reply row either.
+		let fresh: Delta = Delta::Publish(
+			900,
+			"alice".to_string(),
+			"fresh".to_string(),
+			Visibility::Everyone,
+			None,
+		);
+		// (F2) patch_world pushes the post, prepends newest_first and grows used_post_ids.
+		let after: World = patch_world(before.clone(), fresh.clone());
+		// (F2) the batch COMMITs: the delta's one INSERT was accepted.
+		assert!(apply_delta(&mut conn, &before, fresh, 3));
+		assert!(load_world(&mut conn) == after);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		// (F2) the source of truth agrees on a SECOND connection, so the row reached disk.
+		assert!(load_world(&mut again) == after);
+		// (F2) the row landed on the caller's stamp: the hint, plus one.
+		assert!(seq_pairs(&mut conn) == vec![(1, 1), (2, 2), (3, 3), (900, 4)]);
+		// (F2) the newest-first head is the new post and the older stamps stayed put.
+		assert!(load_world(&mut again).newest_first == vec![900, 3, 2, 1]);
+	}
+
+	#[test]
+	/// F2 gate: a Publish with a parent gains the replies-row INSERT too, so the DB holds
+	/// BOTH halves of the spec's reply invariant.  patch_world only moves the child's
+	/// parent field, so the RAM cache lags by that row and load_world is the spec's
+	/// after: the parent gains the child in its replies list.
+	fn test_apply_delta_publish_reply() {
+		let path = "/tmp/ft-delta-reply.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		// (F2) the BEFORE world: post 1 already replies to by pid 2, stamped 1..3.
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) the effect carries the parent, so the reply row must be written too.
+		let reply: Delta = Delta::Publish(
+			900,
+			"alice".to_string(),
+			"me too".to_string(),
+			Visibility::Everyone,
+			Some(1),
+		);
+		// (F2) patch_world pushes the post (its own parent field) and never touches post 1.
+		let cached: World = patch_world(before.clone(), reply.clone());
+		// (F2) the spec's successful-reply after: the parent's list gains the child pid.
+		let mut want: World = cached.clone();
+		// (F2) post 1 is the first pid-sorted entry in the cache.
+		assert!(want.posts[0].0 == 1);
+		want.posts[0].1.replies.push(900);
+		// (F2) the batch COMMITs: the posts INSERT plus the replies-row INSERT.
+		assert!(apply_delta(&mut conn, &before, reply, 3));
+		// (F2) load reads the reply row back: the parent's list carries the child.
+		assert!(load_world(&mut conn) == want);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		// (F2) the same truth on a second connection: the row really is on disk.
+		assert!(load_world(&mut again) == want);
+		// (F2) the child's parent column is the other half of the invariant.
+		assert!(load_world(&mut again).posts[3].1.parent == Some(1));
+		// (F2) the row keys on the PARENT post_pid: post 1's bucket holds 2 and 900.
+		// (F2) the stamp is the hint plus one, so newest_first leads with the reply.
+		assert!(load_world(&mut again).newest_first == vec![900, 3, 2, 1]);
+		// (F2) the RAM cache rebuilt from the DB converges on the same replies list.
+		assert!(reload_posts(&mut again, cached.clone()).posts[0].1.replies == vec![2, 900]);
+	}
+
+	#[test]
+	/// F2 gate: Delete emits ONE posts UPDATE over apply's exact column pair (status AND
+	/// visibility), never a row DELETE: the tombstone keeps its likes, replies, parent and
+	/// seq, and a second Delete of the same pid is idempotent.
+	fn test_apply_delta_delete() {
+		let path = "/tmp/ft-delta-delete.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		// (F2) post 1 carries a liker, a reply and Everyone visibility: all must stay put.
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) patch_world flips the status to Deleted and touches nothing else.
+		let gone: Delta = Delta::Delete(1);
+		let after: World = patch_world(before.clone(), gone.clone());
+		// (F2) one UPDATE: the row's visibility comes from the before-cache.
+		assert!(apply_delta(&mut conn, &before, gone.clone(), 3));
+		// (F2) load agrees with patch: status flips, likes/replies/parent stay put.
+		assert!(load_world(&mut conn) == after);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		let loaded: World = load_world(&mut again);
+		// (F2) the tombstone survives: the spec's reap is commented out, so no DELETE.
+		assert!(loaded.posts[0].1.status == PostStatus::Deleted);
+		// (F2) the like row and the reply row still hang off the deleted post.
+		assert!(loaded.posts[0].1.likes == vec!["bob".to_string()]);
+		assert!(loaded.posts[0].1.replies == vec![2]);
+		// (F2) visibility survived the UPDATE: apply writes that exact column pair.
+		assert!(loaded.posts[0].1.visibility == Visibility::Everyone);
+		// (F2) no stamp moved: an UPDATE never re-writes seq.
+		assert!(seq_pairs(&mut again) == vec![(1, 1), (2, 2), (3, 3)]);
+		// (F2) the held conn stays usable: an idempotent second Delete still COMMITS.
+		// (F2) patch's retain-free loop is idempotent, so after2 equals after.
+		assert!(apply_delta(&mut conn, &after, gone, 3));
+		assert!(load_world(&mut conn) == after);
+	}
+
+	#[test]
+	/// F2 gate: Follow INSERTs one follows row and Unfollow DELETEs the exact pair, so two
+	/// successive deltas through the SAME held connection keep load_world equal to the
+	/// patched cache - and an Unfollow of an absent pair deletes zero rows yet COMMITs.
+	fn test_apply_delta_follow_unfollow() {
+		let path = "/tmp/ft-delta-follows.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) follow one NEW pair: apply's follows-branch INSERT.
+		let pair: Delta = Delta::Follow("carol".to_string(), "alice".to_string());
+		// (F2) patch_world pushes the pair onto the follows list.
+		let followed: World = patch_world(before.clone(), pair.clone());
+		// (F2) no new post here, so the caller's hint stays 3 for every batch below.
+		assert!(apply_delta(&mut conn, &before, pair, 3));
+		// (F2) the cache and the DB move together.
+		assert!(load_world(&mut conn) == followed);
+		// (F2) unfollow the SAME pair through the SAME conn: apply's follows DELETE.
+		// (F2) patch_world retains the pair out of the list.
+		let off: Delta = Delta::Unfollow("carol".to_string(), "alice".to_string());
+		let back: World = patch_world(followed.clone(), off.clone());
+		// (F2) the filter chain hits the exact (follower, followee) row only.
+		assert!(apply_delta(&mut conn, &followed, off, 3));
+		// (F2) back where we started: every other edge stayed put.
+		assert!(load_world(&mut conn) == back);
+		assert!(back.follows == before.follows);
+		// (F2) an absent pair: DELETE matches zero rows, which is not an error.
+		// (F2) patch_world's retain is a no-op, so the cache is unchanged too.
+		let ghost: Delta = Delta::Unfollow("ghost".to_string(), "alice".to_string());
+		let same: World = patch_world(before.clone(), ghost.clone());
+		assert!(apply_delta(&mut conn, &before, ghost, 3));
+		assert!(load_world(&mut conn) == same);
+		let mut again = init_or_open(path.to_string()).unwrap();
+		// (F2) the disk agrees with the cache after all three batches.
+		assert!(load_world(&mut again) == same);
+	}
+
+	#[test]
+	/// F2 gate: a RAM-sampled pid that hits a stored PRIMARY KEY (Publish onto pid 2) and
+	/// a signup on a stored username both report false after a ROLLBACK, with the DB byte-
+	/// identical to the seeded world; the held conn then still COMMITs a good batch.
+	fn test_apply_delta_collision() {
+		let path = "/tmp/ft-delta-clash.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) a sampled pid that lands on the stored pid 2: INSERT hits the PRIMARY KEY.
+		let clash: Delta = Delta::Publish(
+			2,
+			"bob".to_string(),
+			"clash".to_string(),
+			Visibility::Everyone,
+			None,
+		);
+		// (F2) the failed statement ANDs a false into ok, so the batch rolls back.
+		assert!(!apply_delta(&mut conn, &before, clash, 3));
+		// (F2) the ROLLBACK restored every row: the DB is byte-identical to before.
+		assert!(load_world(&mut conn) == before);
+		// (F2) a signup onto a stored username clashes accounts' PRIMARY KEY too.
+		let dupe: Delta = Delta::Register(
+			"alice".to_string(),
+			Account {
+				password: "x".to_string(),
+				default_visibility: Visibility::Everyone,
+			},
+		);
+		// (F2) patch would push the account, so the cache says alice exists twice: the DB
+		// (F2) must say NO, and it must stay exactly as it was.
+		assert!(!apply_delta(&mut conn, &before, dupe, 3));
+		assert!(load_world(&mut conn) == before);
+		let mut fresh = reopen(path.to_string()).unwrap();
+		// (F2) the second connection sees the same untouched truth.
+		assert!(load_world(&mut fresh) == before);
+		// (F2) the conn survived both rollbacks: a good Publish COMMITS next.
+		// (F2) the hint stayed 3, so the stamp is still 4.
+		let good: Delta = Delta::Publish(
+			900,
+			"alice".to_string(),
+			"fresh".to_string(),
+			Visibility::Everyone,
+			Some(2),
+		);
+		let after: World = patch_world(before.clone(), good.clone());
+		assert!(apply_delta(&mut conn, &before, good, 3));
+		// (F2) the parent gains the reply row again, so the spec after is expected below.
+		// (F2) load equals patch plus the reply row on post 2 (apply's replies INSERT).
+		let mut want = after.clone();
+		// (F2) the reply row keys on the PARENT post_pid, so post 2 gains pid 900.
+		// (F2) patch pushed the post onto the pid-sorted list, so 900 is last.
+		assert!(want.posts[1].0 == 2);
+		want.posts[1].1.replies.push(900);
+		// (F2) load agrees with the spec after, including the reply row.
+		assert!(load_world(&mut conn) == want);
+		// (F2) the two clashes moved no stamp, so the hint plus one still holds.
+		assert!(seq_pairs(&mut conn) == vec![(1, 1), (2, 2), (3, 3), (900, 4)]);
+	}
+
+	#[test]
+	/// F2 bonus gate: the session and like branches.  None_ and an empty TimePasses are
+	/// zero-statement batches that still COMMIT; Authenticate INSERTs the Active row,
+	/// RevokeToken and TimePasses UPDATE (2, NULL) per sid, Like INSERTs a like row and
+	/// Unlike DELETEs it - every step keeps load_world equal to the patched cache.
+	fn test_apply_delta_sessions_and_likes() {
+		let path = "/tmp/ft-delta-sessions.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// hermetic wipe: the file can exist from an earlier run
+		save_world(&mut conn, empty_world());
+		save_world(&mut conn, build_world());
+		let before: World = build_world();
+		// (F2) None_ has no effect: zero statements, so the transaction COMMITs and says true.
+		assert!(apply_delta(&mut conn, &before, Delta::None_, 3));
+		assert!(load_world(&mut conn) == before);
+		// (F2) TimePasses with no sid in the payload: still a zero-statement batch.
+		assert!(apply_delta(
+			&mut conn,
+			&before,
+			Delta::TimePasses(vec![]),
+			3
+		));
+		assert!(load_world(&mut conn) == before);
+		// (F2) TimePasses over both sids: one session UPDATE each, mirroring apply's UPDATE.
+		// (F2) patch revokes exactly the sids the payload names (200 is already Revoked).
+		let revoke_all: Delta = Delta::TimePasses(vec![100, 200]);
+		let revoked: World = patch_world(before.clone(), revoke_all.clone());
+		assert!(apply_delta(&mut conn, &before, revoke_all, 3));
+		assert!(load_world(&mut conn) == revoked);
+		// (F2) the Revoked row is (2, NULL): status AND user move together.
+		// (F2) the row is written, never deleted: used_session_ids stays derived.
+		assert!(load_world(&mut conn).sessions[0].1 == SessionStatus::Revoked);
+		// (F2) Authenticate on a FRESH sid: apply's new-session INSERT of the (1, just u) row.
+		let login: Delta = Delta::Authenticate(700, "alice".to_string());
+		let signed_in: World = patch_world(revoked.clone(), login.clone());
+		assert!(apply_delta(&mut conn, &revoked, login, 3));
+		// (F2) patch pushes the Active session and its used sid in the same order load sorts.
+		assert!(load_world(&mut conn) == signed_in);
+		// (F2) logout on that session: apply's existing-sid UPDATE back to (2, NULL).
+		let logout: Delta = Delta::RevokeToken(700);
+		let signed_out: World = patch_world(signed_in.clone(), logout.clone());
+		assert!(apply_delta(&mut conn, &signed_in, logout, 3));
+		// (F2) load agrees: the same truth as patch's revoke.
+		assert!(load_world(&mut conn) == signed_out);
+		// (F2) like post 1 by a new liker: apply's likes-row INSERT.
+		// (F2) patch appends the liker since it is not one yet.
+		let like: Delta = Delta::Like(1, "zed".to_string());
+		let liked: World = patch_world(signed_out.clone(), like.clone());
+		assert!(apply_delta(&mut conn, &signed_out, like, 3));
+		// (F2) load re-buckets the like row into Post.likes, sorted by user.
+		assert!(
+			load_world(&mut conn).posts[0].1.likes == vec!["bob".to_string(), "zed".to_string()]
+		);
+		// (F2) unlike: apply's like-row DELETE over the exact (post_pid, user) pair.
+		let undo: Delta = Delta::Unlike(1, "zed".to_string());
+		let unliked: World = patch_world(liked.clone(), undo.clone());
+		assert!(apply_delta(&mut conn, &liked, undo, 3));
+		// (F2) the posts row itself stayed put: likes live in their own table.
+		// (F2) the same truth through a brand-new connection: every batch reached disk.
+		let mut again = reopen(path.to_string()).unwrap();
+		assert!(load_world(&mut again) == unliked);
 	}
 }

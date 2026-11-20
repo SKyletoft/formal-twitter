@@ -11,8 +11,16 @@
 // (F9) the held-connection field in Server names this type directly (same type db.rs establishes).
 use diesel::SqliteConnection;
 use formal_twitter::db::{
-	apply, db_max_seq, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
-	reload_sessions, reopen,
+	// (F2) apply_delta: the Delta-driven write-through serve_command now commits through.
+	apply_delta,
+	db_max_seq,
+	init_or_open,
+	load_world,
+	reload_accounts,
+	reload_follows,
+	reload_posts,
+	reload_sessions,
+	reopen,
 };
 use formal_twitter::model::{
 	Command, Delta, Result, World, WorldIndex, build_index, empty_world, patch_world, step_d,
@@ -342,8 +350,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
 	// (F4b) evaluate through the held side-index: zero index rebuilds per request.
 	// (F1b) effect-only step: step_d returns (Result, Delta) and patch_world rebuilds the after
-	// World, so no World is cloned inside the model; the before clone below stays because apply()
-	// and the failure arms still need it (the single-copy move-swap is F2's job).
+	// World, so no World is cloned inside the model; the before clone below stays because step_d,
+	// patch_world, apply_delta and the failure arms still need it (the move-swap is future work).
 	let stepped: (Result, Delta) = step_d(&before, &locked.index, command, fresh_pid, fresh_sid);
 	let result: Result = stepped.0;
 	let delta: Delta = stepped.1;
@@ -353,7 +361,9 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 		_ => 0,
 	};
 	// one World copy per request: before.clone() plus the Delta payload.
-	let after: World = patch_world(before.clone(), delta);
+	// (F2) delta copied: apply_delta takes the payload by value below, so patch_world keeps
+	// (F2) its own copy.
+	let after: World = patch_world(before.clone(), delta.clone());
 	// COMMIT FIRST: (F9) the connection HELD in Server answers every request - no reopen and
 	// no db_path String copy on the happy path.  RAM-sampled ids can collide; apply PK failure
 	// rolls back and reports false.
@@ -389,7 +399,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 		// (F3) The stamp hint is the Server's cached max_seq: apply() never re-scans the
 		// (F3) posts table for it.
 		{
-			if apply(&mut conn, &before, &after, locked.max_seq) {
+			// (F2) delta-driven commit: one batch per Command effect, no two-World diff.
+			if apply_delta(&mut conn, &before, delta, locked.max_seq) {
 				// (F3) Committed: apply() stamped exactly new_posts new posts at max_seq + 1
 				// (F3) .. max_seq + k, so the cache hint advances by k and stays exact for the
 				// (F3) next request (the failure arms above leave it put).

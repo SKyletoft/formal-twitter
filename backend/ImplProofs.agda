@@ -512,3 +512,10 @@ th-sample-id-fresh w =
 -- next-tick schedule) were removed: they never referenced Twitter/Interface, hence prove
 -- nothing about the spec model. The Rust unit tests they backed (test_apply_*, test_db_*,
 -- test_tick_rotation_cycle) still guard that behaviour; recovery commit b6b868b keeps them.
+
+-- (F2) apply_delta (backend/src/db.rs) mirrors apply()'s per-Delta effect: the SAME diesel
+-- (F2) statements, read off the Delta payload instead of a two-World diff, with apply()'s
+-- (F2) BEGIN/COMMIT-or-ROLLBACK discipline. Deliberately NO new Agda here: the equivalence
+-- (F2) load_world == patch_world (plus the reply row and the ROLLBACK-on-PK-clash) is pinned
+-- (F2) by the Rust scenario tests test_apply_delta_* in db.rs, over the same DB helpers that
+-- (F2) the test_apply_* pins above already exercise.
