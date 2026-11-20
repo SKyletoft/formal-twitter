@@ -15,7 +15,7 @@ use formal_twitter::db::{
 	reload_sessions, reopen,
 };
 use formal_twitter::model::{
-	Command, Result, World, WorldIndex, build_index, empty_world, step_ix,
+	Command, Delta, Result, World, WorldIndex, build_index, empty_world, patch_world, step_d,
 };
 use formal_twitter::wire::{
 	ApiResponse, WireError, WireResponse, parse_action, respond, to_command,
@@ -219,11 +219,13 @@ pub fn next_tick(t: u64) -> u64 {
 	(t + 1) % 4
 }
 
+/// test-only: superseded at the serve_command call site by the delta-derived count.
 /// (F3) How many posts `after` introduces over `before`: exactly the number of post INSERTs
 /// (F3) apply() stamps, so Server.max_seq advances by this after a COMMITTED batch (apply()
 /// (F3) stamped them sequentially at max_seq + 1 .. max_seq + that count).  World keeps both
 /// (F3) post vectors pid-sorted - load_world sorts them and step preserves that order - so a
 /// (F3) two-finger merge counts the extra pids with zero allocation and no hash set.
+#[cfg(test)]
 fn new_post_count(before: &World, after: &World) -> u64 {
 	let nb: usize = before.posts.len();
 	let na: usize = after.posts.len();
@@ -339,9 +341,19 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	// world is read by reference, so neither per-request World clone survives.
 	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
 	// (F4b) evaluate through the held side-index: zero index rebuilds per request.
-	let stepped: (World, Result) = step_ix(&before, &locked.index, command, fresh_pid, fresh_sid);
-	let after: World = stepped.0;
-	let result: Result = stepped.1;
+	// (F1b) effect-only step: step_d returns (Result, Delta) and patch_world rebuilds the after
+	// World, so no World is cloned inside the model; the before clone below stays because apply()
+	// and the failure arms still need it (the single-copy move-swap is F2's job).
+	let stepped: (Result, Delta) = step_d(&before, &locked.index, command, fresh_pid, fresh_sid);
+	let result: Result = stepped.0;
+	let delta: Delta = stepped.1;
+	// (F1b) the new-post count is delta-derived: Publish is the only branch that INSERTs one row.
+	let new_posts: u64 = match delta {
+		Delta::Publish(..) => 1,
+		_ => 0,
+	};
+	// one World copy per request: before.clone() plus the Delta payload.
+	let after: World = patch_world(before.clone(), delta);
 	// COMMIT FIRST: (F9) the connection HELD in Server answers every request - no reopen and
 	// no db_path String copy on the happy path.  RAM-sampled ids can collide; apply PK failure
 	// rolls back and reports false.
@@ -378,10 +390,10 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 		// (F3) posts table for it.
 		{
 			if apply(&mut conn, &before, &after, locked.max_seq) {
-				// (F3) Committed: apply() stamped exactly new_post_count new posts at max_seq + 1
+				// (F3) Committed: apply() stamped exactly new_posts new posts at max_seq + 1
 				// (F3) .. max_seq + k, so the cache hint advances by k and stays exact for the
 				// (F3) next request (the failure arms above leave it put).
-				locked.max_seq += new_post_count(&before, &after);
+				locked.max_seq += new_posts;
 				// Committed: advance the cache AND rotate ONE section through the SAME held
 				// connection (F9: this connection was established at launch, not per request);
 				// after the commit so the fresh writes stay visible.  after is moved, so the
@@ -1121,7 +1133,7 @@ fn test_alias_query_param_parses() {
 #[test]
 fn test_serve_index_consistency() {
 	// DB/model handles scoped to the test so the non-test build keeps zero unused imports.
-	use formal_twitter::model::{account_at_ix, account_at_ref, step};
+	use formal_twitter::model::{account_at_ix, account_at_ref, step, step_ix};
 	// Pure-RAM fixture: the index is a World-side structure, no DB view involved.
 	let w: World = empty_world();
 	// (launch build, exactly what rocket() stores next to the world cache)
@@ -1147,4 +1159,56 @@ fn test_serve_index_consistency() {
 	let rebuilt: WorldIndex = build_index(&stepped);
 	assert!(account_at_ix(&stepped, &rebuilt, "u") == account_at_ref(&stepped, "u").cloned());
 	assert!(account_at_ix(&stepped, &rebuilt, "zz") == account_at_ref(&stepped, "zz").cloned());
+}
+
+/// F1b pin: the serve_command path (step_d + patch_world + delta-derived k) equals the scan
+/// reference step, and the Publish Delta is the only INSERT, so k matches new_post_count.
+#[test]
+fn test_delta_publish_equiv() {
+	// the scan-path reference plus the literal-world constructors, scoped to the test build.
+	// (the top-level use-line keeps step out of the non-test build)
+	use formal_twitter::model::{Account, SessionStatus, Visibility, step};
+	// alice owns the account so the published post's visibility follows her default.
+	let w: World = World {
+		accounts: vec![(
+			"alice".to_string(),
+			Account {
+				password: "p".to_string(),
+				default_visibility: Visibility::FollowersOnly,
+			},
+		)],
+		// session 1 is alice's and active, so Publish(1, ..) is admitted.
+		sessions: vec![(1, SessionStatus::Active("alice".to_string()))],
+		posts: vec![],
+		follows: vec![],
+		newest_first: vec![],
+		used_post_ids: vec![],
+		// 1 is already taken, so the sampler's fresh sid 7 stays distinct.
+		used_session_ids: vec![1],
+	};
+	let cmd: Command = Command::Publish(1, "hi".to_string(), None);
+	// reference: the scan path, same fresh ids 42/7 as serve_command samples per request.
+	let (want, want_res): (World, Result) = step(&w, cmd.clone(), 42, 7);
+	// serve_command's own path: effect through the built index, then patch.
+	let (res, delta): (Result, Delta) = step_d(&w, &build_index(&w), cmd.clone(), 42, 7);
+	// delta cloned for the patch so the test keeps ownership of the effect for its own pins.
+	let after: World = patch_world(w.clone(), delta.clone());
+	assert!(res == Result::CreatedPost(42) && res == want_res && after == want);
+	// the Delta is Publish outright: it carries the fresh pid, author, text and account default.
+	assert!(
+		delta
+			== Delta::Publish(
+				42,
+				"alice".to_string(),
+				"hi".to_string(),
+				Visibility::FollowersOnly,
+				None,
+			)
+	);
+	// the delta-derived k equals the two-finger counter and both say one new post.
+	let new_posts: u64 = match delta {
+		Delta::Publish(..) => 1,
+		_ => 0,
+	};
+	assert!(new_posts == 1 && new_posts == new_post_count(&w, &after));
 }

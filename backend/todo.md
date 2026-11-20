@@ -111,9 +111,12 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       TimePasses(Vec sids)) at :144 + step_d(&w,&ix,..) -> (Result,Delta) :968 (guards byte-mirror step_ix, zero World clones)
       + patch_world(w: World, d) -> World :1131 (owned in-place, push/insert(0,)/retain/status/ids ops byte-match step_ix);
       qc prop_delta_equiv (:2006: result equal AND patch_world(w.clone(),d) == step-after, well-formed guard) + test_delta_register
-      + test_delta_like; step/step_ix byte-identical refs; tests 61->64 (47 lib + 11 bin + 6 smoke); gates fmt/build/clippy
-      silent/test/agda x2 rc 0; ImplProofs +3-line pointer only.
-- [ ] F1b (impl subagent): main.rs serve_command uses step_d(&before, &locked.index,..) then after = patch_world(&before, delta);
+- [x] F1b (impl subagent, ACCEPTED, THIS COMMIT): serve_command evaluates step_d(&before, &locked.index, ..) -> (Result,Delta),
+      after = patch_world(before.clone(), delta) (before clone kept + note: true single-copy move-swap is F2's job);
+      max_seq bump delta-derived k (Delta::Publish(..) -> 1 else 0; new_post_count kept #[cfg(test)] test-only);
+      imports: step_ix dropped (test-local use), Delta/patch_world/step_d added; +test_delta_publish_equiv (step_d/patch
+      == step on literal world, k == new_post_count == 1); 64->65 tests (47 lib + 12 bin + 6 smoke); apply signature
+      UNCHANGED (F2 owns delta-driven body); gates all rc 0, Agda untouched.
       before clone KEPT for apply(&before,&after,hint) + failure arms (single-copy move-swap deferred; F2 owns apply);
       new_post_count replaced by delta-derived k for max_seq bump (old fn kept test-only doc); +one bin pin test; smoke green.
       == step via built index + reload-site round-trip hit/miss); 60->61 tests (44 lib + 11 bin + 6 smoke); gates
