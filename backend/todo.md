@@ -104,8 +104,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       wrapper (signature kept, main.rs untouched); timelines: *_timeline_ref pure-Vec refs (test-only QuickCheck refs),
       public names delegate to _ix twins via fresh index; borrow helpers active_user_bx/account_at_bx/post_at_bx +
       indexed-borrow can_read_ix/is_post_public_ix (zero per-probe clones); qc prop_timeline_{global,personal,public}_ix
-      + prop_step_ix_equiv + test_timeline_index_scale (800 posts, n=2000 oversize); tests 55->60 (44 lib + 10 bin +
-      6 smoke); gates fmt/build/clippy -D warnings silent/test/agda x2 rc 0; ImplProofs +3-line pointer (A4 policy).
+- [x] F4b (impl subagent, ACCEPTED, THIS COMMIT): Server +index: WorldIndex (launch build_index(&world), rebuilt
+      after ALL THREE reload arms in serve_command: reopen-Err, committed tick-rotate, rollback resync); serve_command
+      evaluates step_ix(&before, &locked.index, ..) — zero rebuilds per request; +test_serve_index_consistency (step_ix
+      == step via built index + reload-site round-trip hit/miss); 60->61 tests (44 lib + 11 bin + 6 smoke); gates
+      fmt/build/clippy -D warnings silent/test/agda x2 rc 0; main.rs only touched.
 - [ ] F4b (impl subagent): main.rs Server +index field (built at launch from loaded World), rebuilt after every
       reload assignment, serve_command calls step_ix(&before, &locked.index, ..); gates incl. smoke suite.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.

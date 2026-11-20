@@ -14,7 +14,9 @@ use formal_twitter::db::{
 	apply, db_max_seq, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
 	reload_sessions, reopen,
 };
-use formal_twitter::model::{Command, Result, World, empty_world, step};
+use formal_twitter::model::{
+	Command, Result, World, WorldIndex, build_index, empty_world, step_ix,
+};
 use formal_twitter::wire::{
 	ApiResponse, WireError, WireResponse, parse_action, respond, to_command,
 };
@@ -200,6 +202,9 @@ pub struct Server {
 	/// (F9) server-held SQLite connection (None only if launch could not open the DB at all;
 	/// failure arms then reopen on demand).
 	pub conn: Option<SqliteConnection>,
+	/// Side-index over the world; rebuilt only at reload sites (launch and the three reload arms),
+	/// so step_ix probes are O(1) per request.
+	pub index: WorldIndex,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -333,7 +338,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	// The spec fresh-id sampler, run under the lock: ONE 16-byte read yields both ids and the
 	// world is read by reference, so neither per-request World clone survives.
 	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
-	let stepped: (World, Result) = step(&before, command, fresh_pid, fresh_sid);
+	// (F4b) evaluate through the held side-index: zero index rebuilds per request.
+	let stepped: (World, Result) = step_ix(&before, &locked.index, command, fresh_pid, fresh_sid);
 	let after: World = stepped.0;
 	let result: Result = stepped.1;
 	// COMMIT FIRST: (F9) the connection HELD in Server answers every request - no reopen and
@@ -357,6 +363,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 			Err(_) => false,
 			Ok(mut fresh_conn) => {
 				locked.world = reload_all_sections(&mut fresh_conn, before);
+				// (F4b) reload site: re-sync the side-index with the reassigned world.
+				locked.index = build_index(&locked.world);
 				// (F9) store the fresh connection: reopened once, reused from then on.
 				locked.conn = Some(fresh_conn);
 				// D1: nothing committed, so the World stays unadvanced: 403 below.
@@ -385,6 +393,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 					_ => reload_posts(&mut conn, after),
 				};
 				locked.world = reloaded;
+				// (F4b) reload site: re-sync the side-index with the rotated cache.
+				locked.index = build_index(&locked.world);
 				locked.tick = next_tick(locked.tick);
 				// (F9) keep the held connection: it committed, stayed open and consistent.
 				locked.conn = Some(conn);
@@ -397,6 +407,8 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 				// (F3) max_seq stays as it is: the ROLLBACK restored every stamp, so OUR writer
 				// (F3) changed nothing in the DB and the hint is still exact.
 				locked.world = reload_all_sections(&mut conn, before);
+				// (F4b) reload site: re-sync the side-index after the rolled-back re-sync.
+				locked.index = build_index(&locked.world);
 				// (F9) keep the held connection: the rollback left it open and consistent.
 				locked.conn = Some(conn);
 				// D1: nothing committed, so the World stays unadvanced: 403 below.
@@ -639,6 +651,8 @@ fn rocket() -> _ {
 	// Mount every endpoint at the path the spec fixes.
 	rocket::build()
 		.manage(Mutex::new(Server {
+			// (F4b) the one launch rebuild; requests only probe the held index.
+			index: build_index(&world),
 			world,
 			db_path: path,
 			tick: 0,
@@ -1100,4 +1114,37 @@ fn test_alias_query_param_parses() {
 			query_param("token=&id=42", "id".to_string())
 		) == "42\r\n"
 	);
+}
+
+/// F4b pin: the held side-index is interchangeable with the Vec scans - step_ix over a built
+/// index equals step, and a reload-site rebuild round-trips the account lookups.
+#[test]
+fn test_serve_index_consistency() {
+	// DB/model handles scoped to the test so the non-test build keeps zero unused imports.
+	use formal_twitter::model::{account_at_ix, account_at_ref, step};
+	// Pure-RAM fixture: the index is a World-side structure, no DB view involved.
+	let w: World = empty_world();
+	// (launch build, exactly what rocket() stores next to the world cache)
+	let stepped_ix: (World, Result) = step_ix(
+		&w,
+		&build_index(&w),
+		Command::Register("u".to_string(), "p".to_string()),
+		1,
+		2,
+	);
+	// Same args through the scan path: byte-identical verdict, the index adds no drift.
+	assert!(
+		stepped_ix
+			== step(
+				&w,
+				Command::Register("u".to_string(), "p".to_string()),
+				1,
+				2
+			)
+	);
+	// The reload-site rebuild round-trips: hits AND misses agree with the reference scan.
+	let stepped: World = stepped_ix.0;
+	let rebuilt: WorldIndex = build_index(&stepped);
+	assert!(account_at_ix(&stepped, &rebuilt, "u") == account_at_ref(&stepped, "u").cloned());
+	assert!(account_at_ix(&stepped, &rebuilt, "zz") == account_at_ref(&stepped, "zz").cloned());
 }
