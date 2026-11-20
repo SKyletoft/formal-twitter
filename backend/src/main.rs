@@ -34,7 +34,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Two-digit decimal, zero-padded (as the IMF-date needs dd, HH, mm, ss).
 fn two(v: u64) -> String {
 	if v < 10 {
-		"0".to_string() + &v.to_string()
+		// same bytes: build in a buffer instead of String + String concat
+		let mut padded: String = "0".to_string();
+		(padded).push_str(&v.to_string());
+		padded
 	} else {
 		v.to_string()
 	}
@@ -380,33 +383,43 @@ fn private_timeline(state: &State<Mutex<Server>>, body: Capped<String>) -> Serve
 /// parameter is missing. A missing or malformed number then fails parse_action exactly like
 /// the POST twin's body: BadNumber or MissingLine, which render as the same 403 shape.
 pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
-	let head: String = match token {
+	let mut head: String = match token {
 		None => "".to_string(),
-		Some(text) => text + "\r\n",
+		Some(mut text) => {
+			// text + "\r\n" -> push_str onto the moved token text
+			text.push_str("\r\n");
+			text
+		}
 	};
 	let tail: String = match value {
 		None => "".to_string(),
 		Some(text) => text,
 	};
-	head + tail.as_str() + "\r\n"
+	// head + tail + "\r\n" -> push into head, same bytes
+	(head).push_str(&tail);
+	(head).push_str("\r\n");
+	head
 }
 
 /// The raw value of one query parameter on the GET aliases: absent, bare (no '=') or
 /// empty all mean None (the legacy app.js always sends token=, empty when anonymous); the
 /// first pair with the name wins and later duplicates are ignored.
 pub fn query_param(query: &str, name: String) -> Option<String> {
-	let hits: Vec<String> = query
-		.split('&')
-		.filter(|pair| match pair.find("=") {
-			None => *pair == name.as_str(),
-			Some(at) => (*pair)[..at] == *name.as_str(),
-		})
-		.map(|pair| match pair.find("=") {
-			None => "".to_string(),
-			Some(at) => pair[(at + 1)..].to_string(),
-		})
-		.collect();
-	match hits.first() {
+	// find_map stops at the first pair whose name matches, so no Vec of all hits is
+	// built; the verdicts stay the same: a later duplicate never decides the answer
+	let hit: Option<String> = (query.split('&')).find_map(|pair| match pair.find("=") {
+		// a bare pair matching the name still counts as a hit, with empty value
+		None => match *pair == (*name.as_str()) {
+			true => Some("".to_string()),
+			false => None,
+		},
+		// the name is the prefix before the first '=', even when '=' is in the value
+		Some(at) => match (*pair)[..at] == *name.as_str() {
+			true => Some(pair[(at + 1)..].to_string()),
+			false => None,
+		},
+	});
+	match hit {
 		None => None,
 		Some(value) => match value.is_empty() {
 			true => None,
@@ -423,13 +436,15 @@ pub fn serve_alias(
 	path: String,
 	value_name: String,
 ) -> Served {
-	let query: String = match origin.query() {
-		None => "".to_string(),
-		Some(part) => part.as_str().to_string(),
+	// no copy of the query: a &str view of the Origin's query part
+	let query: &str = match origin.query() {
+		None => "",
+		// (same bytes; the view borrows from the Origin, which lives past here)
+		Some(part) => part.as_str(),
 	};
 	let body: String = alias_body(
-		query_param(query.as_str(), "token".to_string()),
-		query_param(query.as_str(), value_name),
+		query_param(query, "token".to_string()),
+		query_param(query, value_name),
 	);
 	let command: Command = match parse_action(path.as_str(), body.as_bytes()) {
 		Err(e) => {

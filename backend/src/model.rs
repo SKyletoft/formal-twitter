@@ -94,14 +94,10 @@ pub enum Result {
 }
 
 /// Spec helper: list membership (Agda's ∈).
-pub fn member<T: PartialEq>(xs: &[T], x: T) -> bool {
-	for y in xs {
-		if *y == x {
-			return true;
-		}
-	}
-	// not a member
-	false
+pub fn member<T: Eq>(xs: &[T], x: T) -> bool {
+	// membership via std's contains on the borrowed slice: same first-hit semantics
+	// (the bound widens Eq, which every use-site type satisfies)
+	(xs).contains(&x)
 }
 
 /// Spec helper: no-duplicates on a list.
@@ -126,11 +122,8 @@ pub fn key_unique<K: PartialEq + Clone, V>(xs: &[(K, V)]) -> bool {
 
 /// List length as u64 without lossy casts.
 pub fn len_u64<T>(xs: &[T]) -> u64 {
-	let mut n: u64 = 0;
-	for _ in xs {
-		n += 1;
-	}
-	n
+	// the Vec length widened; same value for every in-range length
+	xs.len() as u64
 }
 
 /// World.account-at; absence means nothing.
@@ -296,15 +289,9 @@ pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
 
 /// Data.List.take on Vec.
 pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
-	let mut res = vec![];
-	let mut count: u64 = 0;
-	for x in xs.iter() {
-		if count < n {
-			res.push(*x);
-			count += 1;
-		}
-	}
-	res
+	// take stops at the iterator end, so n beyond the length yields all, as before
+	// (usize is 64-bit here, so the n cast is exact)
+	(xs.iter()).take(n as usize).copied().collect()
 }
 
 /// get-personal-timeline: newest-first, keep readable posts by followed authors.
@@ -629,11 +616,8 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 		Command::Unfollow(sid, followee) => {
 			let user = active_user(w, sid).unwrap();
 			let mut nw = w.clone();
-			nw.follows = (nw.follows)
-				.iter()
-				.filter(|(f, g)| *f != user || *g != followee)
-				.map(|(f, g)| (f.clone(), g.clone()))
-				.collect();
+			// (in-place retain drops the exact pair, no rebuild, no clones)
+			nw.follows.retain(|(f, g)| *f != user || *g != followee);
 			(nw, Result::Success)
 		}
 		Command::Like(sid, pid) => {
@@ -643,8 +627,13 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			let user = active_user(w, sid).unwrap();
 			let mut nw = w.clone();
 			for e in &mut nw.posts {
-				if e.0 == pid && !member(&e.1.likes, user.clone()) {
-					e.1.likes.push(user.clone());
+				// (only posts with this pid react; others keep their like lists untouched)
+				if e.0 == pid {
+					// already liked: no clone and no duplicate, spec-set idempotence
+					// (contains borrows the list: no element copied for the check)
+					if !(e.1.likes).contains(&user) {
+						(e.1.likes).push(user.clone());
+					}
 				}
 			}
 			(nw, Result::Success)
@@ -657,7 +646,8 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			let mut nw = w.clone();
 			for e in &mut nw.posts {
 				if e.0 == pid {
-					e.1.likes = e.1.likes.iter().filter(|x| **x != user).cloned().collect();
+					// (in-place retain drops this user's likes; no clone/rebuild)
+					(e.1.likes).retain(|x| *x != user);
 				}
 			}
 			(nw, Result::Success)

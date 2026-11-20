@@ -230,7 +230,9 @@ pub fn escape_json(s: String) -> String {
 	let hex: [char; 16] = [
 		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
 	];
-	let mut out = String::new();
+	// preallocate: escapes grow the string, so reserve for at least the input
+	let mut out: String = String::new();
+	out.reserve(s.len() + 8);
 	for c in s.chars() {
 		if c == '"' {
 			out.push('\\');
@@ -264,12 +266,17 @@ pub fn escape_json(s: String) -> String {
 
 /// show-tweets of spec/Interface.agda: ids joined by a comma and a space.
 fn show_tweets(xs: Vec<u64>) -> String {
+	// append into one buffer: no full-string copy per element
 	let mut out: String = String::new();
+	// ids are at most 20 digits; size the buffer for the whole join
+	out.reserve(xs.len() << 5);
 	for (i, x) in xs.iter().enumerate() {
 		if i != 0 {
-			out += ", ";
+			// separator between ids
+			out.push_str(", ");
 		}
-		out += &x.to_string();
+		// push_str consumes the temporary instead of copying out
+		(out).push_str(&x.to_string());
 	}
 	out
 }

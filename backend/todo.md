@@ -70,6 +70,25 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 
 ## In progress
 - [ ] TDC (coordinator): Clean up todo list
+- [x] Task H1 (impl, HYGIENE/PERF batch, ACCEPTED committed below): behavior-preserving hygiene —
+  wire.rs: show_tweets += -> push_str/append (kill quadratic copy), escape_json reserve capacity;
+  main.rs: alias_body += -> append/push_str, serve_alias query &str view (drop copy),
+  query_param collect+first -> find_map (byte-identical verdicts incl. '=' in value + empty->None),
+  two() append style (year loop KEPT); model.rs: member -> any, len_u64 -> len as u64, take_n -> take,
+  Unfollow/Like/Unlike: re-collect+re-clone -> in-place retain; Like-check user.clone -> borrow
+  (clone only on push). DO NOT touch timeline early-stop/hoisting (TC), apply(), enc_sess_row_ref, sample_id.
+  Gates: fmt/build/test(49 = 34 lib + 9 bin + 6 smoke)/clippy -D warnings/agda ImplProofs+ImplWire all 0.
+   - H1 (subagent, ACCEPTED, coordinator reran fmt/build/clippy/test 49/agda x2 all 0, committed below): hygiene/perf batch —
+     wire.rs:273 show_tweets out += -> out.reserve + push_str (String::append REMOVED in toolchain, push_str used);
+     wire.rs:~229 escape_json String::new + reserve(s.len()+8);
+     main.rs:383 alias_body Some(mut text) push_str, head push_str (mut + deref fixes);
+     main.rs:397 serve_alias query: &str view (no String copy, borrows Origin);
+     main.rs:403 query_param collect+first -> find_map (byte-identical: first-name-wins, '=' in value, empty->None short-circuit);
+     main.rs:35 two() buffer (let mut padded push_str; http_date year loop SKIPPED — semantics-preserving micro-change not obvious, left kept);
+     model.rs:97 member -> slice contains (bound widened T: Eq; clippy manual_contains demanded it; any() was flagged);
+     model.rs:123 len_u64 -> xs.len() as u64; model.rs:290 take_n -> take(n as usize).copied().collect() (usize==64bit, exact);
+     model.rs Unfollow -> nw.follows.retain; Like -> contains-borrow + push(clone); Unlike -> (e.1.likes).retain;
+     GATES: grep 'out += ' 0; cargo fmt --check 0; cargo build 0; cargo test 49 = 34+9+6 all ok; clippy -D warnings 0; agda ImplProofs 0; agda ImplWire 0.
 - [x] TA (ACCEPTED, this commit; impl subagent general/medium): perf main.rs — random_u64 -> random_block() [u8;16] (ONE /dev/urandom read/req), NEW pure sample_id_from(bytes,used) core, sample_id(&World) -> (pid,sid) with ZERO World clones (was 2/req; used_pid/used_sid imports dropped, membership==World fields verified model.rs:177/182); mod qc NEW: prop_pid_fresh/prop_sid_fresh #[quickcheck] + boundaries/halves/determinism tests; ImplProofs NEW th-sample-id-fresh — ∀w: new-sid/new-pid id component ∉ used lists over SPEC definitions (Proofs uses the conjunct only inline, :828/:997). GATES: cargo test 42 (37+new) green, clippy --all-targets -D warnings clean, fmt no-op, agda ImplWire+ImplProofs exit 0.
       TA RESULTS (subagent, no commit): main.rs:128 random_u64 -> random_block() -> [u8;16] (ONE /dev/urandom read per request, 2 BE u64s);
       main.rs:151 NEW pub sample_id_from(bytes: &[u8], used: &[u64]) -> (u64, bool) — pure decision (first 8 bytes, r != 0 && !used.contains(&r), total on short blocks);
