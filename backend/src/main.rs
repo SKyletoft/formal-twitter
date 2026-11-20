@@ -8,6 +8,8 @@
 //! (`sample_id`).  `to_http` lifts a rendered `WireResponse` into a rocket
 //! `Response`, headers in the order the spec fixes.  The routes, state and
 //! launch come in part 2; nothing here talks to a server or to the DB.
+// (F9) the held-connection field in Server names this type directly (same type db.rs establishes).
+use diesel::SqliteConnection;
 use formal_twitter::db::{
 	apply, db_max_seq, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
 	reload_sessions, reopen,
@@ -195,6 +197,9 @@ pub struct Server {
 	pub tick: u64,
 	/// (F3) cached max(seq) over the posts table (0 = empty DB); apply()'s stamp hint.
 	pub max_seq: u64,
+	/// (F9) server-held SQLite connection (None only if launch could not open the DB at all;
+	/// failure arms then reopen on demand).
+	pub conn: Option<SqliteConnection>,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -248,24 +253,23 @@ fn new_post_count(before: &World, after: &World) -> u64 {
 	fresh
 }
 
-/// D1 DB-truth discipline (failure path = full re-query): when reopen or apply fails the World stays unadvanced, but RAM must not stay stale against the DB, so the cached World is re-synced by re-opening a fresh connection and throwing out ALL FOUR cache sections at once through db.rs's reload fns.
-// (no new diesel query: the chain reuses reload_accounts/sessions/follows/posts verbatim)
-// (each step moves the World, so the full re-sync costs no World clone)
-// (if the reopen fails again there is no DB view to sync to, so the cache stays put)
-pub fn reload_all_sections(path: String, w: World) -> World {
-	match reopen(path) {
-		Err(_) => w,
-		Ok(mut conn) => {
-			// accounts section first
-			let with_accounts: World = reload_accounts(&mut conn, w);
-			// sessions drags its derived used_session_ids along
-			let with_sessions: World = reload_sessions(&mut conn, with_accounts);
-			// the follows table alone
-			let with_follows: World = reload_follows(&mut conn, with_sessions);
-			// posts + newest_first + used_post_ids move together; tail move, no clone
-			reload_posts(&mut conn, with_follows)
-		}
-	}
+/// D1 DB-truth discipline (failure path = full re-query) + F9 connection reuse: when reopen
+/// or apply fails the World stays unadvanced, but RAM must not stay stale against the DB, so
+/// the cached World is re-synced by throwing out ALL FOUR cache sections at once through db.rs's
+/// reload fns, ON THE CALLER'S CONNECTION: serve_command passes its held connection for the
+/// rolled-back-apply arm and a fresh reopen for the failed-reopen arm, so the connection can
+/// stay alive in Server (None stays put: no DB view, exactly the old Err(_) => w behaviour,
+/// now taken where serve_command reopens).  Each step moves the World, so the full re-sync
+/// costs no World clone.
+pub fn reload_all_sections(conn: &mut SqliteConnection, w: World) -> World {
+	// accounts section first
+	let with_accounts: World = reload_accounts(conn, w);
+	// sessions drags its derived used_session_ids along
+	let with_sessions: World = reload_sessions(conn, with_accounts);
+	// the follows table alone
+	let with_follows: World = reload_follows(conn, with_sessions);
+	// posts + newest_first + used_post_ids move together; tail move, no clone
+	reload_posts(conn, with_follows)
 }
 
 /// A pre-rendered rocket response lifted into a handler return type.
@@ -332,36 +336,48 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	let stepped: (World, Result) = step(&before, command, fresh_pid, fresh_sid);
 	let after: World = stepped.0;
 	let result: Result = stepped.1;
-	// COMMIT FIRST: establish-only reopen, then apply BEGIN/COMMIT/ROLLBACK batch.
-	// RAM-sampled ids can collide; apply PK failure rolls back and reports false.
-	let committed: bool = match reopen(locked.db_path.clone()) {
-		Err(_) => {
-			// D1 failure path: nothing committed, so the World stays unadvanced, but RAM must
-			// never stay stale against the DB: full re-query of all four sections through the
-			// helper's fresh reopen before the 403 below (no DB view -> cache stays put).
-			// (F3) max_seq stays as it is too: no batch ran, so OUR writer moved no stamp.
-			locked.world = reload_all_sections(locked.db_path.clone(), before);
-			false
-		}
-		Ok(mut conn) => {
-			// (F3) The stamp hint is the Server's cached max_seq: apply() never re-scans the
-			// (F3) posts table for it.
-			if !apply(&mut conn, &before, &after, locked.max_seq) {
-				// Rolled back: the DB refused the update, RAM must not advance.
-				// D1 failure path again: the cache re-syncs fully from the committed DB view.
-				// (only the cache sections move; the World's logical state stays unadvanced)
-				// (F3) max_seq stays as it is: the ROLLBACK restored every stamp, so OUR writer
-				// (F3) changed nothing in the DB and the hint is still exact.
-				locked.world = reload_all_sections(locked.db_path.clone(), before);
+	// COMMIT FIRST: (F9) the connection HELD in Server answers every request - no reopen and
+	// no db_path String copy on the happy path.  RAM-sampled ids can collide; apply PK failure
+	// rolls back and reports false.
+	// (F9) The held connection is swapped out of the Mutex-guarded Server into local scope for
+	// the request: that is the borrow strategy - conn borrowed &mut as a local while the other
+	// Server fields (world/tick/max_seq/conn) are assigned through the guard, and every arm
+	// below stores its connection back into Server, undoing the swap on every path.
+	let mut held_conn: Option<SqliteConnection> = None;
+	std::mem::swap(&mut locked.conn, &mut held_conn);
+	let committed: bool = match held_conn {
+		// Failed-reopen arm (the Server never got a connection at launch, or an earlier
+		// failure dropped one): D1's fresh reopen, exactly once per request here.  On Err the
+		// cache stays put (no DB view - the old helper's Err(_) => w arm moved into this call
+		// site); on Ok the re-sync runs over the fresh connection and THAT connection becomes
+		// the Server's new one, so later requests pay no reopen either.
+		// (F3) max_seq stays as it is: no batch ran, so OUR writer moved no stamp.
+		// (F9) reopen happens ONLY here: launch lost the connection somehow.
+		None => match reopen(locked.db_path.clone()) {
+			Err(_) => false,
+			Ok(mut fresh_conn) => {
+				locked.world = reload_all_sections(&mut fresh_conn, before);
+				// (F9) store the fresh connection: reopened once, reused from then on.
+				locked.conn = Some(fresh_conn);
+				// D1: nothing committed, so the World stays unadvanced: 403 below.
 				false
-			} else {
+			}
+		},
+		// Held path: apply and the one-section reload reuse the SAME connection per request
+		// (F9 hot path: zero establish, zero path copy).
+		Some(mut conn) =>
+		// (F3) The stamp hint is the Server's cached max_seq: apply() never re-scans the
+		// (F3) posts table for it.
+		{
+			if apply(&mut conn, &before, &after, locked.max_seq) {
 				// (F3) Committed: apply() stamped exactly new_post_count new posts at max_seq + 1
 				// (F3) .. max_seq + k, so the cache hint advances by k and stays exact for the
-				// (F3) next request (the reload_all_sections failure arms above leave it put).
+				// (F3) next request (the failure arms above leave it put).
 				locked.max_seq += new_post_count(&before, &after);
-				// Committed: advance the cache AND rotate ONE section through the same
-				// connection, after the commit so the fresh writes stay visible.  after is
-				// moved, so the reload costs no extra World clone.
+				// Committed: advance the cache AND rotate ONE section through the SAME held
+				// connection (F9: this connection was established at launch, not per request);
+				// after the commit so the fresh writes stay visible.  after is moved, so the
+				// reload costs no extra World clone.
 				let reloaded: World = match locked.tick {
 					0 => reload_follows(&mut conn, after),
 					1 => reload_sessions(&mut conn, after),
@@ -370,7 +386,21 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 				};
 				locked.world = reloaded;
 				locked.tick = next_tick(locked.tick);
+				// (F9) keep the held connection: it committed, stayed open and consistent.
+				locked.conn = Some(conn);
 				true
+			} else {
+				// Rolled back: the DB refused the update, RAM must not advance.  D1 re-syncs
+				// fully over the HELD connection - a ROLLBACK leaves the DB consistent and the
+				// connection usable, already proven by the db.rs tests that chain applies on
+				// one conn (and by test_apply_conn_reuse below).
+				// (F3) max_seq stays as it is: the ROLLBACK restored every stamp, so OUR writer
+				// (F3) changed nothing in the DB and the hint is still exact.
+				locked.world = reload_all_sections(&mut conn, before);
+				// (F9) keep the held connection: the rollback left it open and consistent.
+				locked.conn = Some(conn);
+				// D1: nothing committed, so the World stays unadvanced: 403 below.
+				false
 			}
 		}
 	};
@@ -593,15 +623,19 @@ fn rocket() -> _ {
 		Ok(p) => p,
 	};
 	// Startup reopen must not panic; on failure the empty world still serves.
-	// (F3) The world cache and the stamp hint come from ONE launch connection: db_max_seq is
-	// (F3) the only max(seq) scan, so no per-request SELECT of the seq column survives.
-	let (world, max_seq): (World, u64) = match init_or_open(path.clone()) {
-		Err(_) => (empty_world(), 0),
-		Ok(mut conn) => {
-			let seeded: World = load_world(&mut conn);
-			(seeded, db_max_seq(&mut conn))
-		}
-	};
+	// (F9) The world cache and the stamp hint come from ONE launch connection: db_max_seq is
+	// (F9) the only max(seq) scan, so no per-request SELECT of the seq column survives.  F9 also
+	// (F9) keeps that very connection alive in Server.conn instead of dropping it at launch.
+	let (world, max_seq, conn): (World, u64, Option<SqliteConnection>) =
+		match init_or_open(path.clone()) {
+			Err(_) => (empty_world(), 0, None),
+			Ok(mut conn) => {
+				// (F9) This connection never dies: it is handed to Server.conn and reused by every
+				// (F9) request, so serve_command's happy path pays no establish at all.
+				let seeded: World = load_world(&mut conn);
+				(seeded, db_max_seq(&mut conn), Some(conn))
+			}
+		};
 	// Mount every endpoint at the path the spec fixes.
 	rocket::build()
 		.manage(Mutex::new(Server {
@@ -609,6 +643,9 @@ fn rocket() -> _ {
 			db_path: path,
 			tick: 0,
 			max_seq,
+			// (F9) the launch connection, alive for the whole process (None only if launch
+			// could not open the DB at all; failure arms then reopen on demand).
+			conn,
 		}))
 		.mount(
 			"/",
@@ -686,8 +723,9 @@ fn test_reload_all_sections() {
 	tampered.posts[0].1.text = "LIE".to_string();
 	tampered.newest_first = vec![9, 8];
 	tampered.used_post_ids = vec![9, 8];
-	// Run the very failure-path re-sync serve_command performs, fresh connection inside.
-	let reloaded: World = reload_all_sections(path.to_string(), tampered.clone());
+	// Run the very failure-path re-sync serve_command performs, over the connection in hand
+	// (F9: the helper takes the caller's connection now; serve_command passes its held one).
+	let reloaded: World = reload_all_sections(&mut conn, tampered.clone());
 	// The DB view: a fresh canonical load to compare the re-synced cache against.
 	let mut again = init_or_open(path.to_string()).unwrap();
 	let expected: World = load_world(&mut again);
@@ -695,13 +733,17 @@ fn test_reload_all_sections() {
 	assert!(reloaded == expected);
 	// The tampering really existed, and did not survive the re-query.
 	assert!(tampered != expected);
-	// Double-failure arm: no openable DB means no DB view to sync to, so the cache stays put.
-	// (missing parent directory: reopen fails again, and the World is returned untouched)
+	// Double-failure arm: no openable DB means no DB view, which is exactly where serve_command
+	// keeps the cache put - its reopen yields Err.  (F9 moved that Err(_) => w arm to the call
+	// site, so the pin here is the precondition: reopen of the missing-directory path is Err;
+	// should it ever be Ok, re-syncing over that stray connection would also have to leave the
+	// tampered World put for the keep to be honest.)
 	assert!(
-		reload_all_sections(
-			"/tmp/ft-no-such-dir/ft-x.sqlite".to_string(),
-			tampered.clone()
-		) == tampered
+		match reopen("/tmp/ft-no-such-dir/ft-x.sqlite".to_string()) {
+			Err(_) => true,
+			Ok(mut stray_conn) =>
+				reload_all_sections(&mut stray_conn, tampered.clone()) == tampered,
+		}
 	);
 }
 

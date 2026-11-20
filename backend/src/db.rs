@@ -1144,6 +1144,77 @@ mod db_tests {
 		assert!(load_world(&mut fresh) == after);
 	}
 
+	/// (F9) gate: ONE connection answers MANY apply batches - serve_command keeps a single
+	/// SqliteConnection alive in Server and reuses it every request.  Here one establish
+	/// runs TWO successive commits (before -> after, after -> after2) through the SAME
+	/// conn with no reopen between: both must COMMIT (a rollback would poison the chain
+	/// and flip these asserts), and the reused conn - plus a fresh establish - must both
+	/// end at after2.
+	/// (F3) hint arithmetic: save stamped before's posts 1..3, batch one stamps post 500
+	/// (F3) at seq 4, and batch two adds NO posts, so the cached hint stays exactly 4.
+	/// (F3) Both hints must match the DB's max or apply would over/under-stamp and the
+	/// (F3) final load_world compare would flip.
+	#[test]
+	fn test_apply_conn_reuse() {
+		// (F9) exactly ONE establish for the whole test: Server.conn's lifecycle.
+		let conn_path = "/tmp/ft-apply-conn-reuse.sqlite";
+		// (F9) one reopen only - the SECOND connection below is the audit, never used for
+		// (F9) an apply.
+		let mut conn = init_or_open(conn_path.to_string()).unwrap();
+		// hermetic wipe, then the seeded BEFORE the first batch updates from
+		save_world(&mut conn, empty_world());
+		save_world(&mut conn, build_world());
+		let before = build_world();
+		let after = build_after();
+		// (F3) save_world above stamped before's three posts at 1..3, so batch one's hint
+		// (F3) is 3.
+		// batch one: before -> after through the held conn (F9: this is request N).
+		// (F3) hint 3 stamps the diff's new post 500 at seq 4.
+		// (F9) the SAME conn carries both batches: nothing re-established in between.
+		// (F3) batch two's hint is after's max seq: post 500 took 4, so it stays 4.
+		let batch_one: bool = apply(&mut conn, &before, &after, 3);
+		// (F9) FIRST commit must succeed: the held conn stays usable for batch two.
+		assert!(batch_one);
+		// batch two: after -> after2 through the SAME conn (F9: request N+1).  The diff is
+		// a session-status UPDATE (no new posts), so the cached hint stays exactly 4.
+		// (F9) no reopen here - reuse means reuse.
+		// after2 is the after World with session 100 flipped to Active: a one-field UPDATE
+		// diff keeps the conn chain committed.
+		// (F3) new_post_count is 0 here, so max_seq (the hint) does not move at all.
+		// (F9) the rollback-vs-reopen question of the old failure arm is settled by these
+		// (F9) two trues: the rollback path may keep the conn, no reopen needed.
+		let mut after2 = after.clone();
+		// (F9) flip one session status: the second diff.
+		// (F3) no posts change, so stamps stay 1..4 and the hint stays 4.
+		// (F9) this is the after -> after2 half of the chain.
+		// (F9) (a stale-conn bug would make THIS apply false and flip the assert below)
+		// (F9) sessions[0] is (100, Revoked) in after.
+		after2.sessions[0].1 = SessionStatus::Active("tok".to_string());
+		// (F3) hint 4 = after's max seq: exact, so batch two stamps nothing new.
+		// (F9) same conn, second apply.
+		let batch_two: bool = apply(&mut conn, &after, &after2, 4);
+		// (F9) SECOND commit on the reused conn.
+		assert!(batch_two);
+		// the reused conn's own view already equals after2: both batches landed.
+		// (F9) this is serve_state reading through Server.conn, not a fresh establish.
+		// (F3) stamps stay 1..4; newest_first stays [500, 3, 2, 1].
+		// (F9) final audit through a fresh establish: the DB agrees with the reused conn.
+		// (F9) two views, one truth.
+		let after2_on_disk = load_world(&mut conn) == after2;
+		assert!(after2_on_disk);
+		// (F9) and the fresh establish is only an audit, never used for an apply.
+		let mut audit = reopen(conn_path.to_string()).unwrap();
+		// (F9) same World through the SECOND connection: source of truth, once consulted.
+		assert!(load_world(&mut audit) == after2);
+		// (F3) the exact stamp order survived both batches on one conn: post 500 sits at
+		// (F3) seq 4, so newest_first leads with it.
+		assert!(load_world(&mut audit).newest_first == vec!(500, 3, 2, 1));
+		// (F3) and the existing posts' seqs stayed put behind it.
+		// (F9) sessions[0] now Active: batch two's UPDATE is in the DB, visible fresh.
+		assert!(load_world(&mut audit).sessions[0].1 == SessionStatus::Active("tok".to_string()));
+		// (F9) end of chain: two applies, one connection, one truth.
+	}
+
 	#[test]
 	/// DB3a gate: the RAM cache lies (post 1 is missing from BEFORE, but the DB has it),
 	/// so apply() re-INSERTs pid 1 and hits the PRIMARY KEY, then INSERTs its like and
