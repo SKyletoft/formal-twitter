@@ -73,9 +73,12 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   -> reopen + reload_accounts/sessions/follows/posts chain (Err -> cache stays put, documented); World stays unadvanced,
   403 bytes identical, tick not rotated, happy path unchanged; + test_reload_all_sections (tampers ALL FOUR sections,
   asserts reloaded == load_world(fresh) + Err-branch no-panic); 49->50 tests; fmt/build/clippy/agda x2 all 0.
+- [x] F3 (d6a1487): db.rs apply(conn,before,after,max_hint) — new-post stamp = max_hint+1; per-request full SELECT-seq
+  hand-fold DELETED (db_max_seq = one-shot launch seed on the load conn); Server +max_seq, bumped by new_post_count
+  two-finger merge on COMMITTED apply only (failure arms leave it; single-writer-per-DB-file caveat documented);
+  test_apply_max_hint pins hint verbatim (seqs 1..5, hint 42 -> seq 43); perf-scale 501 via hint 500; 50->51 tests.
 
 ## Next (ordered queue)
-- [ ] F3 (impl subagent): cache max_seq in Server state; bump on insert; kill per-request SELECT-seq max fold (db.rs era :595-604, post-G1 lines shifted).
 - [ ] F9 (impl subagent): hold SqliteConnection in Server; reopen only on apply/reopen failure; drop per-request establish + path copy.
 - [ ] F4 (impl subagent): World HashMap/HashSet side-caches rebuilt on reload (kills O(P^2) timeline lookups) + proof pins.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
