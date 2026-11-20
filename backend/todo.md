@@ -85,9 +85,9 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
 
 ## Next (ordered queue)
-- [ ] F4 (impl subagent): World HashMap/HashSet side-caches rebuilt on reload (kills O(P^2) timeline lookups) + proof pins.
-      F4 may need splitting (cache struct + equivalence QuickCheck first; Agda pointer second). Coordinate: keep World fields
-      pinned by ImplProofs UNCHANGED — side-cache is an ADDITIVE wrapper, timelines consult cache with Vec-fallback.
+- [~] F4 (impl subagent, IN PROGRESS): model.rs WorldIndex side-cache — HashMap/HashSet lookups (accounts,
+      sessions, posts, follows-set) rebuilt on reload; timelines consult cache with Vec-fallback; QuickCheck
+      cached==uncached props; Agda pointer comment only (A4 policy). World fields UNCHANGED.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
 - [ ] F2 (impl subagent): delta-driven apply() touching only changed keys (was full-world diff views).
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
