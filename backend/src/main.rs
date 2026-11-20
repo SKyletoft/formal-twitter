@@ -190,8 +190,8 @@ pub struct Server {
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
 /// grammar is total, so a malformed body is treated as a denied request.
-pub fn wire_error(e: WireError) -> WireResponse {
-	_ = e;
+/// The error argument is ignored: every WireError maps to the same 403 shape.
+pub fn wire_error(_e: WireError) -> WireResponse {
 	respond(ApiResponse::PermissionError, http_date())
 }
 

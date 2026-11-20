@@ -114,12 +114,6 @@ pub fn unique<T: PartialEq>(xs: &[T]) -> bool {
 	true
 }
 
-/// Spec helper: unique keys in an association list.
-pub fn key_unique<K: PartialEq + Clone, V>(xs: &[(K, V)]) -> bool {
-	let keys: Vec<K> = (xs.iter()).map(|(key, _)| key.clone()).collect();
-	unique(&keys)
-}
-
 /// List length as u64 without lossy casts.
 pub fn len_u64<T>(xs: &[T]) -> u64 {
 	// the Vec length widened; same value for every in-range length
@@ -280,6 +274,7 @@ pub fn is_post_public(w: &World, pid: u64) -> bool {
 }
 
 /// Spec follows-post-author: user follows the author of pid.
+/// Test-only: referenced by #[cfg(test)] props/baselines, not by the runtime wire path.
 pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
 	match post_at_ref(w, pid) {
 		None => false,
@@ -288,6 +283,7 @@ pub fn follows_author(w: &World, user: &str, pid: u64) -> bool {
 }
 
 /// Data.List.take on Vec.
+/// Test-only: used by #[cfg(test)] baselines/QC, not by the runtime wire path.
 pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
 	// take stops at the iterator end, so n beyond the length yields all, as before
 	// (usize is 64-bit here, so the n cast is exact)
@@ -403,6 +399,7 @@ pub fn empty_world() -> World {
 }
 
 /// Spec WellFormed invariants.
+/// Not enforced at runtime: kept for the D1 proof work, never called on the wire path.
 pub fn well_formed(w: &World) -> bool {
 	for (pid, post) in &w.posts {
 		if !member(&w.used_post_ids, *pid) {

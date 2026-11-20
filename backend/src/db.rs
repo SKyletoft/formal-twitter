@@ -402,6 +402,8 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 /// Full rewrite of the DB: wipe the six tables, then insert every row of w.
 /// seq is re-stamped 1..n over newest_first REVERSED (oldest to newest), so
 /// a later ORDER BY seq DESC reproduces w.newest_first exactly.
+/// Lossy: pids absent from newest_first are stamped seq = 0 (seq_of.get unwrap_or),
+/// so their restart order is unrecoverable; save_world is used only in tests.
 pub fn save_world(conn: &mut SqliteConnection, w: World) {
 	let _wiped_accounts = delete(accounts::dsl::accounts).execute(conn);
 	let _wiped_sessions = delete(sessions::dsl::sessions).execute(conn);

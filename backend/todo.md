@@ -213,9 +213,10 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   D1 discipline gap: on reopen/apply FAIL main.rs:266/:286 skip re-querying the other RAM sections (AGENTS.md
   periodic re-query violated on failure path); well_formed unchecked. Verdict: DB-truth holds on happy path,
   reentrancy plausible (FT_DB + init_or_open + smoke restarts), cache cost dominates DB work at O(DB)/request.
-- F-queue (impl subagents, sequential, one per finding unless batched H1/H2): H1=F10+F11 hygiene (wire.rs/main.rs/model.rs,
-  mechanical, gates identical 49 tests); H2=F12 dead-code (key_unique remove, wire_error arg, keep test-only
-  helpers, note save_world lossy in doc); F3 max_seq in Server; F9 hold conn in Server (reopen only on failure);
+- F-queue (impl subagents, sequential, one per finding unless batched H1/H2): H1=F10+F11 hygiene (wire.rs/main.rs/model.rs, mechanical, gates identical 49 tests — ACCEPTED 8c1ea65); H2=F12 dead-code (DONE: key_unique DELETED model.rs:117 zero callers incl. tests;
+  follows_author model.rs:276/take_n model.rs:285 KEPT + /// test-only lines; save_world db.rs:405 KEPT + lossy seq=0 doc
+  verified at seq_of.get unwrap_or; wire_error main.rs:194 param ->_e + doc (all callers discard); well_formed model.rs:401
+  KEPT + not-enforced-at-runtime doc, test-only callers only — gates fmt/build/test 34+9+6=49/clippy/agda all 0 — ACCEPTED, committed below); F3 max_seq in Server; F9 hold conn in Server (reopen only on failure);
   F7 sort loaded rows in RAM (kill 4th query); F5 groupby rows once; F6 HashSet per touched post; F4 World HashMap/HashSet
   side-caches (periodic reload rebuilds); F1 step(&World)->(Result,Delta) single-copy; F2 delta-driven apply (touched
   keys only); D1 re-query ALL sections on reopen/apply failure.
