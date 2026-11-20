@@ -200,6 +200,26 @@ pub fn next_tick(t: u64) -> u64 {
 	(t + 1) % 4
 }
 
+/// D1 DB-truth discipline (failure path = full re-query): when reopen or apply fails the World stays unadvanced, but RAM must not stay stale against the DB, so the cached World is re-synced by re-opening a fresh connection and throwing out ALL FOUR cache sections at once through db.rs's reload fns.
+// (no new diesel query: the chain reuses reload_accounts/sessions/follows/posts verbatim)
+// (each step moves the World, so the full re-sync costs no World clone)
+// (if the reopen fails again there is no DB view to sync to, so the cache stays put)
+pub fn reload_all_sections(path: String, w: World) -> World {
+	match reopen(path) {
+		Err(_) => w,
+		Ok(mut conn) => {
+			// accounts section first
+			let with_accounts: World = reload_accounts(&mut conn, w);
+			// sessions drags its derived used_session_ids along
+			let with_sessions: World = reload_sessions(&mut conn, with_accounts);
+			// the follows table alone
+			let with_follows: World = reload_follows(&mut conn, with_sessions);
+			// posts + newest_first + used_post_ids move together; tail move, no clone
+			reload_posts(&mut conn, with_follows)
+		}
+	}
+}
+
 /// A pre-rendered rocket response lifted into a handler return type.
 pub struct Served {
 	pub response: Response<'static>,
@@ -266,10 +286,19 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	// COMMIT FIRST: establish-only reopen, then apply BEGIN/COMMIT/ROLLBACK batch.
 	// RAM-sampled ids can collide; apply PK failure rolls back and reports false.
 	let committed: bool = match reopen(locked.db_path.clone()) {
-		Err(_) => false,
+		Err(_) => {
+			// D1 failure path: nothing committed, so the World stays unadvanced, but RAM must
+			// never stay stale against the DB: full re-query of all four sections through the
+			// helper's fresh reopen before the 403 below (no DB view -> cache stays put).
+			locked.world = reload_all_sections(locked.db_path.clone(), before);
+			false
+		}
 		Ok(mut conn) => {
 			if !apply(&mut conn, &before, &after) {
 				// Rolled back: the DB refused the update, RAM must not advance.
+				// D1 failure path again: the cache re-syncs fully from the committed DB view.
+				// (only the cache sections move; the World's logical state stays unadvanced)
+				locked.world = reload_all_sections(locked.db_path.clone(), before);
 				false
 			} else {
 				// Committed: advance the cache AND rotate ONE section through the same
@@ -564,6 +593,110 @@ fn test_tick_rotation_cycle() {
 	// And the schedule is exactly the (i + 1) % 4 sequence for i in 0..8.
 	for i in 0..8 {
 		assert!(next_tick(i as u64) == (i as u64 + 1) % 4);
+	}
+}
+
+/// D1 gate: reload_all_sections - the exact chain serve_command runs on BOTH failure arms -
+/// restores a World tampered in ALL FOUR sections from the seeded DB in one sweep, and the
+/// double-failure arm (DB unopenable) leaves the cache put, no panic, no wipe.
+#[test]
+fn test_reload_all_sections() {
+	// DB/model handles scoped to the test so the non-test build keeps zero unused imports.
+	use formal_twitter::db::save_world;
+	use formal_twitter::model::SessionStatus;
+	let path = "/tmp/ft-reload-all-sections.sqlite";
+	// Seed the DB: the database, not RAM, is the source of truth.
+	let mut conn = init_or_open(path.to_string()).unwrap();
+	save_world(&mut conn, seed_all_sections_world());
+	// Tamper EVERY section of the RAM cache at once (unlike the DB3b one-section gates).
+	// (accounts, sessions+used_session_ids, follows and posts+newest_first+used_post_ids all
+	// lie below, so the full-restoration asserts must catch every one of them)
+	let mut tampered: World = seed_all_sections_world();
+	tampered.accounts.retain(|entry| entry.0 != "bob");
+	tampered.accounts[0].1.password = "LIE".to_string();
+	tampered.sessions.retain(|entry| entry.0 != 200);
+	tampered.sessions[0].1 = SessionStatus::Unused;
+	tampered.used_session_ids = vec![100, 999];
+	tampered.follows = vec![("ghost".to_string(), "alice".to_string())];
+	tampered.posts.retain(|entry| entry.0 != 2);
+	tampered.posts[0].1.text = "LIE".to_string();
+	tampered.newest_first = vec![9, 8];
+	tampered.used_post_ids = vec![9, 8];
+	// Run the very failure-path re-sync serve_command performs, fresh connection inside.
+	let reloaded: World = reload_all_sections(path.to_string(), tampered.clone());
+	// The DB view: a fresh canonical load to compare the re-synced cache against.
+	let mut again = init_or_open(path.to_string()).unwrap();
+	let expected: World = load_world(&mut again);
+	// ALL FOUR sections restored: the cache now agrees with the DB everywhere.
+	assert!(reloaded == expected);
+	// The tampering really existed, and did not survive the re-query.
+	assert!(tampered != expected);
+	// Double-failure arm: no openable DB means no DB view to sync to, so the cache stays put.
+	// (missing parent directory: reopen fails again, and the World is returned untouched)
+	assert!(
+		reload_all_sections(
+			"/tmp/ft-no-such-dir/ft-x.sqlite".to_string(),
+			tampered.clone()
+		) == tampered
+	);
+}
+
+/// D1 gate seed: the DB3b db_tests canonical World kept small, rows pre-sorted in the
+/// order load_world returns them so a save/load round-trip reproduces the DB view.
+#[cfg(test)]
+fn seed_all_sections_world() -> World {
+	use formal_twitter::model::{Account, Post, PostStatus, SessionStatus, Visibility};
+	World {
+		accounts: vec![
+			(
+				"alice".to_string(),
+				Account {
+					password: "a".to_string(),
+					default_visibility: Visibility::Everyone,
+				},
+			),
+			(
+				"bob".to_string(),
+				Account {
+					password: "b".to_string(),
+					default_visibility: Visibility::FollowersOnly,
+				},
+			),
+		],
+		sessions: vec![
+			(100, SessionStatus::Active("alice".to_string())),
+			(200, SessionStatus::Revoked),
+		],
+		posts: vec![
+			(
+				1,
+				Post {
+					author: "alice".to_string(),
+					text: "hello".to_string(),
+					visibility: Visibility::Everyone,
+					status: PostStatus::Other,
+					likes: vec!["bob".to_string()],
+					replies: vec![2],
+					parent: None,
+				},
+			),
+			(
+				2,
+				Post {
+					author: "bob".to_string(),
+					text: "reply-text".to_string(),
+					visibility: Visibility::FollowersOnly,
+					status: PostStatus::Other,
+					likes: vec![],
+					replies: vec![],
+					parent: Some(1),
+				},
+			),
+		],
+		follows: vec![("alice".to_string(), "bob".to_string())],
+		newest_first: vec![2, 1],
+		used_post_ids: vec![1, 2],
+		used_session_ids: vec![100, 200],
 	}
 }
 
