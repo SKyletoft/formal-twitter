@@ -99,11 +99,13 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       prop_ix_predicates_equiv, prop_ix_build_firstwins w/ hand-built duplicate-username world, no well_formed guard)
       at mod qc end ~1330-1446; tests 52->55 (39 lib + 10 bin + 6 smoke); gates fmt --check/build/clippy(-D warnings,
       silent)/test/agda x2 all rc 0; no commit yet.
-- [ ] F4a-2 (impl subagent): step body MOVED into step_ix(w, ix, ..) using _ix lookups; step(w,..) = step_ix(w,
-      build_index(w), ..) wrapper (signature kept); timelines: *_timeline_ref pure-Vec copies kept test-only as
-      QuickCheck refs, public names delegate to _ix twins; HOT-PATH BORROWS: can_read_ix/timeline internals must
-      borrow Vec cells via index positions (no Post/Account clones per probe); qc prop_step_ix_equiv + timeline
-      equiv props + test_timeline_index_scale (~800 posts); ImplProofs pointer comment (1-3 lines, A4 policy).
+- [x] F4a-2 (impl subagent, ACCEPTED, THIS COMMIT): step body MOVED to step_ix(w, ix, ..) — every scan lookup ->
+      _ix twin, World-construction blocks byte-identical, no intermediate-world lookups; step = build_index + step_ix
+      wrapper (signature kept, main.rs untouched); timelines: *_timeline_ref pure-Vec refs (test-only QuickCheck refs),
+      public names delegate to _ix twins via fresh index; borrow helpers active_user_bx/account_at_bx/post_at_bx +
+      indexed-borrow can_read_ix/is_post_public_ix (zero per-probe clones); qc prop_timeline_{global,personal,public}_ix
+      + prop_step_ix_equiv + test_timeline_index_scale (800 posts, n=2000 oversize); tests 55->60 (44 lib + 10 bin +
+      6 smoke); gates fmt/build/clippy -D warnings silent/test/agda x2 rc 0; ImplProofs +3-line pointer (A4 policy).
 - [ ] F4b (impl subagent): main.rs Server +index field (built at launch from loaded World), rebuilt after every
       reload assignment, serve_command calls step_ix(&before, &locked.index, ..); gates incl. smoke suite.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.

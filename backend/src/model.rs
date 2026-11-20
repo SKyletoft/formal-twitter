@@ -367,23 +367,27 @@ pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 	}
 }
 
-/// Index-backed can-read-post; same chain of lookups as the scan.
+/// Index-backed can-read-post; borrows the cells, no SessionStatus/Account/Post clone.
 pub fn can_read_ix(w: &World, ix: &WorldIndex, sid: u64, pid: u64) -> bool {
-	// same chain: active name, account exists, post live and visible
-	match active_user_ix(w, ix, sid) {
+	// same chain: active name, account exists, post live and visible; all answered by borrowing
+	match ix.sessions_ix.get(&sid) {
 		None => false,
-		Some(user) => {
-			account_at_ix(w, ix, &user).is_some()
-				&& match post_at_ix(w, ix, pid) {
-					None => false,
-					Some(post) => {
-						post.status == PostStatus::Other
-							&& (post.visibility == Visibility::Everyone
-								|| (post.visibility == Visibility::FollowersOnly
-									&& follows_ix(w, ix, &user, &post.author)))
+		Some(i) => match &w.sessions[*i].1 {
+			SessionStatus::Active(user) => {
+				ix.accounts_ix.contains_key(user)
+					&& match ix.posts_ix.get(&pid) {
+						None => false,
+						Some(j) => {
+							let post = &w.posts[*j].1;
+							post.status == PostStatus::Other
+								&& (post.visibility == Visibility::Everyone
+									|| (post.visibility == Visibility::FollowersOnly
+										&& follows_ix(w, ix, user, &post.author)))
+						}
 					}
-				}
-		}
+			}
+			_ => false,
+		},
 	}
 }
 
@@ -395,12 +399,15 @@ pub fn is_post_public(w: &World, pid: u64) -> bool {
 	}
 }
 
-/// Index-backed is-post-public.
+/// Index-backed is-post-public; borrows the post cell, no Post clone.
 pub fn is_post_public_ix(w: &World, ix: &WorldIndex, pid: u64) -> bool {
-	// same predicate: Everyone visibility and live status
-	match post_at_ix(w, ix, pid) {
+	// same predicate: Everyone visibility and live status, answered from the indexed cell
+	match ix.posts_ix.get(&pid) {
 		None => false,
-		Some(post) => post.visibility == Visibility::Everyone && post.status == PostStatus::Other,
+		Some(i) => {
+			let post = &w.posts[*i].1;
+			post.visibility == Visibility::Everyone && post.status == PostStatus::Other
+		}
 	}
 }
 
@@ -421,8 +428,33 @@ pub fn take_n(xs: Vec<u64>, n: u64) -> Vec<u64> {
 	(xs.iter()).take(n as usize).copied().collect()
 }
 
+/// Borrowing helpers for the index-backed hot paths: O(1) position lookup, borrowed cell.
+fn active_user_bx<'w>(w: &'w World, ix: &WorldIndex, sid: u64) -> Option<&'w String> {
+	// status borrowed from the indexed cell; only Active yields a name
+	match ix.sessions_ix.get(&sid) {
+		None => None,
+		Some(i) => match &w.sessions[*i].1 {
+			SessionStatus::Active(user) => Some(user),
+			_ => None,
+		},
+	}
+}
+
+/// Borrowing World.account-at via the side-index; no Account clone.
+fn account_at_bx<'w>(w: &'w World, ix: &WorldIndex, user: &str) -> Option<&'w Account> {
+	// one hash lookup, then borrow the same Vec cell the scan would hit
+	ix.accounts_ix.get(user).map(|i| &w.accounts[*i].1)
+}
+
+/// Borrowing World.post-at via the side-index; no Post clone.
+fn post_at_bx<'w>(w: &'w World, ix: &WorldIndex, pid: u64) -> Option<&'w Post> {
+	// one hash lookup, then borrow the same Vec cell the scan would hit
+	ix.posts_ix.get(&pid).map(|i| &w.posts[*i].1)
+}
+
+/// Test-only pure-Vec reference for the _ix equivalence props.
 /// get-personal-timeline: newest-first, keep readable posts by followed authors.
-pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+pub fn personal_timeline_ref(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	// Hoist: username and account presence are loop-invariant for the newest_first scan;
 	// their absence makes can-read false for every pid, i.e. the old code yielded [].
 	match active_user_ref(w, sid) {
@@ -460,8 +492,52 @@ pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	}
 }
 
+/// get-personal-timeline through the side-index; hot path borrows per candidate.
+pub fn personal_timeline_ix(w: &World, ix: &WorldIndex, sid: u64, n: u64) -> Vec<u64> {
+	// same hoisting/early-stop as the reference; every probe goes through the index
+	match active_user_bx(w, ix, sid) {
+		None => vec![],
+		Some(user) => {
+			if account_at_bx(w, ix, user).is_none() {
+				return vec![];
+			}
+			if n == 0 {
+				return vec![];
+			}
+			let mut acc = vec![];
+			for pid in &w.newest_first {
+				// same fused borrow: one indexed post lookup per candidate
+				let readable: bool = match post_at_bx(w, ix, *pid) {
+					None => false,
+					Some(post) => {
+						post.status == PostStatus::Other
+							&& follows_ix(w, ix, user, &post.author)
+							&& (post.visibility == Visibility::Everyone
+								|| post.visibility == Visibility::FollowersOnly)
+					}
+				};
+				if readable {
+					acc.push(*pid);
+					if acc.len() as u64 >= n {
+						break;
+					}
+				}
+			}
+			acc
+		}
+	}
+}
+
+/// get-personal-timeline: build the side-index once, then answer through it.
+pub fn personal_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+	// fresh side-index; every lookup then goes through the map instead of a scan
+	let ix: WorldIndex = build_index(w);
+	personal_timeline_ix(w, &ix, sid, n)
+}
+
+/// Test-only pure-Vec reference for the _ix equivalence props.
 /// get-private-global: newest-first readable posts.
-pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+pub fn global_timeline_ref(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	// Same hoisting/early-stop shape as personal_timeline: the session username and account
 	// presence are loop-invariant; absence made can-read false for every pid (old result []).
 	match active_user_ref(w, sid) {
@@ -497,8 +573,52 @@ pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
 	}
 }
 
+/// get-private-global through the side-index; hot path borrows per candidate.
+pub fn global_timeline_ix(w: &World, ix: &WorldIndex, sid: u64, n: u64) -> Vec<u64> {
+	// same hoisting/early-stop as the reference; every probe goes through the index
+	match active_user_bx(w, ix, sid) {
+		None => vec![],
+		Some(user) => {
+			if account_at_bx(w, ix, user).is_none() {
+				return vec![];
+			}
+			if n == 0 {
+				return vec![];
+			}
+			let mut acc = vec![];
+			for pid in &w.newest_first {
+				// can-read for the hoisted user via one indexed borrow per candidate
+				let readable: bool = match post_at_bx(w, ix, *pid) {
+					None => false,
+					Some(post) => {
+						post.status == PostStatus::Other
+							&& (post.visibility == Visibility::Everyone
+								|| (post.visibility == Visibility::FollowersOnly
+									&& follows_ix(w, ix, user, &post.author)))
+					}
+				};
+				if readable {
+					acc.push(*pid);
+					if acc.len() as u64 >= n {
+						break;
+					}
+				}
+			}
+			acc
+		}
+	}
+}
+
+/// get-private-global: build the side-index once, then answer through it.
+pub fn global_timeline(w: &World, sid: u64, n: u64) -> Vec<u64> {
+	// fresh side-index; every lookup then goes through the map instead of a scan
+	let ix: WorldIndex = build_index(w);
+	global_timeline_ix(w, &ix, sid, n)
+}
+
+/// Test-only pure-Vec reference for the _ix equivalence props.
 /// get-public-global: newest-first public posts.
-pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
+pub fn public_timeline_ref(w: &World, n: u64) -> Vec<u64> {
 	// Early-stop: stop scanning once n public posts are collected; the prefix equals
 	// take_n of the old full-filter output. n == 0 yields [] without scanning at all.
 	if n == 0 {
@@ -514,6 +634,31 @@ pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
 		}
 	}
 	acc
+}
+
+/// get-public-global through the side-index; borrows the post cell per candidate.
+pub fn public_timeline_ix(w: &World, ix: &WorldIndex, n: u64) -> Vec<u64> {
+	// same early-stop as the reference; is_post_public_ix answers from the index without a clone
+	if n == 0 {
+		return vec![];
+	}
+	let mut acc = vec![];
+	for pid in &w.newest_first {
+		if is_post_public_ix(w, ix, *pid) {
+			acc.push(*pid);
+			if acc.len() as u64 >= n {
+				break;
+			}
+		}
+	}
+	acc
+}
+
+/// get-public-global: build the side-index once, then answer through it.
+pub fn public_timeline(w: &World, n: u64) -> Vec<u64> {
+	// fresh side-index; every lookup then goes through the map instead of a scan
+	let ix: WorldIndex = build_index(w);
+	public_timeline_ix(w, &ix, n)
 }
 
 /// Spec empty-world.
@@ -589,10 +734,16 @@ pub fn well_formed(w: &World) -> bool {
 	true
 }
 
-/// Deterministic Step: (before, cmd, fresh ids) -> (after, result). Failed-access is checked first.
-pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, Result) {
+/// Index-backed Deterministic Step: same rule as step, every lookup answered through prebuilt ix.
+pub fn step_ix(
+	w: &World,
+	ix: &WorldIndex,
+	cmd: Command,
+	fresh_pid: u64,
+	fresh_sid: u64,
+) -> (World, Result) {
 	let expired: bool = match extract_sid(cmd.clone()) {
-		Some(sid) => !valid_session(w, sid),
+		Some(sid) => !valid_session_ix(w, ix, sid),
 		None => false,
 	};
 	if expired {
@@ -603,21 +754,21 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			if used_pid(w, fresh_pid) {
 				return (w.clone(), Result::Denied);
 			}
-			let user = active_user(w, sid).unwrap();
-			let acc = account_at(w, &user);
+			let user = active_user_ix(w, ix, sid).unwrap();
+			let acc = account_at_ix(w, ix, &user);
 			let mut vis: Visibility = Visibility::Everyone;
 			if let Some(a) = acc {
 				vis = a.default_visibility;
 			}
 			let readable: bool = match parent {
-				Some(ppid) => can_read(w, sid, ppid),
+				Some(ppid) => can_read_ix(w, ix, sid, ppid),
 				None => true,
 			};
 			if !readable {
 				return (w.clone(), Result::Denied);
 			}
 			let parent_vis: Option<Visibility> = match parent {
-				Some(ppid) => match post_at(w, ppid) {
+				Some(ppid) => match post_at_ix(w, ix, ppid) {
 					Some(ppost) => Some(ppost.visibility),
 					None => None,
 				},
@@ -642,8 +793,8 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			(nw, Result::CreatedPost(fresh_pid))
 		}
 		Command::Delete(sid, pid) => {
-			let user = active_user(w, sid).unwrap();
-			match post_at(w, pid) {
+			let user = active_user_ix(w, ix, sid).unwrap();
+			match post_at_ix(w, ix, pid) {
 				None => (w.clone(), Result::Denied),
 				Some(post) => {
 					if post.author != user {
@@ -662,13 +813,13 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 		}
 		Command::ReadPost(msid, pid) => {
 			let readable: bool = match msid {
-				None => is_post_public(w, pid),
-				Some(sid) => can_read(w, sid, pid),
+				None => is_post_public_ix(w, ix, pid),
+				Some(sid) => can_read_ix(w, ix, sid, pid),
 			};
 			if !readable {
 				return (w.clone(), Result::Denied);
 			}
-			match post_at(w, pid) {
+			match post_at_ix(w, ix, pid) {
 				None => (w.clone(), Result::Denied),
 				Some(post) => (
 					w.clone(),
@@ -683,17 +834,17 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 		}
 		Command::ReadPersonalTimeline(sid, n) => (
 			w.clone(),
-			Result::ReturnedTimeline(personal_timeline(w, sid, n)),
+			Result::ReturnedTimeline(personal_timeline_ix(w, ix, sid, n)),
 		),
 		Command::ReadGlobalTimeline(msid, n) => {
 			let ids: Vec<u64> = match msid {
-				None => public_timeline(w, n),
-				Some(sid) => global_timeline(w, sid, n),
+				None => public_timeline_ix(w, ix, n),
+				Some(sid) => global_timeline_ix(w, ix, sid, n),
 			};
 			(w.clone(), Result::ReturnedTimeline(ids))
 		}
 		Command::Authenticate(user, passwd) => {
-			let issued: bool = match account_at(w, &user) {
+			let issued: bool = match account_at_ix(w, ix, &user) {
 				None => false,
 				Some(acc) => acc.password == passwd && !used_sid(w, fresh_sid),
 			};
@@ -717,7 +868,7 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			(nw, Result::Success)
 		}
 		Command::Register(user, passwd) => {
-			if account_at(w, &user).is_some() {
+			if account_at_ix(w, ix, &user).is_some() {
 				(w.clone(), Result::SignupFailed)
 			} else {
 				let mut nw = w.clone();
@@ -732,8 +883,8 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			}
 		}
 		Command::Follow(sid, followee) => {
-			let user = active_user(w, sid).unwrap();
-			if follows(w, &user, &followee) {
+			let user = active_user_ix(w, ix, sid).unwrap();
+			if follows_ix(w, ix, &user, &followee) {
 				(w.clone(), Result::Success)
 			} else {
 				let mut nw = w.clone();
@@ -742,17 +893,17 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			}
 		}
 		Command::Unfollow(sid, followee) => {
-			let user = active_user(w, sid).unwrap();
+			let user = active_user_ix(w, ix, sid).unwrap();
 			let mut nw = w.clone();
 			// (in-place retain drops the exact pair, no rebuild, no clones)
 			nw.follows.retain(|(f, g)| *f != user || *g != followee);
 			(nw, Result::Success)
 		}
 		Command::Like(sid, pid) => {
-			if !can_read(w, sid, pid) {
+			if !can_read_ix(w, ix, sid, pid) {
 				return (w.clone(), Result::Denied);
 			}
-			let user = active_user(w, sid).unwrap();
+			let user = active_user_ix(w, ix, sid).unwrap();
 			let mut nw = w.clone();
 			for e in &mut nw.posts {
 				// (only posts with this pid react; others keep their like lists untouched)
@@ -767,10 +918,10 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 			(nw, Result::Success)
 		}
 		Command::Unlike(sid, pid) => {
-			if !can_read(w, sid, pid) {
+			if !can_read_ix(w, ix, sid, pid) {
 				return (w.clone(), Result::Denied);
 			}
-			let user = active_user(w, sid).unwrap();
+			let user = active_user_ix(w, ix, sid).unwrap();
 			let mut nw = w.clone();
 			for e in &mut nw.posts {
 				if e.0 == pid {
@@ -791,15 +942,24 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 		}
 	}
 }
+
+/// Deterministic Step: (before, cmd, fresh ids) -> (after, result). Failed-access is checked first.
+pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, Result) {
+	// fresh side-index per call; step_ix answers every lookup through it
+	let ix: WorldIndex = build_index(w);
+	step_ix(w, &ix, cmd, fresh_pid, fresh_sid)
+}
 #[cfg(test)]
 mod qc {
 	use super::{
 		Account, Command, Post, PostStatus, Result, SessionStatus, Visibility, World, WorldIndex,
 		access_ok, access_ok_ix, account_at, account_at_ix, active_user, active_user_ix,
 		build_index, can_read, can_read_ix, empty_world, extract_sid, follows, follows_author,
-		follows_ix, global_timeline, is_post_public, is_post_public_ix, len_u64, member,
-		personal_timeline, post_at, post_at_ix, public_timeline, session_at, session_at_ix, step,
-		take_n, unique, valid_session, valid_session_ix, well_formed,
+		follows_ix, global_timeline, global_timeline_ix, global_timeline_ref, is_post_public,
+		is_post_public_ix, len_u64, member, personal_timeline, personal_timeline_ix,
+		personal_timeline_ref, post_at, post_at_ix, public_timeline, public_timeline_ix,
+		public_timeline_ref, session_at, session_at_ix, step, step_ix, take_n, unique,
+		valid_session, valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1442,5 +1602,153 @@ mod qc {
 			&& post_at(&w2, 11) == post_at_ix(&w2, &ix, 11)
 			&& session_at(&w2, 7) == session_at_ix(&w2, &ix, 7)
 			&& follows(&w2, "a", "dupe") == follows_ix(&w2, &ix, "a", "dupe")
+	}
+
+	/// QC index equivalence: the hot-path global timeline through the side-index equals the pure-Vec reference.
+	#[quickcheck]
+	fn prop_timeline_global_ix(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		// sid and n come from the Command generator pools (SIDS/NS) so the active-session
+		// branch is exercised, not only the trivial no-session case
+		let sid: u64 = match extract_sid(cmd.clone()) {
+			None => ids.sid,
+			Some(s) => s,
+		};
+		let mut n: u64 = 3;
+		if let Command::ReadGlobalTimeline(_, k) = cmd {
+			n = k;
+		}
+		let ix: WorldIndex = build_index(&w);
+		let mut ok: bool = true;
+		for nn in &[n, 0, 1, 2, 1000] {
+			ok = ok && global_timeline_ix(&w, &ix, sid, *nn) == global_timeline_ref(&w, sid, *nn);
+		}
+		ok
+	}
+
+	/// QC index equivalence: the hot-path personal timeline through the side-index equals the pure-Vec reference.
+	#[quickcheck]
+	fn prop_timeline_personal_ix(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		// same (sid, n) extraction as prop_timeline_personal_equiv
+		let sid: u64 = match extract_sid(cmd.clone()) {
+			None => ids.sid,
+			Some(s) => s,
+		};
+		let mut n: u64 = 3;
+		if let Command::ReadPersonalTimeline(_, k) = cmd {
+			n = k;
+		}
+		let ix: WorldIndex = build_index(&w);
+		personal_timeline_ix(&w, &ix, sid, n) == personal_timeline_ref(&w, sid, n)
+			&& personal_timeline_ix(&w, &ix, sid, 0) == personal_timeline_ref(&w, sid, 0)
+			&& personal_timeline_ix(&w, &ix, sid, 1) == personal_timeline_ref(&w, sid, 1)
+			&& personal_timeline_ix(&w, &ix, sid, 2) == personal_timeline_ref(&w, sid, 2)
+			&& personal_timeline_ix(&w, &ix, sid, 1000) == personal_timeline_ref(&w, sid, 1000)
+	}
+
+	/// QC index equivalence: the hot-path anonymous timeline through the side-index equals the pure-Vec reference.
+	#[quickcheck]
+	fn prop_timeline_public_ix(w: World, cmd: Command, _ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		let mut n: u64 = 3;
+		if let Command::ReadGlobalTimeline(_, k) = cmd {
+			n = k;
+		}
+		let ix: WorldIndex = build_index(&w);
+		public_timeline_ix(&w, &ix, n) == public_timeline_ref(&w, n)
+			&& public_timeline_ix(&w, &ix, 0) == public_timeline_ref(&w, 0)
+			&& public_timeline_ix(&w, &ix, 1) == public_timeline_ref(&w, 1)
+			&& public_timeline_ix(&w, &ix, 2) == public_timeline_ref(&w, 2)
+			&& public_timeline_ix(&w, &ix, 1000) == public_timeline_ref(&w, 1000)
+	}
+
+	/// QC equivalence: step_ix driven with a fresh index agrees exactly with step, world and result alike.
+	#[quickcheck]
+	fn prop_step_ix_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		step_ix(&w, &build_index(&w), cmd.clone(), ids.pid, ids.sid)
+			== step(&w, cmd, ids.pid, ids.sid)
+	}
+
+	// scale test: 800-post deterministic world, the index path must equal the pure-Vec reference
+	#[test]
+	fn test_timeline_index_scale() {
+		let mut w: World = empty_world();
+		// 40 accounts, usernames u0..u39
+		for i in 0u64..40u64 {
+			let name: String = format!("u{}", i);
+			w.accounts.push((
+				name,
+				Account {
+					password: "p".to_string(),
+					default_visibility: Visibility::Everyone,
+				},
+			));
+		}
+		// sessions: sid 7 active for u3, sid 8 active for u11
+		w.sessions
+			.push((7, SessionStatus::Active("u3".to_string())));
+		w.sessions
+			.push((8, SessionStatus::Active("u11".to_string())));
+		w.used_session_ids.push(7);
+		w.used_session_ids.push(8);
+		// follows: u3 follows u0..u19, u11 follows u5
+		for j in 0u64..20u64 {
+			w.follows.push(("u3".to_string(), format!("u{}", j)));
+		}
+		w.follows.push(("u11".to_string(), "u5".to_string()));
+		// 800 posts: authors cycle the 40 usernames, visibility mixed, every 17th deleted
+		for k in 0u64..800u64 {
+			let pid: u64 = 100 + k;
+			let author: String = format!("u{}", k % 40u64);
+			let vis: Visibility = if k % 3u64 == 0 {
+				Visibility::FollowersOnly
+			} else {
+				Visibility::Everyone
+			};
+			let st: PostStatus = if k % 17u64 == 0 {
+				PostStatus::Deleted
+			} else {
+				PostStatus::Other
+			};
+			w.posts.push((
+				pid,
+				Post {
+					author,
+					text: "t".to_string(),
+					visibility: vis,
+					status: st,
+					likes: vec![],
+					replies: vec![],
+					parent: None,
+				},
+			));
+			w.newest_first.insert(0, pid);
+			w.used_post_ids.push(pid);
+		}
+		let ix: WorldIndex = build_index(&w);
+		// global: the delegator and the _ix twin must both equal the pure-Vec reference
+		assert!(global_timeline(&w, 7, 50) == global_timeline_ref(&w, 7, 50));
+		assert!(global_timeline_ix(&w, &ix, 7, 50) == global_timeline_ref(&w, 7, 50));
+		// personal: u3 follows authors u0..u19; n=2000 exceeds the readable total
+		assert!(personal_timeline(&w, 7, 5) == personal_timeline_ref(&w, 7, 5));
+		assert!(personal_timeline(&w, 7, 2000) == personal_timeline_ref(&w, 7, 2000));
+		assert!(personal_timeline_ix(&w, &ix, 7, 5) == personal_timeline_ref(&w, 7, 5));
+		assert!(personal_timeline_ix(&w, &ix, 7, 2000) == personal_timeline_ref(&w, 7, 2000));
+		// the anonymous session via sid 8 follows only u5
+		assert!(personal_timeline(&w, 8, 2000) == personal_timeline_ref(&w, 8, 2000));
+		assert!(personal_timeline_ix(&w, &ix, 8, 2000) == personal_timeline_ref(&w, 8, 2000));
+		// public (anon global) too
+		assert!(public_timeline(&w, 50) == public_timeline_ref(&w, 50));
+		assert!(public_timeline_ix(&w, &ix, 50) == public_timeline_ref(&w, 50));
 	}
 }

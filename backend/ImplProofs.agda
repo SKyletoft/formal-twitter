@@ -411,6 +411,9 @@ th-prop-revoke-used
 -- code to the pre-TC full-filter + take_n behaviour for n in {n, 0, 1, 2, big}.
 -- Hence the take ∘ filter characterisation, and the quantified theorems below
 -- (th-timeline-* uniq/len/membership), still cover the new code.
+-- F4a-2: step_ix + the _ix timelines are the hot path, pinned by qc prop_step_ix_equiv /
+-- prop_timeline_*_ix over the *_timeline_ref pure-Vec references; step keeps its signature,
+-- so the take ∘ filter characterisation and the th-timeline-* theorems above still apply.
 th-timeline-global-uniq :
   ∀ {before n sid acc user} →
   ValidSession before sid acc user →
