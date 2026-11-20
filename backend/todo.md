@@ -85,9 +85,15 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
 
 ## Next (ordered queue)
-- [~] F4 (impl subagent, IN PROGRESS): model.rs WorldIndex side-cache — HashMap/HashSet lookups (accounts,
-      sessions, posts, follows-set) rebuilt on reload; timelines consult cache with Vec-fallback; QuickCheck
-      cached==uncached props; Agda pointer comment only (A4 policy). World fields UNCHANGED.
+- [x] F4a (attempt 1, REJECTED): subagent died mid-run leaving broken stubs (pub fun(, dangling 'a, comment-only
+      bodies) — partial reverted, model.rs back to HEAD byte-identical. Lesson: keep subagent generation units small;
+      split F4a into helpers-first, step-conversion second. DESIGN COMMITTED: WorldIndex{accounts_ix,sessions_ix,
+      posts_ix: first-occurrence HashMaps; follows_ix HashSet} + build_index (insert-if-absent = Vec first-match) +
+      _ix lookup/predicate helpers; step KEEPS signature: step(w,..) = step_ix(w, build_index(w), ..) (one ix body,
+      no 200-line copy); original timelines keep names/signatures, delegate to _ix twins; pure-Vec *_timeline_ref
+      kept test-only as QuickCheck reference; Server holds index, rebuilt on reload, serve_command passes it to step_ix.
+- [ ] F4b (impl subagent): main.rs Server +index field (built at launch from loaded World), rebuilt after every
+      reload assignment, serve_command calls step_ix(&before, &locked.index, ..); gates incl. smoke suite.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
 - [ ] F2 (impl subagent): delta-driven apply() touching only changed keys (was full-world diff views).
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
