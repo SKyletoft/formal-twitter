@@ -140,8 +140,9 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       7-line (F2) pointer comment ONLY (A4); 65->71 tests (53 lib + 12 bin + 6 smoke 31.7s), gates fmt/build/clippy/agda x2
       all rc 0. Note: neither step_ix nor patch_world appends to a parent's replies FIELD — the replies ROW is the DB encoding
       of child.parent, load_world re-derives it; Follow/Like deltas guarded by *_ix probes so INSERTs never re-clash.
-- [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
-  commit each accepted task with co-author maki@qwen3.8-flash-next-coder.
+- [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
+  71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
+  OK; every accepted task committed with co-author maki@qwen3.8-flash-next-coder. QUEUE EMPTY — F-queue complete.
 
 ## Reference: spec semantics (Twitter.agda + Interface.agda, from R4/R5)
 - `World` (:65-109): account-at String -> Maybe Account{password, default-visibility}; session-at Sid ->
