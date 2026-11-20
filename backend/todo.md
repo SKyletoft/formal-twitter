@@ -140,6 +140,16 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       7-line (F2) pointer comment ONLY (A4); 65->71 tests (53 lib + 12 bin + 6 smoke 31.7s), gates fmt/build/clippy/agda x2
       all rc 0. Note: neither step_ix nor patch_world appends to a parent's replies FIELD — the replies ROW is the DB encoding
       of child.parent, load_world re-derives it; Follow/Like deltas guarded by *_ix probes so INSERTs never re-clash.
+- [ ] ST1 (impl subagent): RESTORED INSTRUCTION (lost at 54155e6/a9cd7ad, recovered from git history): "The spec
+      describes /api, let / just statically serve frontend/". main.rs static routes: GET / -> frontend/index.html
+      (text/html), GET /style.css, GET /app.js; frontend_root resolution copied from 3857f06 (CARGO_MANIFEST_DIR/../..
+      fallback + current_exe ../.. for nix $out/bin -> $out/frontend), traversal guard, content_type_for copied; mount
+      in routes!; bin tests: index bytes == frontend/index.html on disk, traversal -> None/404.
+- [ ] ST2 (impl subagent): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
+      needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
+      serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
+      World (derive(Debug) additive), #[get("/log")] plaintext lines; tests for both formatters.
+- [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
   OK; every accepted task committed with co-author maki@qwen3.8-flash-next-coder. QUEUE EMPTY — F-queue complete.
