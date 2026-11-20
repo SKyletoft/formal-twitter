@@ -77,10 +77,17 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   hand-fold DELETED (db_max_seq = one-shot launch seed on the load conn); Server +max_seq, bumped by new_post_count
   two-finger merge on COMMITTED apply only (failure arms leave it; single-writer-per-DB-file caveat documented);
   test_apply_max_hint pins hint verbatim (seqs 1..5, hint 42 -> seq 43); perf-scale 501 via hint 500; 50->51 tests.
+- [x] F9 (68c7f2b): Server +conn: Option<SqliteConnection> seeded from the LAUNCH connection (init_or_open now returns
+  (world,max_seq,conn) tuple); serve_command mem::swaps conn out for the request — happy path reuses held conn for apply
+  + tick reload (zero reopen/path-copy), failed-reopen arm reopens once + reload_all_sections(&fresh) + stores it back,
+  rolled-back arm resyncs over held conn; reload_all_sections signature (conn,&w)->w, Err->cache-stays-put pinned at call
+  site; + test_apply_conn_reuse (one establish, two successive apply commits same conn, both views == after2);
+  test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
 
 ## Next (ordered queue)
-- [ ] F9 (impl subagent): hold SqliteConnection in Server; reopen only on apply/reopen failure; drop per-request establish + path copy.
 - [ ] F4 (impl subagent): World HashMap/HashSet side-caches rebuilt on reload (kills O(P^2) timeline lookups) + proof pins.
+      F4 may need splitting (cache struct + equivalence QuickCheck first; Agda pointer second). Coordinate: keep World fields
+      pinned by ImplProofs UNCHANGED — side-cache is an ADDITIVE wrapper, timelines consult cache with Vec-fallback.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
 - [ ] F2 (impl subagent): delta-driven apply() touching only changed keys (was full-world diff views).
 - [ ] Final verify: cargo build/test, clippy -D warnings, cargo fmt --check, agda typecheck all files, nix run;
