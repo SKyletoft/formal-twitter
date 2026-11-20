@@ -414,6 +414,9 @@ th-prop-revoke-used
 -- F4a-2: step_ix + the _ix timelines are the hot path, pinned by qc prop_step_ix_equiv /
 -- prop_timeline_*_ix over the *_timeline_ref pure-Vec references; step keeps its signature,
 -- so the take ∘ filter characterisation and the th-timeline-* theorems above still apply.
+-- F1a: step_d + patch_world split step's world rebuild into (result, effect payload) + a targeted
+-- patch, pinned by qc prop_delta_equiv: patch_world(w, step_d's delta) equals step's after-world
+-- outright.  step keeps its signature and delegates unchanged, so every th-* theorem above still applies.
 th-timeline-global-uniq :
   ∀ {before n sid acc user} →
   ValidSession before sid acc user →

@@ -139,6 +139,21 @@ pub enum Result {
 	CreatedPost(u64),
 	ReturnedPost(String, String, u64, Vec<u64>),
 }
+/// Delta: one Command's effect as a payload only: step_d builds it directly in the branch, patch_world applies it to an owned World.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Delta {
+	None_,
+	Publish(u64, String, String, Visibility, Option<u64>),
+	Delete(u64),
+	Authenticate(u64, String),
+	RevokeToken(u64),
+	Register(String, Account),
+	Follow(String, String),
+	Unfollow(String, String),
+	Like(u64, String),
+	Unlike(u64, String),
+	TimePasses(Vec<u64>),
+}
 
 /// Spec helper: list membership (Agda's ∈).
 pub fn member<T: Eq>(xs: &[T], x: T) -> bool {
@@ -949,17 +964,252 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 	let ix: WorldIndex = build_index(w);
 	step_ix(w, &ix, cmd, fresh_pid, fresh_sid)
 }
+/// Index-backed Deterministic Step as effect: same guards and orderings as step_ix, each branch returning (Result, Delta) with its payload built directly; no World is cloned.
+pub fn step_d(
+	w: &World,
+	ix: &WorldIndex,
+	cmd: Command,
+	fresh_pid: u64,
+	fresh_sid: u64,
+) -> (Result, Delta) {
+	let expired: bool = match extract_sid(cmd.clone()) {
+		Some(sid) => !valid_session_ix(w, ix, sid),
+		None => false,
+	};
+	if expired {
+		return (Result::Expired, Delta::None_);
+	}
+	match cmd {
+		Command::Publish(sid, txt, parent) => {
+			if used_pid(w, fresh_pid) {
+				return (Result::Denied, Delta::None_);
+			}
+			let user = active_user_ix(w, ix, sid).unwrap();
+			let acc = account_at_ix(w, ix, &user);
+			let mut vis: Visibility = Visibility::Everyone;
+			if let Some(a) = acc {
+				vis = a.default_visibility;
+			}
+			let readable: bool = match parent {
+				Some(ppid) => can_read_ix(w, ix, sid, ppid),
+				None => true,
+			};
+			if !readable {
+				return (Result::Denied, Delta::None_);
+			}
+			let parent_vis: Option<Visibility> = match parent {
+				Some(ppid) => match post_at_ix(w, ix, ppid) {
+					Some(ppost) => Some(ppost.visibility),
+					None => None,
+				},
+				None => None,
+			};
+			if parent_vis == Some(Visibility::FollowersOnly) {
+				vis = Visibility::FollowersOnly;
+			}
+			(
+				Result::CreatedPost(fresh_pid),
+				Delta::Publish(fresh_pid, user, txt, vis, parent),
+			)
+		}
+		Command::Delete(sid, pid) => {
+			let user = active_user_ix(w, ix, sid).unwrap();
+			match post_at_ix(w, ix, pid) {
+				None => (Result::Denied, Delta::None_),
+				Some(post) => {
+					if post.author != user {
+						(Result::Denied, Delta::None_)
+					} else {
+						(Result::Success, Delta::Delete(pid))
+					}
+				}
+			}
+		}
+		Command::ReadPost(msid, pid) => {
+			let readable: bool = match msid {
+				None => is_post_public_ix(w, ix, pid),
+				Some(sid) => can_read_ix(w, ix, sid, pid),
+			};
+			if !readable {
+				return (Result::Denied, Delta::None_);
+			}
+			match post_at_ix(w, ix, pid) {
+				None => (Result::Denied, Delta::None_),
+				Some(post) => (
+					Result::ReturnedPost(
+						post.author,
+						post.text,
+						len_u64(&post.likes),
+						post.replies.clone(),
+					),
+					Delta::None_,
+				),
+			}
+		}
+		Command::ReadPersonalTimeline(sid, n) => (
+			Result::ReturnedTimeline(personal_timeline_ix(w, ix, sid, n)),
+			Delta::None_,
+		),
+		Command::ReadGlobalTimeline(msid, n) => {
+			let ids: Vec<u64> = match msid {
+				None => public_timeline_ix(w, ix, n),
+				Some(sid) => global_timeline_ix(w, ix, sid, n),
+			};
+			(Result::ReturnedTimeline(ids), Delta::None_)
+		}
+		Command::Authenticate(user, passwd) => {
+			let issued: bool = match account_at_ix(w, ix, &user) {
+				None => false,
+				Some(acc) => acc.password == passwd && !used_sid(w, fresh_sid),
+			};
+			if issued {
+				(
+					Result::IssuedSession(fresh_sid),
+					Delta::Authenticate(fresh_sid, user),
+				)
+			} else {
+				(Result::LoginFailed, Delta::None_)
+			}
+		}
+		Command::RevokeToken(sid) => (Result::Success, Delta::RevokeToken(sid)),
+		Command::Register(user, passwd) => {
+			if account_at_ix(w, ix, &user).is_some() {
+				(Result::SignupFailed, Delta::None_)
+			} else {
+				(
+					Result::Success,
+					Delta::Register(
+						user,
+						Account {
+							password: passwd,
+							default_visibility: Visibility::Everyone,
+						},
+					),
+				)
+			}
+		}
+		Command::Follow(sid, followee) => {
+			let user = active_user_ix(w, ix, sid).unwrap();
+			if follows_ix(w, ix, &user, &followee) {
+				(Result::Success, Delta::None_)
+			} else {
+				(Result::Success, Delta::Follow(user, followee))
+			}
+		}
+		Command::Unfollow(sid, followee) => {
+			let user = active_user_ix(w, ix, sid).unwrap();
+			(Result::Success, Delta::Unfollow(user, followee))
+		}
+		Command::Like(sid, pid) => {
+			if !can_read_ix(w, ix, sid, pid) {
+				return (Result::Denied, Delta::None_);
+			}
+			let user = active_user_ix(w, ix, sid).unwrap();
+			(Result::Success, Delta::Like(pid, user))
+		}
+		Command::Unlike(sid, pid) => {
+			if !can_read_ix(w, ix, sid, pid) {
+				return (Result::Denied, Delta::None_);
+			}
+			let user = active_user_ix(w, ix, sid).unwrap();
+			(Result::Success, Delta::Unlike(pid, user))
+		}
+		Command::TimePasses => {
+			// every sid whose session is Active: exactly the ones step revokes
+			let mut sids: Vec<u64> = vec![];
+			for e in &w.sessions {
+				if matches!(e.1, SessionStatus::Active(_)) {
+					sids.push(e.0);
+				}
+			}
+			(Result::Success, Delta::TimePasses(sids))
+		}
+	}
+}
+
+/// Apply a Delta to an owned World: reproduces step_ix's field mutations exactly (same push order, insert index, retain, status sets), touching only the delta's targets.
+pub fn patch_world(w: World, d: Delta) -> World {
+	// the World moves in; targeted in-place mutation, no rebuild and no World clone
+	let mut nw: World = w;
+	match d {
+		Delta::None_ => {}
+		Delta::Publish(pid, author, text, visibility, parent) => {
+			nw.posts.push((
+				pid,
+				Post {
+					author,
+					text,
+					visibility,
+					status: PostStatus::Other,
+					likes: vec![],
+					replies: vec![],
+					parent,
+				},
+			));
+			nw.newest_first.insert(0, pid);
+			nw.used_post_ids.push(pid);
+		}
+		Delta::Delete(pid) => {
+			for e in &mut nw.posts {
+				if e.0 == pid {
+					e.1.status = PostStatus::Deleted;
+				}
+			}
+		}
+		Delta::Authenticate(sid, user) => {
+			nw.sessions.push((sid, SessionStatus::Active(user)));
+			nw.used_session_ids.push(sid);
+		}
+		Delta::RevokeToken(sid) => {
+			for e in &mut nw.sessions {
+				if e.0 == sid {
+					e.1 = SessionStatus::Revoked;
+				}
+			}
+		}
+		Delta::Register(user, acct) => nw.accounts.push((user, acct)),
+		Delta::Follow(follower, followee) => nw.follows.push((follower, followee)),
+		Delta::Unfollow(follower, followee) => {
+			nw.follows.retain(|(f, g)| *f != follower || *g != followee)
+		}
+		Delta::Like(pid, user) => {
+			for e in &mut nw.posts {
+				// only posts with this pid react; already-liked keeps the list untouched (idempotence)
+				if e.0 == pid && !(e.1.likes).contains(&user) {
+					(e.1.likes).push(user.clone());
+				}
+			}
+		}
+		Delta::Unlike(pid, user) => {
+			for e in &mut nw.posts {
+				if e.0 == pid {
+					(e.1.likes).retain(|x| *x != user);
+				}
+			}
+		}
+		Delta::TimePasses(sids) => {
+			for e in &mut nw.sessions {
+				// revokes exactly the sids carried in the payload
+				if sids.contains(&e.0) {
+					e.1 = SessionStatus::Revoked;
+				}
+			}
+		}
+	}
+	nw
+}
+
 #[cfg(test)]
 mod qc {
 	use super::{
-		Account, Command, Post, PostStatus, Result, SessionStatus, Visibility, World, WorldIndex,
-		access_ok, access_ok_ix, account_at, account_at_ix, active_user, active_user_ix,
-		build_index, can_read, can_read_ix, empty_world, extract_sid, follows, follows_author,
-		follows_ix, global_timeline, global_timeline_ix, global_timeline_ref, is_post_public,
-		is_post_public_ix, len_u64, member, personal_timeline, personal_timeline_ix,
-		personal_timeline_ref, post_at, post_at_ix, public_timeline, public_timeline_ix,
-		public_timeline_ref, session_at, session_at_ix, step, step_ix, take_n, unique,
-		valid_session, valid_session_ix, well_formed,
+		Account, Command, Delta, Post, PostStatus, Result, SessionStatus, Visibility, World,
+		WorldIndex, access_ok, access_ok_ix, account_at, account_at_ix, active_user,
+		active_user_ix, build_index, can_read, can_read_ix, empty_world, extract_sid, follows,
+		follows_author, follows_ix, global_timeline, global_timeline_ix, global_timeline_ref,
+		is_post_public, is_post_public_ix, len_u64, member, patch_world, personal_timeline,
+		personal_timeline_ix, personal_timeline_ref, post_at, post_at_ix, public_timeline,
+		public_timeline_ix, public_timeline_ref, session_at, session_at_ix, step, step_d, step_ix,
+		take_n, unique, valid_session, valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1750,5 +2000,82 @@ mod qc {
 		// public (anon global) too
 		assert!(public_timeline(&w, 50) == public_timeline_ref(&w, 50));
 		assert!(public_timeline_ix(&w, &ix, 50) == public_timeline_ref(&w, 50));
+	}
+	/// QC of delta-equivalence: step_d's result matches step's and patching step_d's effect payload into the world yields step's after-world.
+	#[quickcheck]
+	fn prop_delta_equiv(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		let (res, d): (Result, Delta) = step_d(&w, &build_index(&w), cmd.clone(), ids.pid, ids.sid);
+		let (ref_after, ref_res): (World, Result) = step(&w, cmd, ids.pid, ids.sid);
+		res == ref_res && patch_world(w.clone(), d) == ref_after
+	}
+
+	// Pin: Register's payload carries the Account (password + Everyone); patch lands exactly that one new account.
+	#[test]
+	fn test_delta_register() {
+		let mut w: World = empty_world();
+		// one existing account so the patched accounts must hold exactly two
+		w.accounts.push((
+			"b".to_string(),
+			Account {
+				password: "q".to_string(),
+				default_visibility: Visibility::Everyone,
+			},
+		));
+		let cmd: Command = Command::Register("a".to_string(), "s3cret".to_string());
+		let (want, want_res) = step(&w, cmd.clone(), 7, 9);
+		let (res, d) = step_d(&w, &build_index(&w), cmd.clone(), 7, 9);
+		assert!(
+			res == Result::Success && res == want_res && patch_world(w.clone(), d.clone()) == want
+		);
+		// payload pins the password and the default-Everyone visibility outright
+		assert!(
+			d == Delta::Register(
+				"a".to_string(),
+				Account {
+					password: "s3cret".to_string(),
+					default_visibility: Visibility::Everyone
+				}
+			)
+		);
+	}
+
+	// Pin: Like's payload is (pid, user) and patch appends to that post's likes only.
+	#[test]
+	fn test_delta_like() {
+		let mut w: World = empty_world();
+		w.accounts.push((
+			"a".to_string(),
+			Account {
+				password: "p".to_string(),
+				default_visibility: Visibility::Everyone,
+			},
+		));
+		w.sessions.push((1, SessionStatus::Active("a".to_string())));
+		w.used_session_ids.push(1);
+		w.posts.push((
+			3,
+			Post {
+				author: "a".to_string(),
+				text: "t".to_string(),
+				visibility: Visibility::Everyone,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent: None,
+			},
+		));
+		w.newest_first.push(3);
+		w.used_post_ids.push(3);
+		let cmd: Command = Command::Like(1, 3);
+		let (want, want_res) = step(&w, cmd.clone(), 7, 9);
+		let (res, d) = step_d(&w, &build_index(&w), cmd.clone(), 7, 9);
+		assert!(d == Delta::Like(3, "a".to_string()) && res == Result::Success && res == want_res);
+		assert!(
+			patch_world(w.clone(), d) == want
+				&& post_at(&want, 3).unwrap().likes == vec!["a".to_string()]
+		);
 	}
 }
