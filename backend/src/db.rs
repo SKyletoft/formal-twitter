@@ -198,14 +198,17 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 	like_rows.sort();
 	reply_rows.sort();
 	follow_rows.sort();
-	let newest_first: Vec<u64> = posts::dsl::posts
-		.select(posts::dsl::pid)
-		.order(posts::dsl::seq.desc())
-		.load::<i64>(conn)
-		.unwrap_or_default()
-		.into_iter()
-		.map(|id| id as u64)
-		.collect();
+	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
+	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid),
+	// which are already pid-sorted here; stable sort keeps pid order on seq ties, matching
+	// the DB scan order of the removed query (seqs are unique stamps, so ties cannot occur).
+	let mut nf_pairs: Vec<(i64, i64)> = post_rows.iter().map(|row| (row.6, row.0)).collect();
+	nf_pairs.sort_by(|x, y| y.0.cmp(&x.0));
+	let newest_first: Vec<u64> = nf_pairs.into_iter().map(|(_, pid)| pid as u64).collect();
+	// (F5) bucket the sorted row lists once, then look each post's bucket up per post.
+	// (F5) keys are the u64 post ids; each Post keeps a fresh copy of its bucket.
+	let like_map = bucket_like_rows(like_rows);
+	let reply_map = bucket_reply_rows(reply_rows);
 	let posts_map: Vec<(u64, Post)> = post_rows
 		.into_iter()
 		.map(|(pid, author, text, vis, code, parent, _seq)| {
@@ -216,16 +219,16 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 					text,
 					visibility: dec_vis(vis),
 					status: dec_status(code),
-					likes: like_rows
+					// (F5) O(1) bucket lookup replaces the full-row-list filter;
+					likes: like_map
+						.get(&(pid as u64))
+						.unwrap_or(&vec![])
 						.iter()
-						.filter(|row| row.0 == pid)
-						.map(|row| row.1.clone())
+						.map(|user| user.to_string())
 						.collect(),
-					replies: reply_rows
-						.iter()
-						.filter(|row| row.0 == pid)
-						.map(|row| row.1 as u64)
-						.collect(),
+					// (F5) same for the reply buckets (u64 ids are copied).
+					// (F5) deref gives the u64 id.
+					replies: reply_map.get(&(pid as u64)).unwrap_or(&vec![]).to_vec(),
 					parent: parent.map(|p| p as u64),
 				},
 			)
@@ -328,6 +331,64 @@ pub fn reload_follows(conn: &mut SqliteConnection, w: World) -> World {
 	out
 }
 
+// ---- (F5) bucket likes/replies rows ONCE by post_pid (kills the P x (L + R) per-post rescans) ----
+// Both row lists are loaded tuple-sorted, so equal post_pid rows are contiguous and each bucket
+// keeps the query's ORDER BY order (likes asc by user, replies asc by reply_pid) - exactly the
+// subsequence the previous per-post full-list filter produced, so Post.likes / Post.replies stay
+// identical. Buckets are collected into a HashMap keyed by the u64 post id for O(1) lookup.
+fn bucket_like_rows(rows: Vec<(i64, String)>) -> HashMap<u64, Vec<String>> {
+	// (F5) one pass over the sorted rows, collecting runs of equal post_pid.
+	let n = rows.len();
+	// (F5) buckets keyed by the i64 post_pid, cast to u64 when collected.
+	let mut out: Vec<(i64, Vec<String>)> = vec![];
+	let mut i = 0;
+	while i < n {
+		// (F5) key of the run starting at i.
+		let pid = rows[i].0;
+		let mut j = i + 1;
+		// (F5) rows are sorted by key, so a mismatch ends the bucket.
+		while j < n && rows[j].0 == pid {
+			j += 1;
+		}
+		// (F5) bucket keeps the row order the query gave; users clone so each Post owns its list.
+		// (F5) push the (key, bucket) pair and jump past the run.
+		out.push((pid, rows[i..j].iter().map(|row| row.1.clone()).collect()));
+		i = j;
+	}
+	// (F5) collect buckets straight into the HashMap (no per-row insert loop).
+	// (F5) key cast to u64.
+	out.into_iter()
+		.map(|(pid, users)| (pid as u64, users))
+		.collect()
+}
+
+fn bucket_reply_rows(rows: Vec<(i64, i64)>) -> HashMap<u64, Vec<u64>> {
+	// (F5) same contiguous-run grouping as bucket_like_rows: reply rows are tuple-sorted by
+	// (post_pid, reply_pid), so each bucket is exactly the query-order reply list of a post.
+	// (F5) one pass over the sorted rows.
+	let n = rows.len();
+	// (F5) buckets keyed by the i64 post_pid, cast later.
+	let mut out: Vec<(i64, Vec<i64>)> = vec![];
+	let mut i = 0;
+	while i < n {
+		let pid = rows[i].0;
+		let mut j = i + 1;
+		// (F5) run of equal post_pid rows.
+		while j < n && rows[j].0 == pid {
+			j += 1;
+		}
+		// (F5) bucket keeps ascending reply_pid order; push pair and skip the run.
+		out.push((pid, rows[i..j].iter().map(|row| row.1).collect()));
+		i = j;
+	}
+	// (F5) collect into the HashMap keyed by the u64 post id.
+	// (F5) reply ids i64 -> u64, so Post.replies stays a Vec<u64>.
+	// (F5) no per-row insert loop, so clippy's insert-in-loop style lint stays quiet.
+	out.into_iter()
+		.map(|(pid, kids)| (pid as u64, kids.into_iter().map(|k| k as u64).collect()))
+		.collect()
+}
+
 /// reload-posts (task DB3b): ONE section for posts, newest_first and used_post_ids,
 /// which all derive from the posts tables, so they must move together.  Re-queries
 /// posts (plus the likes/replies rows load_world's Post decode reads) and rebuilds
@@ -355,17 +416,23 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
 		.load::<(i64, i64)>(conn)
 		.unwrap_or_default();
-	let newest_first: Vec<u64> = posts::dsl::posts
-		.select(posts::dsl::pid)
-		.order(posts::dsl::seq.desc())
-		.load::<i64>(conn)
-		.unwrap_or_default()
-		.into_iter()
-		.map(|id| id as u64)
-		.collect();
 	post_rows.sort();
 	like_rows.sort();
 	reply_rows.sort();
+	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
+	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid);
+	// seqs are unique stamps, so ties cannot occur and the order equals the query's.
+	let mut nf_pairs: Vec<(i64, i64)> = post_rows.iter().map(|row| (row.6, row.0)).collect();
+	nf_pairs.sort_by(|x, y| y.0.cmp(&x.0));
+	let newest_first: Vec<u64> = nf_pairs.into_iter().map(|(_, pid)| pid as u64).collect();
+	// (F5) bucket the sorted row lists once, then look each post's bucket up per post.
+	// (F5) keys are the u64 post ids; each Post keeps a fresh copy of its bucket.
+	let like_map = bucket_like_rows(like_rows);
+	// (F5) reply buckets keyed the same way.
+	// (F5) both built before the Post decode loop.
+	let reply_map = bucket_reply_rows(reply_rows);
+	// (F5) decode loop now reads buckets, never the whole row list.
+	// (F5) pids iterate ascending (post_rows sorted), buckets keyed by pid.
 	let posts_map: Vec<(u64, Post)> = post_rows
 		.into_iter()
 		.map(|(pid, author, text, vis, code, parent, _seq)| {
@@ -376,16 +443,19 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 					text,
 					visibility: dec_vis(vis),
 					status: dec_status(code),
-					likes: like_rows
+					// (F5) O(1) bucket lookup replaces the full-row-list filter;
+					// (F5) get borrows the bucket, so elements are copied into this Post.
+					// (F5) None (no likes) falls back to an empty list.
+					likes: like_map
+						.get(&(pid as u64))
+						.unwrap_or(&vec![])
 						.iter()
-						.filter(|row| row.0 == pid)
-						.map(|row| row.1.clone())
+						.map(|user| user.to_string())
 						.collect(),
-					replies: reply_rows
-						.iter()
-						.filter(|row| row.0 == pid)
-						.map(|row| row.1 as u64)
-						.collect(),
+					// (F5) same for the reply buckets (u64 ids are copied).
+					// (F5) deref gives the u64 id.
+					// (F5) None means the post has no replies.
+					replies: reply_map.get(&(pid as u64)).unwrap_or(&vec![]).to_vec(),
 					parent: parent.map(|p| p as u64),
 				},
 			)
@@ -656,8 +726,21 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 						.execute(conn)
 						.is_ok();
 				}
+				// (F6) membership sets built ONCE per touched post: they replace the nested
+				// (F6) any() scans (O(L^2) for likes, O(R^2) for replies). Iteration below is
+				// (F6) unchanged, so the INSERT/DELETE statements keep their exact order.
+				// (F6) old likers keyed by reference, so no string is copied.
+				let old_likes: HashSet<&String> = old.likes.iter().collect();
+				// (F6) new likers likewise.
+				let new_likes: HashSet<&String> = post.likes.iter().collect();
+				// (F6) old reply ids keyed by u64, as next_sids does.
+				// (F6) deref gives the u64.
+				let old_replies: HashSet<u64> = old.replies.iter().copied().collect();
+				// (F6) new reply ids likewise.
+				let new_replies: HashSet<u64> = post.replies.iter().copied().collect();
 				for user in post.likes.iter() {
-					if !old.likes.iter().any(|prev| prev == user) {
+					// (F6) O(1) probe replaces the old-likes any() scan.
+					if !old_likes.contains(&user) {
 						ok &= insert_into(likes::dsl::likes)
 							.values((
 								likes::dsl::post_pid.eq(*pid as i64),
@@ -668,7 +751,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 					}
 				}
 				for user in old.likes.iter() {
-					if !post.likes.iter().any(|next| next == user) {
+					// (F6) O(1) probe replaces the new-likes any() scan.
+					if !new_likes.contains(&user) {
 						ok &= delete(likes::dsl::likes)
 							.filter(
 								likes::dsl::post_pid
@@ -680,7 +764,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 					}
 				}
 				for reply_pid in post.replies.iter() {
-					if !old.replies.iter().any(|prev| prev == reply_pid) {
+					// (F6) O(1) probe replaces the old-replies any() scan.
+					if !old_replies.contains(reply_pid) {
 						ok &= insert_into(replies::dsl::replies)
 							.values((
 								replies::dsl::post_pid.eq(*pid as i64),
@@ -691,7 +776,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 					}
 				}
 				for reply_pid in old.replies.iter() {
-					if !post.replies.iter().any(|next| next == reply_pid) {
+					// (F6) O(1) probe replaces the new-replies any() scan.
+					if !new_replies.contains(reply_pid) {
 						ok &= delete(replies::dsl::replies)
 							.filter(
 								replies::dsl::post_pid

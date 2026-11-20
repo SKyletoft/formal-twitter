@@ -269,3 +269,24 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - Coordinator probe: `timeout 3 ./target/debug/formal-twitter` prints all 13 routes + graceful shutdown.
 - T4a note: apply() tests exist (test_apply_inserts_all/test_apply_diff) with ImplApply.agda pins; proofs landed.
 - T5 note: cargo test = 29 passed (4 suites, 32s); smoke reentrancy = 3 sequential servers on ONE /tmp sqlite file.
+
+## Task G1 (db.rs-internal perf fixes, HEAD db9be76) — ACCEPTED, committed below (coordinator reran: fmt/clippy 0, 49 tests, agda x2 0, scope db.rs +122/-36)
+F7 done: load_world (:197-207) + reload_posts (:357-365) - newest_first now derived by
+stable RAM sort of the already-loaded post_rows (row.6=seq desc -> row.0=pid); the 4th
+full-table ORDER BY seq DESC query deleted in both. db.rs 1199 -> 1196 lines.
+F5 pending (load_world + reload_posts likes/replies per-post filter -> bucket once, HashMap).
+F6 pending (apply() like/reply diff O(L^2) -> HashSet old/new).
+Gates still to run: fmt/build/test 49 (34 lib+9 bin+6 smoke)/clippy -D warnings/agda x2.
+G1 result: all three fixes land; db.rs 1199 -> 1285 lines; gates all 0
+(cargo fmt --check, build, test = 49 passed / 4 suites / 32s, clippy --all-targets -D warnings,
+agda ImplProofs, agda ImplWire). NOT committed.
+Refs: F7 load_world :201-207 (nf_pairs stable sort, 4th query gone) + reload_posts :422-427;
+F5 helpers :339-364 bucket_like_rows / :365-391 bucket_reply_rows (run-contiguous grouping of the
+tuple-sorted row lists -> HashMap keyed by u64 pid), call sites load_world :210-211 + :224-231,
+reload_posts :430-432 + :451-458; F6 apply Some(old) :733-745 sets (HashSet<&String> old/new likes,
+HashSet<u64> old/new replies) + O(1) probes at :743/:753/:765/:777.
+Order preservation: seqs are unique stamps so newest_first = stable seq-desc sort of pid-sorted rows;
+likes/replies buckets keep tuple-sort (= query ORDER BY) order; apply() loops still iterate post/old
+vecs in original order, only the membership test changed.
+Clippy fixes needed after first pass: into_iter_on_ref -> iter, map_clone/map_clonable -> to_vec()/
+to_string()/copied(), get(pid) -> get(&pid), cmp(x) -> cmp(&x) (pseudo-rust wants explicit borrows).
