@@ -58,13 +58,24 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   instead of per-post row filters), HashSet set-diffs for like/reply apply (O(1) probes), newest_first derived by
   stable RAM seq sort (4th full-table ORDER BY query gone in load_world AND reload_posts); db.rs 1199->1285 lines;
   gates: fmt/build/test 49 (34 lib+9 bin+6 smoke)/clippy -D warnings/agda ImplProofs+ImplWire all 0.
+- [x] TDC (34e44f6, coordinator): todo.md cleanup — condensed history to one line/commit, ordered Next queue.
+- [x] T10 (research): frontend/app.js NON-CONFORMANT vs Interface.agda — 6 endpoints names/paths exact and POST bodies
+  token-first OK, but get-tweet/global/private-timeline are GET+query (Interface.agda: 15 to-request clauses ALL POST,
+  zero GET), POST bodies LF-joined + trailing LF vs CRLF no-trailing (app.js:134), empty-token sent as `token=`/''
+  line vs spec arity-omission (:134-142/:153-161), headers lack Accept/charset, logout never called. Aliases (T6)
+  bridge FULLY for what app.js sends: query_param None-rules + alias_body no-token-line + split_lines trailing-CRLF
+  tolerance; GET/POST twins byte-equal incl. token-less private refusal (smoke test_get_alias_roundtrip).
+- [x] T11 (decision): KEEP the GET aliases. Only consumers of GET: frontend/app.js (shipped verbatim in result/frontend
+  build output) + smoke test_get_alias_roundtrip; spec sanctions POST-only, so removing aliases breaks the shipped
+  frontend for get-tweet + timelines -> deletion would require editing a legacy artifact we do not own. Aliases add no
+  permission logic (re-enter same parse_action/to_command/serve_command). Decision + rationale recorded in routes! comment.
+- [x] D1 (659e18c): main.rs failure paths (reopen Err / apply==false) now call reload_all_sections(path,&world-before)
+  -> reopen + reload_accounts/sessions/follows/posts chain (Err -> cache stays put, documented); World stays unadvanced,
+  403 bytes identical, tick not rotated, happy path unchanged; + test_reload_all_sections (tampers ALL FOUR sections,
+  asserts reloaded == load_world(fresh) + Err-branch no-panic); 49->50 tests; fmt/build/clippy/agda x2 all 0.
 
 ## Next (ordered queue)
-- [ ] TDC (coordinator): Clean up this todo list (condense history, ordered Next queue) -> commit "todo: TDC".
-- [ ] T10 (research subagent): Is frontend/app.js spec-conformant? (GET+LF vs Interface POST+CRLF; which endpoints app.js uses)
-- [ ] T11 (decision + maybe impl): Remove compat GET aliases? Decide from T10 verdict; if kept, document why.
-- [ ] D1 (impl subagent): main.rs — on reopen/apply FAILURE re-query ALL 4 RAM sections (DB-truth discipline gap from T9/D1).
-- [ ] F3 (impl subagent): cache max_seq in Server state; bump on insert; kill per-request SELECT-seq max fold (db.rs:595-604 era).
+- [ ] F3 (impl subagent): cache max_seq in Server state; bump on insert; kill per-request SELECT-seq max fold (db.rs era :595-604, post-G1 lines shifted).
 - [ ] F9 (impl subagent): hold SqliteConnection in Server; reopen only on apply/reopen failure; drop per-request establish + path copy.
 - [ ] F4 (impl subagent): World HashMap/HashSet side-caches rebuilt on reload (kills O(P^2) timeline lookups) + proof pins.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.
