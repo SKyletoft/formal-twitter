@@ -92,6 +92,18 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       _ix lookup/predicate helpers; step KEEPS signature: step(w,..) = step_ix(w, build_index(w), ..) (one ix body,
       no 200-line copy); original timelines keep names/signatures, delegate to _ix twins; pure-Vec *_timeline_ref
       kept test-only as QuickCheck reference; Server holds index, rebuilt on reload, serve_command passes it to step_ix.
+- [x] F4a-1 (impl subagent, ACCEPTED, THIS COMMIT): WorldIndex+build_index + 9 _ix helpers landed in
+      model.rs (1207->1446 lines): imports 3-4, WorldIndex 67-78, build_index 80-109, account_at_ix 190-194,
+      session_at_ix 206-213, post_at_ix 235-239, follows_ix 251-256, active_user_ix 289-296, valid_session_ix
+      306-313, access_ok_ix 342-349, can_read_ix 370-388, is_post_public_ix 398-405; 3 qc props (prop_ix_lookups_equiv,
+      prop_ix_predicates_equiv, prop_ix_build_firstwins w/ hand-built duplicate-username world, no well_formed guard)
+      at mod qc end ~1330-1446; tests 52->55 (39 lib + 10 bin + 6 smoke); gates fmt --check/build/clippy(-D warnings,
+      silent)/test/agda x2 all rc 0; no commit yet.
+- [ ] F4a-2 (impl subagent): step body MOVED into step_ix(w, ix, ..) using _ix lookups; step(w,..) = step_ix(w,
+      build_index(w), ..) wrapper (signature kept); timelines: *_timeline_ref pure-Vec copies kept test-only as
+      QuickCheck refs, public names delegate to _ix twins; HOT-PATH BORROWS: can_read_ix/timeline internals must
+      borrow Vec cells via index positions (no Post/Account clones per probe); qc prop_step_ix_equiv + timeline
+      equiv props + test_timeline_index_scale (~800 posts); ImplProofs pointer comment (1-3 lines, A4 policy).
 - [ ] F4b (impl subagent): main.rs Server +index field (built at launch from loaded World), rebuilt after every
       reload assignment, serve_command calls step_ix(&before, &locked.index, ..); gates incl. smoke suite.
 - [ ] F1 (impl subagent): step(&World) -> (Result, Delta) single-copy; serve feeds apply() the delta.

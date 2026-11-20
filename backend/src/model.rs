@@ -1,5 +1,8 @@
 //! Pure model mirroring spec/Twitter.agda: World, Command, Result, Step.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Visibility {
 	Everyone,
@@ -59,6 +62,50 @@ pub struct World {
 	pub used_post_ids: Vec<u64>,
 	/// World.used-session-ids
 	pub used_session_ids: Vec<u64>,
+}
+
+/// O(1) side-index over the World maps: first-occurrence positions per key, mirroring the Vec scans.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldIndex {
+	/// first position of each username in World.accounts
+	pub accounts_ix: HashMap<String, usize>,
+	/// first position of each session id in World.sessions
+	pub sessions_ix: HashMap<u64, usize>,
+	/// first position of each post id in World.posts
+	pub posts_ix: HashMap<u64, usize>,
+	/// the true (follower, followee) pairs of World.follows
+	pub follows_ix: HashSet<(String, String)>,
+}
+
+/// Build the side-index for a World; first occurrence of each key wins, matching the Vec scans.
+pub fn build_index(w: &World) -> WorldIndex {
+	// keep the first position per key, like the scan's first match
+	let mut accounts_ix: HashMap<String, usize> = HashMap::new();
+	for (i, (name, _)) in w.accounts.iter().enumerate() {
+		if !accounts_ix.contains_key(name) {
+			accounts_ix.insert(name.clone(), i);
+		}
+	}
+	let mut sessions_ix: HashMap<u64, usize> = HashMap::new();
+	for (i, (sid, _)) in w.sessions.iter().enumerate() {
+		if !sessions_ix.contains_key(sid) {
+			sessions_ix.insert(*sid, i);
+		}
+	}
+	let mut posts_ix: HashMap<u64, usize> = HashMap::new();
+	for (i, (pid, _)) in w.posts.iter().enumerate() {
+		if !posts_ix.contains_key(pid) {
+			posts_ix.insert(*pid, i);
+		}
+	}
+	// follows pairs are deduplicated by the set
+	let follows_ix: HashSet<(String, String)> = w.follows.iter().cloned().collect();
+	WorldIndex {
+		accounts_ix,
+		sessions_ix,
+		posts_ix,
+		follows_ix,
+	}
 }
 
 /// Command mirrors the Command data type of spec/Twitter.agda.
@@ -140,6 +187,12 @@ pub fn account_at_ref<'a>(w: &'a World, user: &str) -> Option<&'a Account> {
 	None
 }
 
+/// Index-backed World.account-at; same first-occurrence result as the scan.
+pub fn account_at_ix(w: &World, ix: &WorldIndex, user: &str) -> Option<Account> {
+	// one hash lookup, then the same Vec cell the scan would hit
+	ix.accounts_ix.get(user).map(|i| w.accounts[*i].1.clone())
+}
+
 /// World.session-at; absence means Unused.
 pub fn session_at(w: &World, sid: u64) -> SessionStatus {
 	for (s, st) in w.sessions.iter() {
@@ -148,6 +201,15 @@ pub fn session_at(w: &World, sid: u64) -> SessionStatus {
 		}
 	}
 	SessionStatus::Unused
+}
+
+/// Index-backed World.session-at; absence means Unused.
+pub fn session_at_ix(w: &World, ix: &WorldIndex, sid: u64) -> SessionStatus {
+	// same cell as the scan: first position for sid
+	match ix.sessions_ix.get(&sid) {
+		None => SessionStatus::Unused,
+		Some(i) => w.sessions[*i].1.clone(),
+	}
 }
 
 /// World.post-at; absence means nothing.
@@ -170,6 +232,12 @@ pub fn post_at_ref(w: &World, pid: u64) -> Option<&Post> {
 	None
 }
 
+/// Index-backed World.post-at; absence means nothing.
+pub fn post_at_ix(w: &World, ix: &WorldIndex, pid: u64) -> Option<Post> {
+	// one hash lookup, then the same Vec cell the scan would hit
+	ix.posts_ix.get(&pid).map(|i| w.posts[*i].1.clone())
+}
+
 /// World.follows; absence means false.
 pub fn follows(w: &World, follower: &str, followee: &str) -> bool {
 	for (f, g) in w.follows.iter() {
@@ -178,6 +246,13 @@ pub fn follows(w: &World, follower: &str, followee: &str) -> bool {
 		}
 	}
 	false
+}
+
+/// Index-backed World.follows; absence in the set means false.
+pub fn follows_ix(_w: &World, ix: &WorldIndex, follower: &str, followee: &str) -> bool {
+	// the pair is either present as a true edge or absent
+	ix.follows_ix
+		.contains(&(follower.to_string(), followee.to_string()))
 }
 
 /// World.used-post-ids membership.
@@ -211,11 +286,29 @@ pub fn active_user_ref(w: &World, sid: u64) -> Option<&String> {
 	None
 }
 
+/// Index-backed active session username; absence means no session.
+pub fn active_user_ix(w: &World, ix: &WorldIndex, sid: u64) -> Option<String> {
+	// status from the indexed cell; only Active yields a name
+	match session_at_ix(w, ix, sid) {
+		SessionStatus::Active(user) => Some(user.clone()),
+		_ => None,
+	}
+}
+
 /// Spec can-have-valid-session: sid is active for a user with an account.
 pub fn valid_session(w: &World, sid: u64) -> bool {
 	match active_user(w, sid) {
 		None => false,
 		Some(user) => account_at(w, &user).is_some(),
+	}
+}
+
+/// Index-backed can-have-valid-session.
+pub fn valid_session_ix(w: &World, ix: &WorldIndex, sid: u64) -> bool {
+	// active username must exist and own an account
+	match active_user_ix(w, ix, sid) {
+		None => false,
+		Some(user) => account_at_ix(w, ix, &user).is_some(),
 	}
 }
 
@@ -246,6 +339,15 @@ pub fn access_ok(w: &World, cmd: Command) -> bool {
 	}
 }
 
+/// Index-backed failed-access check.
+pub fn access_ok_ix(w: &World, ix: &WorldIndex, cmd: Command) -> bool {
+	// same command extraction; session validity answered from the index
+	match extract_sid(cmd.clone()) {
+		None => true,
+		Some(sid) => valid_session_ix(w, ix, sid),
+	}
+}
+
 /// Spec can-read-post w sid pid.
 pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 	match active_user_ref(w, sid) {
@@ -265,9 +367,38 @@ pub fn can_read(w: &World, sid: u64, pid: u64) -> bool {
 	}
 }
 
+/// Index-backed can-read-post; same chain of lookups as the scan.
+pub fn can_read_ix(w: &World, ix: &WorldIndex, sid: u64, pid: u64) -> bool {
+	// same chain: active name, account exists, post live and visible
+	match active_user_ix(w, ix, sid) {
+		None => false,
+		Some(user) => {
+			account_at_ix(w, ix, &user).is_some()
+				&& match post_at_ix(w, ix, pid) {
+					None => false,
+					Some(post) => {
+						post.status == PostStatus::Other
+							&& (post.visibility == Visibility::Everyone
+								|| (post.visibility == Visibility::FollowersOnly
+									&& follows_ix(w, ix, &user, &post.author)))
+					}
+				}
+		}
+	}
+}
+
 /// Spec is-post-public: exists with Everyone visibility and live status.
 pub fn is_post_public(w: &World, pid: u64) -> bool {
 	match post_at_ref(w, pid) {
+		None => false,
+		Some(post) => post.visibility == Visibility::Everyone && post.status == PostStatus::Other,
+	}
+}
+
+/// Index-backed is-post-public.
+pub fn is_post_public_ix(w: &World, ix: &WorldIndex, pid: u64) -> bool {
+	// same predicate: Everyone visibility and live status
+	match post_at_ix(w, ix, pid) {
 		None => false,
 		Some(post) => post.visibility == Visibility::Everyone && post.status == PostStatus::Other,
 	}
@@ -663,10 +794,12 @@ pub fn step(w: &World, cmd: Command, fresh_pid: u64, fresh_sid: u64) -> (World, 
 #[cfg(test)]
 mod qc {
 	use super::{
-		Account, Command, Post, PostStatus, Result, SessionStatus, Visibility, World, account_at,
-		active_user, can_read, empty_world, extract_sid, follows, follows_author, global_timeline,
-		is_post_public, len_u64, member, personal_timeline, post_at, public_timeline, step, take_n,
-		unique, valid_session, well_formed,
+		Account, Command, Post, PostStatus, Result, SessionStatus, Visibility, World, WorldIndex,
+		access_ok, access_ok_ix, account_at, account_at_ix, active_user, active_user_ix,
+		build_index, can_read, can_read_ix, empty_world, extract_sid, follows, follows_author,
+		follows_ix, global_timeline, is_post_public, is_post_public_ix, len_u64, member,
+		personal_timeline, post_at, post_at_ix, public_timeline, session_at, session_at_ix, step,
+		take_n, unique, valid_session, valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1203,5 +1336,111 @@ mod qc {
 			&& personal_timeline(&w, sid, 1) == old_personal_timeline(&w, sid, 1)
 			&& personal_timeline(&w, sid, 2) == old_personal_timeline(&w, sid, 2)
 			&& personal_timeline(&w, sid, 1000) == old_personal_timeline(&w, sid, 1000)
+	}
+
+	/// QC equivalence: every index-backed lookup agrees with the pure Vec scan, on present and absent keys alike.
+	#[quickcheck]
+	fn prop_ix_lookups_equiv(w: World, _cmd: Command, _ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		let ix: WorldIndex = build_index(&w);
+		// pool keys plus one off-pool key each to exercise the absent branch
+		let names: [String; 5] = [
+			users_pool()[0].clone(),
+			users_pool()[1].clone(),
+			users_pool()[2].clone(),
+			users_pool()[3].clone(),
+			"zz".to_string(),
+		];
+		let sids: [u64; 5] = [SIDS[0], SIDS[1], SIDS[2], SIDS[3], 99];
+		let pids: [u64; 6] = [PIDS[0], PIDS[1], PIDS[2], PIDS[3], PIDS[4], 99];
+		let mut ok: bool = true;
+		for u in &names {
+			ok = ok && account_at(&w, u) == account_at_ix(&w, &ix, u);
+		}
+		for sid in &sids {
+			ok = ok
+				&& session_at(&w, *sid) == session_at_ix(&w, &ix, *sid)
+				&& active_user(&w, *sid) == active_user_ix(&w, &ix, *sid);
+		}
+		for pid in &pids {
+			ok = ok && post_at(&w, *pid) == post_at_ix(&w, &ix, *pid);
+		}
+		for f in &names {
+			for g in &names {
+				ok = ok && follows(&w, f, g) == follows_ix(&w, &ix, f, g);
+			}
+		}
+		ok
+	}
+
+	/// QC equivalence: the index-backed predicates agree with the pure ones for in-pool and off-pool ids.
+	#[quickcheck]
+	fn prop_ix_predicates_equiv(w: World, cmd: Command, _ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		let ix: WorldIndex = build_index(&w);
+		let sids: [u64; 5] = [SIDS[0], SIDS[1], SIDS[2], SIDS[3], 99];
+		let pids: [u64; 6] = [PIDS[0], PIDS[1], PIDS[2], PIDS[3], PIDS[4], 99];
+		let mut ok: bool = access_ok(&w, cmd.clone()) == access_ok_ix(&w, &ix, cmd);
+		for sid in &sids {
+			ok = ok && valid_session(&w, *sid) == valid_session_ix(&w, &ix, *sid);
+		}
+		for pid in &pids {
+			ok = ok && is_post_public(&w, *pid) == is_post_public_ix(&w, &ix, *pid);
+		}
+		for sid in &sids {
+			for pid in &pids {
+				ok = ok && can_read(&w, *sid, *pid) == can_read_ix(&w, &ix, *sid, *pid);
+			}
+		}
+		ok
+	}
+
+	/// QC by construction: build_index keeps the first occurrence, pinned by a literal world with a duplicated username.
+	#[quickcheck]
+	fn prop_ix_build_firstwins(_w: World, _cmd: Command, _ids: StepArgs) -> bool {
+		// no well_formed guard: the tiny literal world is fixed and intentionally duplicated
+		let mut w2: World = empty_world();
+		w2.accounts.push((
+			"dupe".to_string(),
+			Account {
+				password: "first".to_string(),
+				default_visibility: Visibility::Everyone,
+			},
+		));
+		w2.accounts.push((
+			"dupe".to_string(),
+			Account {
+				password: "second".to_string(),
+				default_visibility: Visibility::FollowersOnly,
+			},
+		));
+		w2.sessions
+			.push((7, SessionStatus::Active("dupe".to_string())));
+		w2.posts.push((
+			11,
+			Post {
+				author: "dupe".to_string(),
+				text: "t".to_string(),
+				visibility: Visibility::Everyone,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent: None,
+			},
+		));
+		w2.follows.push(("a".to_string(), "dupe".to_string()));
+		w2.newest_first.push(11);
+		w2.used_post_ids.push(11);
+		w2.used_session_ids.push(7);
+		let ix: WorldIndex = build_index(&w2);
+		// first occurrence wins, so the first Account is what both the scan and the index yield
+		account_at(&w2, "dupe") == account_at_ix(&w2, &ix, "dupe")
+			&& post_at(&w2, 11) == post_at_ix(&w2, &ix, 11)
+			&& session_at(&w2, 7) == session_at_ix(&w2, &ix, 7)
+			&& follows(&w2, "a", "dupe") == follows_ix(&w2, &ix, "a", "dupe")
 	}
 }
