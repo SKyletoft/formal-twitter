@@ -9,7 +9,7 @@
 //! `Response`, headers in the order the spec fixes.  The routes, state and
 //! launch come in part 2; nothing here talks to a server or to the DB.
 use formal_twitter::db::{
-	apply, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
+	apply, db_max_seq, init_or_open, load_world, reload_accounts, reload_follows, reload_posts,
 	reload_sessions, reopen,
 };
 use formal_twitter::model::{Command, Result, World, empty_world, step};
@@ -180,12 +180,21 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
-/// Server state: the world cache, the DB it mirrors, and the tick that drives
-/// the rotating PARTIAL cache reload (one section re-queried every four requests).
+/// Server state: the world cache, the DB it mirrors, the tick that drives
+/// the rotating PARTIAL cache reload (one section re-queried every four requests), and
+/// (F3) max_seq: the highest post seq THIS writer has stamped into the DB.  Seeded once at
+/// (F3) launch by db_max_seq (the only scan; the same connection load_world just used) and
+/// (F3) advanced per COMMITTED insert, so apply() never re-reads the seq column.  Invariant:
+/// (F3) max_seq >= every seq stored in the DB, with equality while one server owns the file;
+/// (F3) another server opening the same file reseeds it at startup.  A failed reopen or a
+/// (F3) rolled-back apply leaves max_seq alone, because no stamp changed in the DB from OUR
+/// (F3) writer (single writer per DB file).
 pub struct Server {
 	pub world: World,
 	pub db_path: String,
 	pub tick: u64,
+	/// (F3) cached max(seq) over the posts table (0 = empty DB); apply()'s stamp hint.
+	pub max_seq: u64,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -198,6 +207,45 @@ pub fn wire_error(_e: WireError) -> WireResponse {
 /// The cache-reload schedule: a pure 4-cycle 0 -> 1 -> 2 -> 3 -> 0.
 pub fn next_tick(t: u64) -> u64 {
 	(t + 1) % 4
+}
+
+/// (F3) How many posts `after` introduces over `before`: exactly the number of post INSERTs
+/// (F3) apply() stamps, so Server.max_seq advances by this after a COMMITTED batch (apply()
+/// (F3) stamped them sequentially at max_seq + 1 .. max_seq + that count).  World keeps both
+/// (F3) post vectors pid-sorted - load_world sorts them and step preserves that order - so a
+/// (F3) two-finger merge counts the extra pids with zero allocation and no hash set.
+fn new_post_count(before: &World, after: &World) -> u64 {
+	let nb: usize = before.posts.len();
+	let na: usize = after.posts.len();
+	let mut i: usize = 0;
+	let mut j: usize = 0;
+	let mut fresh: u64 = 0;
+	// (F3) bounded by nb + na: every step advances i or j, so the walk always terminates.
+	for _ in 0..(nb + na) {
+		if j >= na {
+			break;
+		}
+		if i >= nb {
+			// (F3) before exhausted: each remaining after pid is a fresh INSERT.
+			fresh += 1;
+			j += 1;
+		} else {
+			let b: u64 = before.posts[i].0;
+			let a: u64 = after.posts[j].0;
+			if a < b {
+				// (F3) a pid after has and before lacks: the post apply() INSERTs.
+				fresh += 1;
+				j += 1;
+			} else if a == b {
+				i += 1;
+				j += 1;
+			} else {
+				// (F3) a pid before has and after dropped: skip it, it changes no stamp.
+				i += 1;
+			}
+		}
+	}
+	fresh
 }
 
 /// D1 DB-truth discipline (failure path = full re-query): when reopen or apply fails the World stays unadvanced, but RAM must not stay stale against the DB, so the cached World is re-synced by re-opening a fresh connection and throwing out ALL FOUR cache sections at once through db.rs's reload fns.
@@ -266,7 +314,8 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 /// access_denied shape, so nothing can be served that is not committed in the DB.  After
 /// every commit exactly ONE cache section is thrown out and re-queried from the same
 /// connection, rotating follows -> sessions -> accounts -> posts by tick: RAM is refreshed
-/// periodically, never all at once, and load_world runs only at launch.  The lock is
+/// periodically, never all at once, and load_world runs only at launch (as does the one
+/// max(seq) scan behind Server.max_seq, so apply() gets its stamp hint from RAM).  The lock is
 /// poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable
 /// DB errors), so a poisoned guard still holds a valid Server.
 pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
@@ -290,17 +339,26 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 			// D1 failure path: nothing committed, so the World stays unadvanced, but RAM must
 			// never stay stale against the DB: full re-query of all four sections through the
 			// helper's fresh reopen before the 403 below (no DB view -> cache stays put).
+			// (F3) max_seq stays as it is too: no batch ran, so OUR writer moved no stamp.
 			locked.world = reload_all_sections(locked.db_path.clone(), before);
 			false
 		}
 		Ok(mut conn) => {
-			if !apply(&mut conn, &before, &after) {
+			// (F3) The stamp hint is the Server's cached max_seq: apply() never re-scans the
+			// (F3) posts table for it.
+			if !apply(&mut conn, &before, &after, locked.max_seq) {
 				// Rolled back: the DB refused the update, RAM must not advance.
 				// D1 failure path again: the cache re-syncs fully from the committed DB view.
 				// (only the cache sections move; the World's logical state stays unadvanced)
+				// (F3) max_seq stays as it is: the ROLLBACK restored every stamp, so OUR writer
+				// (F3) changed nothing in the DB and the hint is still exact.
 				locked.world = reload_all_sections(locked.db_path.clone(), before);
 				false
 			} else {
+				// (F3) Committed: apply() stamped exactly new_post_count new posts at max_seq + 1
+				// (F3) .. max_seq + k, so the cache hint advances by k and stays exact for the
+				// (F3) next request (the reload_all_sections failure arms above leave it put).
+				locked.max_seq += new_post_count(&before, &after);
 				// Committed: advance the cache AND rotate ONE section through the same
 				// connection, after the commit so the fresh writes stay visible.  after is
 				// moved, so the reload costs no extra World clone.
@@ -535,9 +593,14 @@ fn rocket() -> _ {
 		Ok(p) => p,
 	};
 	// Startup reopen must not panic; on failure the empty world still serves.
-	let world: World = match init_or_open(path.clone()) {
-		Err(_) => empty_world(),
-		Ok(mut conn) => load_world(&mut conn),
+	// (F3) The world cache and the stamp hint come from ONE launch connection: db_max_seq is
+	// (F3) the only max(seq) scan, so no per-request SELECT of the seq column survives.
+	let (world, max_seq): (World, u64) = match init_or_open(path.clone()) {
+		Err(_) => (empty_world(), 0),
+		Ok(mut conn) => {
+			let seeded: World = load_world(&mut conn);
+			(seeded, db_max_seq(&mut conn))
+		}
 	};
 	// Mount every endpoint at the path the spec fixes.
 	rocket::build()
@@ -545,6 +608,7 @@ fn rocket() -> _ {
 			world,
 			db_path: path,
 			tick: 0,
+			max_seq,
 		}))
 		.mount(
 			"/",

@@ -580,17 +580,46 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 
 // ---- Write-through diff (task T4) ----
 
+/// (F3) ONE-SHOT launch seed for a caller's max_seq cache: the ONLY place the seq column
+/// (F3) is scanned for a maximum, and it runs at server startup, never per request.
+/// Returns 0 for an empty DB, which apply() reads as "stamp the first post at seq 1".
+pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
+	// (F3) Bounded once-per-launch: plain load of the seq column, hand-folded for the
+	// (F3) maximum (the Aggregates type soup stays out of the way).
+	let seqs: Vec<i64> = posts::dsl::posts
+		.select(posts::dsl::seq)
+		.load::<i64>(conn)
+		.unwrap_or_default();
+	let mut best: u64 = 0;
+	for s in seqs.into_iter() {
+		// (F3) Guard before the signed-to-unsigned cast, so save_world's lossy seq = 0
+		// (F3) rows and any negative stamp never raise the hint.
+		if s > 0 && (s as u64) > best {
+			best = s as u64;
+		}
+	}
+	best
+}
+
 /// Bounded write-through: the DB must already mirror `before`; we mutate only
 /// the delta to `after`. Accounts only ever get INSERTs (password/visibility of
 /// an existing account never changes). Sessions UPDATE on status/user change,
 /// INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed
-/// with seq = (max existing seq in the DB) + 1, growing by one per insertion, so
-/// ORDER BY seq DESC keeps newest_first (new posts prepend); existing seqs stay put.
+/// with seq = max_hint + 1, growing by one per insertion, so ORDER BY seq DESC keeps
+/// newest_first (new posts prepend); existing seqs stay put.
 /// Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;
 /// follows likewise. Nothing existing is rewritten, so this is O(delta).
+/// (F3) max_hint is the CALLER's cached maximum seq currently stored in the DB (0 =
+/// (F3) empty DB). Contract: max_hint >= every seq in the DB; the first new post is stamped
+/// (F3) max_hint + 1 and successive inserts increment from there. apply() NEVER re-reads the
+/// (F3) seq column (that per-request SELECT + max-fold scan was O(P) and ran on pure reads
+/// (F3) too; it is gone). The caller keeps the hint exact by advancing it by the number of
+/// (F3) posts a COMMITTED call INSERTed; a false return changed nothing in the DB, so the
+/// (F3) caller's max_seq stays as it was. Single writer per DB file: another server opening
+/// (F3) the same file reseeds its hint at startup with db_max_seq, which is the only scan.
 /// The whole batch is one sqlite transaction (raw BEGIN/COMMIT or ROLLBACK pragmas);
 /// the Bool reports whether the batch committed, i.e. false means the DB is unchanged.
-pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool {
+pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hint: u64) -> bool {
 	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
 	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
 	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
@@ -663,17 +692,9 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 				.is_ok();
 		}
 	}
-	// max existing seq via plain load (bounded): avoids the Aggregates type soup.
-	let seqs: Vec<i64> = posts::dsl::posts
-		.select(posts::dsl::seq)
-		.load::<i64>(conn)
-		.unwrap_or_default();
-	let mut next_seq: i64 = 1;
-	for s in seqs.into_iter() {
-		if s >= next_seq {
-			next_seq = s + 1;
-		}
-	}
+	// (F3) No DB scan at all: the stamp counter starts at the caller's hint, so the first
+	// (F3) new post gets max_hint + 1 and every further INSERT increments from there.
+	let mut next_seq: i64 = max_hint as i64 + 1;
 	let prev_posts: HashMap<u64, &Post> = before
 		.posts
 		.iter()
@@ -851,10 +872,13 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World) -> bool
 mod db_tests {
 	use super::{
 		Account, Post, PostStatus, SessionStatus, Visibility, World, apply, init_or_open,
-		load_world, reload_accounts, reload_follows, reload_posts, reload_sessions, reopen,
+		load_world, posts, reload_accounts, reload_follows, reload_posts, reload_sessions, reopen,
 		save_world,
 	};
+	// (F3) The test-local (pid, seq) peek below needs the Query trait (.select), so it pulls
+	// (F3) the same prelude db.rs itself opens.
 	use crate::model::empty_world;
+	use diesel::prelude::*;
 
 	/// Canonical well-formed World for the save/load tests; rows are pre-sorted in the
 	/// order load_world returns them, so equality holds after a full save/reopen round-trip.
@@ -1069,14 +1093,16 @@ mod db_tests {
 
 	#[test]
 	/// T4 gate: apply on an empty DB (before = empty) INSERTs every row of after;
-	/// new pids get seq = max+1 from scratch, and reload reproduces after.
+	/// new pids get seq = max_hint + 1 from scratch (hint 0 = empty DB), and reload
+	/// reproduces after.
 	fn test_apply_inserts_all() {
 		let path = "/tmp/ft-apply-empty.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
 		// Wipe first so the test is hermetic when the file already exists from an earlier run.
 		save_world(&mut conn, empty_world());
 		let after = build_world();
-		let _ok = apply(&mut conn, &empty_world(), &after);
+		// (F3) hint 0: the DB is empty, so the stamps run 1, 2, 3.
+		let _ok = apply(&mut conn, &empty_world(), &after, 0);
 		let mut again = init_or_open(path.to_string()).unwrap();
 		assert!(load_world(&mut again) == after);
 	}
@@ -1092,7 +1118,9 @@ mod db_tests {
 		save_world(&mut conn, build_world());
 		let before = build_world();
 		let after = build_after();
-		let _ok = apply(&mut conn, &before, &after);
+		// (F3) hint 3: save_world above stamped the three posts with seqs 1..3, so the new
+		// (F3) post 500 is stamped 4 and the existing seqs stay put.
+		let _ok = apply(&mut conn, &before, &after, 3);
 		assert!(load_world(&mut conn) == after);
 		let mut again = init_or_open(path.to_string()).unwrap();
 		assert!(load_world(&mut again) == after);
@@ -1108,7 +1136,8 @@ mod db_tests {
 		save_world(&mut conn, build_world());
 		let before = build_world();
 		let after = build_after();
-		let committed = apply(&mut conn, &before, &after);
+		// (F3) hint 3 matches the saved DB's max seq, so the diff stamps post 500 at seq 4.
+		let committed = apply(&mut conn, &before, &after, 3);
 		assert!(committed);
 		assert!(load_world(&mut conn) == after);
 		let mut fresh = reopen(path.to_string()).unwrap();
@@ -1127,7 +1156,7 @@ mod db_tests {
 		save_world(&mut conn, pre.clone());
 		let mut bad_before = build_world();
 		bad_before.posts.retain(|entry| entry.0 != 1);
-		let committed = apply(&mut conn, &bad_before, &pre);
+		let committed = apply(&mut conn, &bad_before, &pre, 3);
 		assert!(!committed);
 		assert!(load_world(&mut conn) == pre);
 		let mut fresh = reopen(path.to_string()).unwrap();
@@ -1229,9 +1258,10 @@ mod db_tests {
 	}
 	#[test]
 	/// TB REDO perf-scale gate: 500 posts (pids 1 to 500, ids also in used_post_ids, newest_first
-	/// reversed) round-trip via save_world (seqs stamped 1 to 500), then apply of the diff:
-	/// delete pid 7, flip pid 11 to Deleted, insert pid 900 (seq 501). Batch COMMITS, load_world
-	/// equals after exactly (newest_first [900,500..8,6..1]) and a reopen loads it again.
+	/// reversed) round-trip via save_world (seqs stamped 1 to 500), then apply of the diff with
+	/// max_hint 500: delete pid 7, flip pid 11 to Deleted, insert pid 900 (seq 501 straight from
+	/// the hint, never from an O(P) re-scan). Batch COMMITS, load_world equals after exactly
+	/// (newest_first [900,500..8,6..1]) and a reopen loads it again.
 	fn test_apply_perf_scale() {
 		let path = "/tmp/ft-apply-perf-scale.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1276,9 +1306,81 @@ mod db_tests {
 		after.used_post_ids.push(900);
 		after.newest_first.insert(0, 900);
 		save_world(&mut conn, before.clone());
-		let committed = apply(&mut conn, &before, &after);
+		// (F3) hint 500: the 500 saved posts hold seqs 1..500, so pid 900 must land on 501.
+		let committed = apply(&mut conn, &before, &after, 500);
 		assert!(committed);
 		assert!(load_world(&mut conn) == after);
+		let mut fresh = reopen(path.to_string()).unwrap();
+		assert!(load_world(&mut fresh) == after);
+	}
+
+	/// (F3) Test-only peek at the DB's (pid, seq) rows, pid-sorted: apply() must never READ the
+	/// (F3) seq column, but a test still has to see the stamps the caller's hint produced.
+	fn seq_pairs(conn: &mut SqliteConnection) -> Vec<(i64, i64)> {
+		let mut rows: Vec<(i64, i64)> = posts::dsl::posts
+			.select((posts::dsl::pid, posts::dsl::seq))
+			.load::<(i64, i64)>(conn)
+			.unwrap_or_default();
+		// (F3) DB row order is unspecified; sort by pid (then seq) so the pin is deterministic.
+		rows.sort();
+		rows
+	}
+
+	#[test]
+	/// F3 gate: apply() stamps a new post VERBATIM at max_hint + 1, never from a DB re-scan.
+	/// The seeded DB holds posts with seqs 1..5 (max 5), yet the call passes max_hint = 42,
+	/// so the inserted pid 777 lands on seq 43 (the old fold scan would have said 6) and the
+	/// five existing rows keep their stamps 1..5 untouched.  The batch COMMITs, and a fresh
+	/// load reproduces the whole World with 777 heading newest_first (its seq is the highest).
+	fn test_apply_max_hint() {
+		let path = "/tmp/ft-apply-max-hint.sqlite";
+		let mut conn = init_or_open(path.to_string()).unwrap();
+		// Hermetic: the file can exist from an earlier run.
+		save_world(&mut conn, empty_world());
+		// Seed five posts; newest_first reversed makes save_world stamp pid 1..5 with seq 1..5.
+		let mut seeded: World = empty_world();
+		for index in 1..6 {
+			let pid: u64 = index as u64;
+			seeded.posts.push((
+				pid,
+				Post {
+					author: "alice".to_string(),
+					text: index.to_string(),
+					visibility: Visibility::Everyone,
+					status: PostStatus::Other,
+					likes: vec![],
+					replies: vec![],
+					parent: None,
+				},
+			));
+			seeded.newest_first.push(pid);
+			seeded.used_post_ids.push(pid);
+		}
+		seeded.newest_first.reverse();
+		// The DB must mirror `before` before apply() runs the diff.
+		save_world(&mut conn, seeded.clone());
+		// The DB's real max seq is 5, so a re-scan implementation would stamp the new post 6.
+		assert!(seq_pairs(&mut conn) == vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]);
+		let mut after: World = seeded.clone();
+		after.posts.push((
+			777,
+			Post {
+				author: "alice".to_string(),
+				text: "hinted".to_string(),
+				visibility: Visibility::Everyone,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent: None,
+			},
+		));
+		after.newest_first.insert(0, 777);
+		after.used_post_ids.push(777);
+		// (F3) hint 42 lies far above the DB's own max: the stamp must follow the hint.
+		let committed: bool = apply(&mut conn, &seeded, &after, 42);
+		assert!(committed);
+		// (F3) 43 = 42 + 1 pins the hint used verbatim; the five old rows are untouched.
+		assert!(seq_pairs(&mut conn) == vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (777, 43)]);
 		let mut fresh = reopen(path.to_string()).unwrap();
 		assert!(load_world(&mut fresh) == after);
 	}
