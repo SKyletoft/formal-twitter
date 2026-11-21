@@ -1,0 +1,287 @@
+:root {
+  --bg: #0e1319;
+  --panel: #161d25;
+  --card: #1d2732;
+  --ink: #e8edf3;
+  --muted: #96a4b6;
+  --accent: #4fc1f9;
+  --accent-dim: #2c7fa8;
+  --ok: #37b173;
+  --danger: #e2645f;
+  --border: #2b3745;
+  --rail-private: #4fc1f9;
+  --rail-public: #b9862f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.2rem;
+  margin: 0;
+}
+
+#session-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-right: auto;
+}
+
+button {
+  font: inherit;
+  background: var(--accent);
+  color: #0b1016;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 1rem;
+  cursor: pointer;
+}
+
+#logout-btn {
+  background: var(--danger);
+  color: #16100f;
+  margin-left: auto;
+}
+
+input,
+textarea {
+  font: inherit;
+  background: var(--panel);
+  color: var(--ink);
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 0.75rem;
+}
+
+textarea { resize: vertical; }
+
+#login-username,
+#signup-username { border-left: 3px solid var(--accent-dim); }
+
+#login-password,
+#signup-password { border-left: 3px solid var(--danger); }
+
+#auth-panel,
+#app-panel {
+  max-width: 46rem;
+  margin: 1.25rem auto 1.5rem;
+  padding: 0 1rem;
+}
+
+#auth-notice {
+  margin: 0.25rem 0 0.75rem;
+}
+
+#auth-cards {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+#auth-cards form {
+  flex: 1 1 15rem;
+}
+
+form {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.15rem;
+}
+
+#login-form,
+#signup-form,
+#compose-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+#login-form h2,
+#signup-form h2,
+#login-form input,
+#signup-form input,
+#compose-form textarea,
+#compose-form button {
+  flex: 1 1 100%;
+}
+
+#login-form .error,
+#signup-form .error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+#compose-form { margin: 0; }
+
+#compose-form button { margin-left: 0; }
+
+#compose-text { flex: 1 1 100%; }
+
+#compose-ok,
+#compose-error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+
+/* The stacked labeled rails: full width, PRIVATE above PUBLIC (document order),
+   each marked by a big label and a coloured left edge. */
+#private-rail,
+#public-rail {
+  width: 100%;
+  margin: 0 0 0 0;
+  padding: 1rem 1.5rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+#private-rail {
+  background: #121924;
+  border-left: 5px solid var(--rail-private);
+}
+
+#public-rail {
+  background: #131a1f;
+  border-left: 5px solid var(--rail-public);
+}
+
+#private-rail[hidden],
+#public-rail[hidden] {
+  display: none;
+}
+
+#private-label,
+#public-label,
+.rail-label {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  margin: 0 0 0.9rem 0;
+  color: var(--muted);
+}
+
+#private-label { color: var(--rail-private); }
+
+#public-label { color: var(--rail-public); }
+
+h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem 0;
+}
+
+#private-list,
+#public-list,
+.tweet-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#private-error,
+#public-error,
+.error {
+  color: var(--danger);
+  margin: 0.25rem 0 0 0;
+  font-size: 0.9rem;
+}
+
+#login-error,
+#signup-error {
+  color: var(--danger);
+  margin: 0.5rem 0 0 0;
+  font-size: 0.9rem;
+}
+
+.notice {
+  color: var(--ok);
+  margin: 0.25rem 0 0 0;
+}
+
+/* One row = one tweet-CARD: author button top-left, text, meta, Like button
+   bottom-right. */
+.tweet-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+}
+
+.card-author {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  align-self: flex-start;
+  font-weight: 600;
+}
+
+.card-text {
+  margin: 0;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.card-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.card-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.card-like {
+  background: var(--accent-dim);
+  color: #0b1016;
+  align-self: flex-end;
+  font-weight: 600;
+}
+
+.empty-row {
+  color: var(--muted);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.muted { color: var(--muted); }
+
+@media (max-width: 40rem) {
+  #private-rail,
+  #public-rail { padding: 0.75rem 0.75rem 1rem; }
+  #private-label,
+  #public-label,
+  .rail-label { font-size: 1.15rem; letter-spacing: 0.14em; }
+}
