@@ -145,10 +145,22 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       (text/html), GET /style.css, GET /app.js; frontend_root resolution copied from 3857f06 (CARGO_MANIFEST_DIR/../..
       fallback + current_exe ../.. for nix $out/bin -> $out/frontend), traversal guard, content_type_for copied; mount
       in routes!; bin tests: index bytes == frontend/index.html on disk, traversal -> None/404.
+- [x] ST1 attempt 1 (impl subagent, REJECTED — cancelled mid-run, left partial main.rs): reverted via
+      `git show HEAD:backend/src/main.rs > src/main.rs` (NOTE: git paths are repo-root-relative, the redirect truncates
+      BEFORE git runs -> restore with the FULL path in one go, verify wc -l + build rc). Split ST1 into ST1a (helpers+
+      tests) and ST1b (routes+mount).
+- [ ] ST1a (impl subagent): helpers ONLY: frontend_root() (3857f06 strategy: current_exe ../.. -> $out/frontend if
+      present else CARGO_MANIFEST_DIR/../frontend dev fallback), read_frontend(name) plain-filename guard (reject '/','..',
+      empty; std::fs::read_to_string, Option<String>); 2 bin tests test_static_index_matches_disk + test_static_blocks_traversal
+      (is_none()). NO #[get] routes yet. Gates all rc 0 (73 tests).
+- [ ] ST1b (impl subagent): routes ONLY: #[get("/")] index() text/html via read_frontend("index.html"), #[get("/style.css")],
+      #[get("/app.js")] (content types per 3857f06 content_type_for; if rocket 0.5.2 lacks CSS/JS helpers use RawHTML/text
+      combos and note it); mount 3 in routes! + comment; +1 probe test calling the route fns' responses (status+content-type).
 - [ ] ST2 (impl subagent): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
       needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
       serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
       World (derive(Debug) additive), #[get("/log")] plaintext lines; tests for both formatters.
+- [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
