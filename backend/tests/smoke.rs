@@ -883,3 +883,178 @@ fn test_raw_and_log() {
 	);
 	ensure(wait_gone(8026), "the raw/log server never exited");
 }
+
+/// The six actions the codec frames exactly as the frontend's wireBody emits: the token
+/// first, one line per argument joined by CRLF, and no trailing newline (signup, login and
+/// post-tweet keep the LF join plus trailing newline the codec already tolerates). Every ok
+/// pins the empty 200 body with Content-Length: 0, every publish pins its fresh id, and the
+/// deletion pins the anonymous 403 the alias answers.
+#[test]
+fn test_new_actions_roundtrip() {
+	let db = "/tmp/ft-smoke-T11-actions.sqlite".to_string();
+	fresh_db(&db);
+	spawn_server(8027, &db, 20);
+	ensure(wait_ready(8027), "the actions server never started");
+	// signup: the empty ok, in the trailing-newline form the frontend sends
+	let signed = req(8027, "/api/signup".to_string(), "f11a\r\npw\n".to_string());
+	expect_ok(&signed);
+	// login hands back the session token that every later body carries first
+	let logged = req(8027, "/api/login".to_string(), "f11a\r\npw\n".to_string());
+	expect_status(&logged, "HTTP/1.1 200 OK");
+	ensure(
+		body_of(&logged).contains("session_token"),
+		"login answers no token body",
+	);
+	ensure(
+		has_header(&logged, "cache-control"),
+		"a fresh token is not cached away",
+	);
+	let token = id_of(&logged, "session_token");
+	ensure(token != 0, "login issued no session token");
+	// post-tweet is the LF-join-plus-newline shape the frontend emits: the quoted id back
+	let posted = req(
+		8027,
+		"/api/post-tweet".to_string(),
+		token.to_string() + "\nhello f11\n",
+	);
+	expect_status(&posted, "HTTP/1.1 200 OK");
+	ensure(
+		(body_of(&posted)).starts_with("{\"tweet_id\": \""),
+		"the created-post shape is missing",
+	);
+	let tweet = id_of(&posted, "tweet_id");
+	ensure(tweet != 0, "publishing created no post id");
+	// post-reply while its parent is still live: the CRLF join, token first, no trailing
+	// newline, exactly as the frontend frames <token> <text> <parent-id>
+	// (CanReadPost consults the parent at publish time, so the reply precedes the delete)
+	let replied = req(
+		8027,
+		"/api/post-reply".to_string(),
+		token.to_string() + "\r\nreply f11\r\n" + &tweet.to_string(),
+	);
+	expect_status(&replied, "HTTP/1.1 200 OK");
+	ensure(
+		(body_of(&replied)).starts_with("{\"tweet_id\": \""),
+		"the reply answers no created-post shape",
+	);
+	// (the fresh sampler hands out distinct ids, so the reply never shadows its parent)
+	let reply = id_of(&replied, "tweet_id");
+	ensure(reply != 0, "publishing the reply created no post id");
+	ensure(reply != tweet, "the reply reuses its parent id");
+	// like and unlike answer the empty ok: 200, Content-Length: 0, no body at all
+	let liked = req(
+		8027,
+		"/api/like-tweet".to_string(),
+		token.to_string() + "\r\n" + &tweet.to_string(),
+	);
+	expect_ok(&liked);
+	ensure(
+		has_header(&liked, "content-length"),
+		"the ok declares no length",
+	);
+	ensure(!has_header(&liked, "content-type"), "the empty ok is typed");
+	let unliked = req(
+		8027,
+		"/api/unlike-tweet".to_string(),
+		token.to_string() + "\r\n" + &tweet.to_string(),
+	);
+	// (unlike is idempotent like the spec's set-union: the same ok either way)
+	expect_ok(&unliked);
+	// the second account: signup is the empty ok again, no token of its own is needed
+	let peer = req(8027, "/api/signup".to_string(), "f11b\r\npw\n".to_string());
+	expect_ok(&peer);
+	// follow-user carries the token line then the username (never a post id)
+	let followed = req(
+		8027,
+		"/api/follow-user".to_string(),
+		token.to_string() + "\r\nf11b",
+	);
+	expect_ok(&followed);
+	let unfollowed = req(
+		8027,
+		"/api/unfollow-user".to_string(),
+		token.to_string() + "\r\nf11b",
+	);
+	expect_ok(&unfollowed);
+	// delete-tweet: the author's own post answers the empty ok
+	let gone = req(
+		8027,
+		"/api/delete-tweet".to_string(),
+		token.to_string() + "\r\n" + &tweet.to_string(),
+	);
+	// (the deletion must not answer a stale ok for a post no session can read)
+	expect_ok(&gone);
+	// the deleted post is not readable anonymously: the GET alias the legacy frontend
+	// speaks, whose query drops an absent token so the POST twin is the one-line body
+	let anon = get(8027, "/api/get-tweet?id=".to_owned() + &tweet.to_string());
+	ensure(
+		status_line(&anon) == "HTTP/1.1 403 Forbidden",
+		"the deleted post still reads",
+	);
+	ensure(
+		body_of(&anon).contains("access_denied"),
+		"the refusal is not access_denied",
+	);
+	// (a live post under the same anonymous transport keeps its own record)
+	ensure(
+		!body_of(&anon).contains("username"),
+		"the deleted post still serves its record",
+	);
+	expect_length(&anon);
+	// the reply stays public: the parent's tombstone persists, so the reply keeps its record
+	let kept = get(8027, "/api/get-tweet?id=".to_owned() + &reply.to_string());
+	expect_status(&kept, "HTTP/1.1 200 OK");
+	ensure(
+		body_of(&kept).contains("reply f11"),
+		"the reply lost its own record",
+	);
+	expect_length(&kept);
+	// logout revokes the session, so the old token is dead from here on
+	let out = req(8027, "/api/logout".to_string(), token.to_string());
+	expect_ok(&out);
+	// the same account logs back in and gets a token that is not the revoked one
+	// (the old token no longer reads: the session check runs before the access check,
+	// so a revoked or unknown token answers 401, never the 403)
+	let again = req(8027, "/api/login".to_string(), "f11a\r\npw\n".to_string());
+	expect_status(&again, "HTTP/1.1 200 OK");
+	let second = id_of(&again, "session_token");
+	ensure(second != 0, "the second login issued no session token");
+	ensure(second != token, "the second login reuses the revoked token");
+	// the new session still reaches the reply the revoked one published
+	let reliked = req(
+		8027,
+		"/api/like-tweet".to_string(),
+		second.to_string() + "\r\n" + &reply.to_string(),
+	);
+	expect_ok(&reliked);
+	// a token no session carries is refused before any post is even consulted
+	let bogus = req(
+		8027,
+		"/api/like-tweet".to_string(),
+		"999999999\r\n".to_string() + &reply.to_string(),
+	);
+	ensure(
+		status_line(&bogus) == "HTTP/1.1 401 Unauthorized",
+		"the unknown token was accepted",
+	);
+	ensure(
+		body_of(&bogus).contains("session_expired"),
+		"the refusal is not session_expired",
+	);
+	// the deleted post under a live session is the genuine 403 access_denied
+	let denied = req(
+		8027,
+		"/api/like-tweet".to_string(),
+		second.to_string() + "\r\n" + &tweet.to_string(),
+	);
+	ensure(
+		status_line(&denied) == "HTTP/1.1 403 Forbidden",
+		"the deleted post is still likeable",
+	);
+	ensure(
+		body_of(&denied).contains("access_denied"),
+		"the refusal is not access_denied",
+	);
+	// every request ran over the wire and the wrapper ended the lifecycle
+	ensure(wait_gone(8027), "the actions server never exited");
+}
