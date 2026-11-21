@@ -17,9 +17,6 @@ Non-rust packages are to be installed with nix in @flake.nix and the entire prog
 The spec describes /api, let / just statically serve frontend/.
 There should also be a /raw that returns plaintext Debug printing of State (wrapped in <pre> if needed?)
 There should also be a /log that returns a log of all requests + timestamps
-(recovered verbatim from the retired backend/prompt as amended at bfe2217; the old Rocket impl of these routes
-lived at 46daf91 backend/src/main.rs — index/style/app_js static + /raw + /log — and was deleted at a9cd7ad;
-the nix-runtime frontend path resolution was 3857f06.)
 
 You have webfetch access to the doc.rust-lang.org, docs.rs, rocket.rs and diesel.rs websites.
 You can browse the docs of your dependencies after you've compiled them with `cargo doc`.
