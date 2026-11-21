@@ -688,8 +688,58 @@ fn private_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> 
 	)
 }
 
+/// Static frontend serving, in the very Response shape to_http builds: headers folded onto an
+/// empty Response, then Status and a sized_body cursor.  Both arms return a Response (never an
+/// Option), so a missing or refused file answers a plain empty 404 built HERE rather than rocket's
+/// own template page: one coherent strategy covers hit and miss, and no bytes are invented.
+pub fn serve_static(name: String, mime: String) -> Response<'static> {
+	// read per request, never cached in RAM, so the disk stays the only source of the site.
+	match read_frontend(name.as_str()) {
+		// refused or absent: empty 404, so a stale frontend degrades instead of inventing bytes
+		// (the traversal names read_frontend refused land here too, nothing was opened on disk)
+		None => {
+			let mut missing = Response::build();
+			missing.status(Status::NotFound);
+			missing.finalize()
+		}
+		// the hit: 200 plus the Content-Type the route picked, body as a fixed cursor
+		// (header name lowercase, the very casing the wire responses already send)
+		Some(site) => {
+			let mut hit = Response::build();
+			hit.header(Header::new("content-type", mime));
+			hit.status(Status::Ok);
+			hit.sized_body(site.len(), Cursor::new(site));
+			hit.finalize()
+		}
+	}
+}
+
+/// GET /: the static frontend's index.html (ST) static frontend per recovered instruction.
+#[get("/")]
+fn index() -> Served {
+	Served {
+		response: serve_static("index.html".to_string(), "text/html".to_string()),
+	}
+}
+
+/// GET /style.css: the site's stylesheet, as text/css (ST).
+#[get("/style.css")]
+fn style() -> Served {
+	Served {
+		response: serve_static("style.css".to_string(), "text/css".to_string()),
+	}
+}
+
+/// GET /app.js: the site's script, as application/javascript (ST).
+#[get("/app.js")]
+fn app_js() -> Served {
+	Served {
+		response: serve_static("app.js".to_string(), "application/javascript".to_string()),
+	}
+}
+
 /// Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST
-/// endpoints plus the 3 GET aliases the legacy frontend speaks.
+/// endpoints plus the 3 GET aliases the legacy frontend speaks and the 3 static frontend routes.
 #[launch]
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
@@ -744,6 +794,10 @@ fn rocket() -> _ {
 				get_tweet_alias,
 				global_timeline_alias,
 				private_timeline_alias,
+				// (ST) static frontend per recovered instruction: the site is served off disk.
+				index,
+				style,
+				app_js,
 			],
 		)
 }

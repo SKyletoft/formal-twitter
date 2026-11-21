@@ -199,6 +199,24 @@ fn has_header(raw: &str, label: &str) -> bool {
 	raw.find(&needle).is_some()
 }
 
+/// The value a header carries, lowercased; empty when the name is absent.
+fn header_value(raw: &str, label: &str) -> String {
+	let needle = "\r\n".to_owned() + label + ":";
+	match raw.find(&needle) {
+		// a name the server never sent has nothing to compare
+		None => "".to_string(),
+		Some(p) => {
+			let rest: &str = &raw[(p + needle.len())..];
+			// the value runs to its own line end; a last header ends at the blank line
+			let stop: usize = match rest.find("\r\n") {
+				None => rest.len(),
+				Some(q) => q,
+			};
+			rest[..stop].trim().to_lowercase()
+		}
+	}
+}
+
 /// Every number that appears in a JSON body.
 fn numbers_in(body: &str) -> Vec<u64> {
 	let bs = body.as_bytes();
@@ -255,6 +273,59 @@ fn expect_ok(raw: &str) {
 		label_number(raw, "content-length") == 0,
 		"the ok body is not empty",
 	);
+}
+
+/// The octets one GET answers with, read whole up to the declared length.
+/// (the string reader gives up on a body whose last read split a multi-byte glyph, so the
+/// site's script - which carries such glyphs - is inspected as octets instead of text)
+fn get_raw(port: u16, path: String) -> Vec<u8> {
+	let mut sock = match std::net::TcpStream::connect(("127.0.0.1", port)) {
+		Err(_) => panic!("cannot reach the server"),
+		Ok(s) => s,
+	};
+	_ = std::io::Write::write_all(&mut sock, &get_bytes(path));
+	let mut got: Vec<u8> = vec![];
+	let mut one: [u8; 1] = [0];
+	// headers first, one octet at a time like every other reader here
+	while !headers_done(&got) && got.len() < 4096 {
+		match std::io::Read::read_exact(&mut sock, &mut one) {
+			Err(_) => panic!("the answer cut off in the headers"),
+			Ok(_) => got.push(one[0]),
+		}
+	}
+	// then exactly the declared body, so a short read shows as a short body
+	let want: usize = header_end(&got) + content_length(&got);
+	while got.len() < want {
+		match std::io::Read::read_exact(&mut sock, &mut one) {
+			Err(_) => break,
+			Ok(_) => got.push(one[0]),
+		}
+	}
+	got
+}
+
+/// True when a run of ASCII bytes occurs among an answer's octets.
+fn bytes_find(xs: &[u8], needle: &[u8]) -> bool {
+	if needle.len() > xs.len() {
+		return false;
+	}
+	// a naive scan: the needles are short and the haystacks only a few thousand octets
+	let mut i: usize = 0;
+	while i + needle.len() <= xs.len() {
+		let mut hit: bool = true;
+		let mut j: usize = 0;
+		while j < needle.len() {
+			if xs[i + j] != needle[j] {
+				hit = false;
+			}
+			j += 1;
+		}
+		if hit {
+			return true;
+		}
+		i += 1;
+	}
+	false
 }
 
 /// Signup answers empty, login issues a session token, a wrong password answers 401.
@@ -648,4 +719,96 @@ fn test_get_alias_roundtrip() {
 	// (the LF-only and trailing-newline query bodies the codec already tolerates)
 	// (are the very bytes alias_body builds, pinned in the unit tests)
 	ensure(wait_gone(8024), "the alias server never exited");
+}
+
+/// The static frontend answers over the wire: 200s typed per file, the site's own shapes,
+/// and never a 200 for a path no route answers.
+#[test]
+fn test_static_serving() {
+	let db = "/tmp/ft-smoke-T7-static.sqlite".to_string();
+	fresh_db(&db);
+	spawn_server(8025, &db, 10);
+	ensure(wait_ready(8025), "the static server never started");
+	// (the site is public: an anonymous GET is all a browser sends, no session at all)
+	let page = get(8025, "/".to_string());
+	// (no signup was needed to serve the index, so the DB stays empty here)
+	ensure(
+		label_number(&page, "content-length") > 0,
+		"the index answers no bytes",
+	);
+	expect_status(&page, "HTTP/1.1 200 OK");
+	ensure(
+		header_value(&page, "content-type").contains("text/html"),
+		"the index is not typed html",
+	);
+	let site = body_of(&page);
+	// (a plausible page: a doctype or an html tag opens it, and a tagged element follows)
+	let opens_html: bool = site.starts_with("<!") || site.starts_with("<html");
+	ensure(
+		opens_html,
+		"the index does not open with a doctype or html tag",
+	);
+	ensure(site.contains("<html"), "the index carries no html tag");
+	// the stylesheet: css rules, never a page
+	let sheet = get(8025, "/style.css".to_string());
+	expect_status(&sheet, "HTTP/1.1 200 OK");
+	ensure(
+		header_value(&sheet, "content-type").contains("text/css"),
+		"the stylesheet is not typed css",
+	);
+	let rules = body_of(&sheet);
+	ensure(rules.contains("{"), "the stylesheet holds no rule");
+	let no_doc: bool = !rules.contains("<!doctype");
+	ensure(no_doc, "the stylesheet answers a page instead of css");
+	// the script carries multi-byte glyphs, so its octets are inspected as octets
+	let script = get_raw(8025, "/app.js".to_string());
+	let closed: usize = header_end(&script);
+	ensure(closed > 0, "the script answer never closed its headers");
+	// (only the header block is plain ASCII, so that is the part turned into text)
+	let head: String = match String::from_utf8(script[..closed].to_vec()) {
+		Err(_) => "".to_string(),
+		Ok(text) => text,
+	};
+	ensure(
+		status_line(&head) == "HTTP/1.1 200 OK",
+		"the script answers with a non-200 status",
+	);
+	ensure(
+		has_header(&head, "content-type"),
+		"the script answers without a content type",
+	);
+	ensure(
+		header_value(&head, "content-type").contains("javascript"),
+		"the script is not typed javascript",
+	);
+	// (the whole declared body arrived: a read cut mid-glyph would leave this false)
+	ensure(
+		label_number(&head, "content-length") == (script.len() - closed) as u64,
+		"the script body is not the declared length",
+	);
+	let body: Vec<u8> = script[closed..].to_vec();
+	ensure(
+		bytes_find(&body, "use strict".as_bytes()),
+		"the script body holds no strict-mode opener",
+	);
+	ensure(
+		bytes_find(&body, "const ".as_bytes()),
+		"the script body declares no constant",
+	);
+	ensure(
+		bytes_find(&body, "function ".as_bytes()),
+		"the script body defines no function",
+	);
+	ensure(
+		!bytes_find(&body, "<!doctype".as_bytes()),
+		"the script answers a page instead of javascript",
+	);
+	// a path no route answers must never be a 200
+	let lost = get(8025, "/definitely-not-a-route".to_string());
+	expect_status(&lost, "HTTP/1.1 404 Not Found");
+	ensure(
+		body_of(&lost) != body_of(&page),
+		"an unknown path returns the index",
+	);
+	ensure(wait_gone(8025), "the static server never exited");
 }

@@ -159,17 +159,18 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       guard-FIRST (rejects empty, '/' or '\\' sep, '..' pair, leading-dot names; every io error -> None); 2 bin tests
       (index bytes == disk, traversal totality incl. backslash + dot names); 71->73 tests (53 lib + 14 bin + 6 smoke),
       gates fmt/build/clippy -D/agda x2 rc 0. NOTE '/' STILL 404: routes unmounted until ST1b.
-- [ ] ST1b (impl subagent): routes + NETWORK proof. #[get("/")] index() -> read_frontend("index.html") as text/html,
-      #[get("/style.css")], #[get("/app.js")] (content types per 3857f06; rocket 0.5.2 combinators — check docs), mount
-      3 in routes!; AND extend tests/smoke.rs network suite (existing 6 MUST stay green): GET /, GET /style.css, GET /
-      app.js over the live server via the existing raw std::net client — assert 200 + right Content-Type + body shape
-      (index starts '<!DOCTYPE'/'<html', css has '{', js has 'function'/'var'), and NO Rocket-default 404/"Unknown"
-      shape. USER REQUIREMENT: network tests that send web requests to the running server and eyeball plausible bodies.
+- [x] ST1b (impl subagent, ACCEPTED, THIS COMMIT): serve_static(name,mime) :695 — to_http-shape Response, None -> empty
+      NotFound built HERE (one coherent hit/miss strategy, no rocket template), hit -> content-type + 200 + sized_body,
+      read per request (disk = site's source, never RAM-cached); #[get("/")].index text/html :719, style :727, app_js :735
+      (Served wrapper) mounted routes! :797 + (ST) comment + launch doc; smoke.rs helpers header_value :203, get_raw :281
+      (octet reader: app.js carries multi-byte glyphs), bytes_find :308 + test_static_serving :726-814 — REAL network on
+      spawned server: GET / 200/text/html/doctype+<html shape, /style.css 200/text/css/"{", /app.js octet-pinned (declared
+      len == collected, use strict/const /function tokens), /definitely-not-a-route -> 404 not-index — USER REQUIREMENT
+      (server-run network tests eyeballing plausible bodies) MET. Gates rc 0; smoke 7/7, total 74 tests. '/' fixed.
 - [ ] ST2 (impl subagent): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
       needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
       serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
       World (derive(Debug) additive), #[get("/log")] plaintext lines; tests for both formatters.
-- [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
