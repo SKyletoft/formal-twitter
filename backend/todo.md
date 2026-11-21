@@ -183,7 +183,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       Agda: NO new theorem, ImplProofs tail (ST) note - Interface's unlines-crlf is a POSTULATE (opaque), so
       the name segment is unextractable; naming chain = ImplWire wi-* from-input pins + Rust table test (F2
       precedent). Gates rc 0; 77 tests (53 lib + 16 bin + 8 smoke), smoke 8/8.
-- [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
+- [x] Final verify (ST, DONE): post-ST2 gates suite (fmt rc 0, build 0 warnings, cargo test 77 = 53 lib + 16 bin +
+  8 smoke, clippy --all-targets -- -D warnings silent, agda ImplProofs + ImplWire rc 0 rechecked AFTER the ST tail
+  note landed); launch probe timeout 3 target/debug/formal-twitter mounts all routes incl. /raw + /log + graceful
+  shutdown; GET / index.html pinned live by smoke test_static_serving + test_raw_and_log (both in the 8/8 run).
+  ST-QUEUE COMPLETE — committed 28e7627 + this todo commit, co-author maki@qwen3.8-flash-next-coder on each.
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
   OK; every accepted task committed with co-author maki@qwen3.8-flash-next-coder. QUEUE EMPTY — F-queue complete.
