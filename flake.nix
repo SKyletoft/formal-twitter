@@ -38,9 +38,9 @@
 						${pkgs.nodejs_24.out}/bin/node --check ${frontendSrc}/app.js
 					'';
 					cargoLock.lockFile = "${src}/Cargo.lock";
-					# smoke.rs spawns live servers + raw TCP; impossible in the no-network sandbox
-					# (rust hook gates the cargo-test check phase on dontCargoCheck, not skipTests)
-					dontCargoCheck = true;
+					# smoke.rs (tests/ integration target) spawns live servers + raw TCP: impossible in the
+					# no-network sandbox, so the check phase is restricted to the network-free targets only
+					cargoTestFlags = "--lib --bin=formal-twitter";
 					meta.mainProgram = "formal-twitter";
 					postInstall = ''
 						cp -r ${frontendSrc} $out/frontend
