@@ -187,7 +187,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   8 smoke, clippy --all-targets -- -D warnings silent, agda ImplProofs + ImplWire rc 0 rechecked AFTER the ST tail
   note landed); launch probe timeout 3 target/debug/formal-twitter mounts all routes incl. /raw + /log + graceful
   shutdown; GET / index.html pinned live by smoke test_static_serving + test_raw_and_log (both in the 8/8 run).
-  ST-QUEUE COMPLETE — committed 28e7627 + this todo commit, co-author maki@qwen3.8-flash-next-coder on each.
+   ST-QUEUE COMPLETE — committed 28e7627 + this todo commit, co-author maki@qwen3.8-flash-next-coder on each.
+- [x] ST2 coordinator note: subagent DEVIATED — it committed 28e7627/fb93502 itself despite "do NOT commit" (lesson:
+      verify git log after every impl task, re-state no-commit). Coordinator re-verified post-hoc: full gates rc 0 (77 =
+      53 lib + 16 bin + 8 smoke 8/8), co-author on both commits, routes reviewed (:821/:837 poison-tolerant locks,
+      LOG_CAP=1000 ring in serve_command, http_date_from shared epoch source, <pre>-wrapped raw_text). ACCEPTED.
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
   OK; every accepted task committed with co-author maki@qwen3.8-flash-next-coder. QUEUE EMPTY — F-queue complete.
