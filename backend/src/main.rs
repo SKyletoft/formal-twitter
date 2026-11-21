@@ -192,6 +192,46 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
+/// The frontend dir, resolved per call.  Two strategies: the INSTALL layout has the bin at
+/// $out/bin/formal-twitter, so current_exe() two levels up is $out and the flake's postInstall
+/// copied the site to $out/frontend; the DEV layout (cargo test / nix develop) has no $out, so
+/// fall back to CARGO_MANIFEST_DIR/../frontend, one level up from backend/, i.e. the repo's
+/// frontend/.  The install dir wins only when it really exists, otherwise the dev path.
+pub fn frontend_root() -> std::path::PathBuf {
+	// dev fallback: the binary's manifest dir is backend/, so the site is one level up.
+	let dev: std::path::PathBuf =
+		std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend"));
+	// install layout: $out/bin/formal-twitter joined with ../.. is $out, then $out/frontend.
+	// the Option chain leaves dev untouched until the fallback, so no clone is paid per call.
+	let installed: Option<std::path::PathBuf> = std::env::current_exe()
+		.ok()
+		// two levels up from $out/bin/formal-twitter is $out, then $out/frontend.
+		.map(|exe| exe.join("../..").join("frontend"))
+		// only a real directory can serve, so a stale $out falls through.
+		.filter(|site| site.is_dir());
+	// the dev path covers cargo test / nix develop, and any missing install copy.
+	installed.unwrap_or(dev)
+}
+
+/// One file off frontend_root, the guard FIRST so a hostile name never reaches the filesystem:
+/// reject the empty name, anything holding '/' or '\\' (no directory change is possible at all),
+/// a name holding "..", and anything starting with '.' (dotfiles and dot-dirs).  Then a plain
+/// read_to_string of dir/name, with EVERY io error (missing, unreadable, a directory) folding
+/// to None, so no input can panic the server.
+pub fn read_frontend(name: &str) -> Option<String> {
+	// guard, in short locals so the disjunction stays one line: either separator flavour, a ..
+	// pair (climbing) or a leading dot (hidden/dot names), plus the empty name.
+	let sep: bool = name.contains("/") || name.contains("\\");
+	let dots: bool = name.contains("..") || name.starts_with(".");
+	// the guard runs before any filesystem call, so a hostile name never reaches disk.
+	if name.is_empty() || sep || dots {
+		// refused outright: nothing was resolved, nothing was read.
+		return None;
+	}
+	// one join + one read; every io error (missing, unreadable, a directory) folds to None.
+	std::fs::read_to_string(frontend_root().join(name)).ok()
+}
+
 /// Server state: the world cache, the DB it mirrors, the tick that drives
 /// the rotating PARTIAL cache reload (one section re-queried every four requests), and
 /// (F3) max_seq: the highest post seq THIS writer has stamped into the DB.  Seeded once at
@@ -1222,4 +1262,27 @@ fn test_delta_publish_equiv() {
 		_ => 0,
 	};
 	assert!(new_posts == 1 && new_posts == new_post_count(&w, &after));
+}
+
+/// read_frontend finds the site's index.html and returns exactly the bytes on disk.
+#[test]
+fn test_static_index_matches_disk() {
+	// resolve the same dir, then read index.html straight off disk for the reference value.
+	// frontend_root's install arm is absent under cargo test, so this is the repo's frontend/.
+	let disk: String =
+		std::fs::read_to_string(frontend_root().join("index.html")).unwrap_or("".to_string());
+	// the helper must find the same bytes: Some == Some, and equal contents.
+	assert_eq!(read_frontend("index.html"), Some(disk));
+}
+
+/// The traversal guard is total: no name escapes the site, so every escape attempt reads nothing.
+#[test]
+fn test_static_blocks_traversal() {
+	// a literal climb out of the site, a nested one that climbs twice, and the empty name.
+	assert!(read_frontend("../spec/Twitter.agda").is_none());
+	assert!(read_frontend("a/../../x").is_none());
+	assert!(read_frontend("").is_none());
+	// a backslash flavour and a dot-prefixed name are refused the same way.
+	assert!(read_frontend("..\\spec\\Twitter.agda").is_none());
+	assert!(read_frontend(".hidden").is_none());
 }

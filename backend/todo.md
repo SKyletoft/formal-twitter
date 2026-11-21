@@ -153,9 +153,17 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       present else CARGO_MANIFEST_DIR/../frontend dev fallback), read_frontend(name) plain-filename guard (reject '/','..',
       empty; std::fs::read_to_string, Option<String>); 2 bin tests test_static_index_matches_disk + test_static_blocks_traversal
       (is_none()). NO #[get] routes yet. Gates all rc 0 (73 tests).
-- [ ] ST1b (impl subagent): routes ONLY: #[get("/")] index() text/html via read_frontend("index.html"), #[get("/style.css")],
-      #[get("/app.js")] (content types per 3857f06 content_type_for; if rocket 0.5.2 lacks CSS/JS helpers use RawHTML/text
-      combos and note it); mount 3 in routes! + comment; +1 probe test calling the route fns' responses (status+content-type).
+- [x] ST1a (impl subagent, ACCEPTED, THIS COMMIT): helpers ONLY — frontend_root() :200-214 (install: current_exe
+      ../..=[$out]->[$out/frontend] when is_dir, dev fallback CARGO_MANIFEST_DIR/../frontend) + read_frontend() :216-233
+      guard-FIRST (rejects empty, '/' or '\\' sep, '..' pair, leading-dot names; every io error -> None); 2 bin tests
+      (index bytes == disk, traversal totality incl. backslash + dot names); 71->73 tests (53 lib + 14 bin + 6 smoke),
+      gates fmt/build/clippy -D/agda x2 rc 0. NOTE '/' STILL 404: routes unmounted until ST1b.
+- [ ] ST1b (impl subagent): routes + NETWORK proof. #[get("/")] index() -> read_frontend("index.html") as text/html,
+      #[get("/style.css")], #[get("/app.js")] (content types per 3857f06; rocket 0.5.2 combinators — check docs), mount
+      3 in routes!; AND extend tests/smoke.rs network suite (existing 6 MUST stay green): GET /, GET /style.css, GET /
+      app.js over the live server via the existing raw std::net client — assert 200 + right Content-Type + body shape
+      (index starts '<!DOCTYPE'/'<html', css has '{', js has 'function'/'var'), and NO Rocket-default 404/"Unknown"
+      shape. USER REQUIREMENT: network tests that send web requests to the running server and eyeball plausible bodies.
 - [ ] ST2 (impl subagent): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
       needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
       serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
