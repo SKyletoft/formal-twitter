@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Formal Twitter — Broadsheet</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="masthead">
+    <h1>Formal Twitter</h1>
+    <p class="dateline">broadsheet edition</p>
+    <span id="session-status">Logged out</span>
+    <button id="logout-btn" hidden>Log out</button>
+  </header>
+
+  <section id="auth-panel" hidden>
+    <p id="auth-notice" class="notice"></p>
+    <div id="auth-cards">
+      <form id="login-form">
+        <h2>Log in</h2>
+        <input id="login-username" autocomplete="username" placeholder="Username" required>
+        <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" required>
+        <button type="submit">Log in</button>
+        <p class="error" id="login-error"></p>
+      </form>
+      <form id="signup-form">
+        <h2>Sign up</h2>
+        <input id="signup-username" autocomplete="username" placeholder="Username" required>
+        <input id="signup-password" type="password" autocomplete="new-password" placeholder="Password" required>
+        <button type="submit">Sign up</button>
+        <p class="error" id="signup-error"></p>
+      </form>
+    </div>
+    <div id="public-timeline">
+      <h2>Public edition</h2>
+      <ul id="public-list" class="row-list"></ul>
+      <p class="error" id="public-error"></p>
+    </div>
+  </section>
+
+  <section id="app-panel" hidden>
+    <form id="compose-form">
+      <h2>File copy</h2>
+      <textarea id="compose-text" rows="3" placeholder="What is the news?" required></textarea>
+      <button type="submit">Post</button>
+      <p class="notice" id="compose-ok"></p>
+      <p class="error" id="compose-error"></p>
+    </form>
+    <p id="action-ok" class="notice"></p>
+    <p id="action-error" class="error"></p>
+    <div id="broadsheet">
+      <section id="private-column" class="column">
+        <h2>Private edition</h2>
+        <ul id="private-list" class="row-list"></ul>
+        <p class="error" id="private-error"></p>
+      </section>
+      <section id="global-column" class="column">
+        <h2>Global edition</h2>
+        <ul id="global-list" class="row-list"></ul>
+        <p class="error" id="global-error"></p>
+      </section>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

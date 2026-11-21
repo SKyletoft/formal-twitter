@@ -1,0 +1,180 @@
+/* frontend4/style.css — broadsheet: paper, hairline rules, split columns. */
+
+:root {
+  --paper: #fbfaf4;
+  --panel: #fffdf8;
+  --ink: #1b1a17;
+  --muted: #6b675d;
+  --rule: #cdc7bb;
+  --rule-heavy: #8b8578;
+  --accent: #1f3b57;
+  --danger: #97382f;
+  --ok: #2c5e3a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, "IBM Plex Mono", monospace;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+#masthead {
+  padding: 0.6rem 1.1rem 0.5rem;
+  border-bottom: 3px double var(--rule-heavy);
+}
+
+#masthead h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+#masthead .dateline {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+#masthead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 1rem; }
+#masthead #session-status { color: var(--muted); font-size: 0.8rem; }
+#masthead #logout-btn { margin-left: auto; }
+
+h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.25rem;
+  margin: 0 0 0.6rem;
+}
+
+section, div { padding: 0 1rem; margin: 0 1rem; }
+
+#auth-panel { max-width: 42rem; }
+
+#auth-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+
+form {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  padding: 0.85rem 1rem;
+}
+
+input, textarea {
+  font: inherit;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+#auth-notice { color: var(--ok); font-size: 0.8rem; margin: 0 0 0.6rem; }
+.notice { color: var(--ok); font-size: 0.8rem; }
+.error { color: var(--danger); font-size: 0.8rem; }
+.notice { margin: 0 0 0.5rem; }
+.error { margin: 0 0 0.5rem; }
+#action-ok, #action-error { font-size: 0.8rem; margin: 0 0 0.4rem; }
+
+button {
+  font: inherit;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule-heavy);
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+/* --- the broadsheet: two parallel columns --- */
+
+#broadsheet {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 1.5rem;
+  align-items: start;
+  padding: 0;
+  margin: 0 1rem;
+}
+
+#broadsheet .column {
+  padding: 0 0.9rem;
+  margin: 0;
+}
+
+#private-column { border-inline-end: 1px solid var(--rule-heavy); }
+
+#broadsheet .column > ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+#public-timeline { margin-top: 1rem; }
+#public-timeline > ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* --- one tweet row: author — text · n likes · Like --- */
+
+.row {
+  border-bottom: 1px dotted var(--rule);
+  padding: 0.2rem 0;
+  font-size: 0.85rem;
+}
+
+.row .author-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.row .author-btn:hover { text-decoration: underline; }
+
+.row .body { color: var(--ink); }
+.row .meta { color: var(--muted); font-size: 0.75rem; }
+.row .dash { color: var(--rule-heavy); }
+.row .like-btn {
+  background: transparent;
+  border: 1px solid var(--rule);
+  color: var(--muted);
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+}
+
+.row.liked .like-btn { color: var(--accent); border-color: var(--accent); }
+.row.liked .like-btn::after { content: ' · liked'; }
+.row.muted-row { color: var(--muted); }
+
+.empty-row { color: var(--muted); font-style: italic; }
+
+textarea { resize: vertical; }
+#compose-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: start; }
+#compose-form textarea { flex: 1 1 100%; }
+#compose-form .notice, #compose-form .error { margin: 0; }
+
+@media (max-width: 44rem) {
+  #broadsheet { grid-template-columns: 1fr; }
+  #private-column { border-inline-end: none; }
+  #auth-cards { grid-template-columns: 1fr; }
+}
