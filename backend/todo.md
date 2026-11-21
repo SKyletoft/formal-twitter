@@ -85,6 +85,7 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
 
 ## Next (ordered queue)
+- [ ] F10 (research): What is missing from /frontend to display and call actions described in @spec/Interface?. (global vs private timeline views while logged in, like buttons, follow buttons etc?)
 - [x] F4a (attempt 1, REJECTED): subagent died mid-run leaving broken stubs (pub fun(, dangling 'a, comment-only
       bodies) — partial reverted, model.rs back to HEAD byte-identical. Lesson: keep subagent generation units small;
       split F4a into helpers-first, step-conversion second. DESIGN COMMITTED: WorldIndex{accounts_ix,sessions_ix,
