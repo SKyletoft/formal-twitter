@@ -203,25 +203,58 @@ pub fn to_http(reply: WireResponse) -> Response<'static> {
 	built.finalize()
 }
 
-/// The frontend dir, resolved per call.  Two strategies: the INSTALL layout has the bin at
-/// $out/bin/formal-twitter, so current_exe() two levels up is $out and the flake's postInstall
-/// copied the site to $out/frontend; the DEV layout (cargo test / nix develop) has no $out, so
-/// fall back to CARGO_MANIFEST_DIR/../frontend, one level up from backend/, i.e. the repo's
-/// frontend/.  The install dir wins only when it really exists, otherwise the dev path.
-pub fn frontend_root() -> std::path::PathBuf {
-	// dev fallback: the binary's manifest dir is backend/, so the site is one level up.
-	let dev: std::path::PathBuf =
-		std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend"));
+/// The pure FT_FRONTEND name guard, testable with no env mutation at all: reject the empty
+/// name, anything holding '/' or '\' (a directory change is impossible at all), a name holding
+/// ".." (climbing) and anything starting with '.' (dotfiles and dot-dirs).  Every refusal falls
+/// back to the shipped "frontend"; a kept name is returned verbatim.
+pub fn frontend_dir_name(raw: &str) -> String {
+	// guard, in short locals so the disjunction stays one line: either separator flavour, a ..
+	// pair (climbing) or a leading dot (hidden/dot names), plus the empty name.
+	let sep: bool = raw.contains("/") || raw.contains("\\");
+	let dots: bool = raw.contains("..") || raw.starts_with(".");
+	if raw.is_empty() || sep || dots {
+		// refused outright: the shipped site answers instead, nothing resolved, nothing read.
+		return "frontend".to_string();
+	}
+	// the kept name passes through verbatim; env hands us a String, so one copy answers.
+	raw.to_string()
+}
+
+/// A frontend dir resolved per call, for a validated site name ("frontend", "frontend2", ...):
+/// two strategies.  The INSTALL layout has the bin at $out/bin/formal-twitter, so current_exe()
+/// two levels up is $out and the flake's postInstall copied the site to $out/<name>; the DEV
+/// layout (cargo test / nix develop) has no $out, so fall back to CARGO_MANIFEST_DIR/../<name>,
+/// one level up from backend/, i.e. the repo's <name>/.  The install dir wins only when it
+/// really exists, otherwise the dev path.  <name> is only ever the output of frontend_dir_name.
+pub fn frontend_root_named(name: &str) -> std::path::PathBuf {
+	// dev fallback: env!("CARGO_MANIFEST_DIR") is backend/, so the site is one level up.
+	let dev: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("..")
+		.join(name);
 	// install layout: $out/bin/formal-twitter joined with ../.. is $out, then $out/frontend.
 	// the Option chain leaves dev untouched until the fallback, so no clone is paid per call.
 	let installed: Option<std::path::PathBuf> = std::env::current_exe()
 		.ok()
 		// two levels up from $out/bin/formal-twitter is $out, then $out/frontend.
-		.map(|exe| exe.join("../..").join("frontend"))
+		.map(|exe| exe.join("../..").join(name))
 		// only a real directory can serve, so a stale $out falls through.
 		.filter(|site| site.is_dir());
 	// the dev path covers cargo test / nix develop, and any missing install copy.
 	installed.unwrap_or(dev)
+}
+
+/// The frontend dir for the FT_FRONTEND override (default "frontend"), so frontend2/ frontend3/
+/// frontend4/ variants can be previewed without replacing frontend/.  The raw name goes through
+/// the pure guard frontend_dir_name FIRST, so a hostile override never reaches the filesystem.
+pub fn frontend_root() -> std::path::PathBuf {
+	// an absent FT_FRONTEND answers the empty name, which the guard maps to the shipped site,
+	// so the default path costs no copy.
+	let raw: String = match std::env::var("FT_FRONTEND") {
+		Err(_) => "".to_string(),
+		Ok(v) => v,
+	};
+	// the pure guard runs first, so only a validated dir name reaches the resolver.
+	frontend_root_named(frontend_dir_name(raw.as_str()).as_str())
 }
 
 /// One file off frontend_root, the guard FIRST so a hostile name never reaches the filesystem:
@@ -855,6 +888,8 @@ fn request_log(state: &State<Mutex<Server>>) -> Served {
 /// Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST
 /// endpoints plus the 3 GET aliases the legacy frontend speaks, the 3 static frontend routes and
 /// the 2 RAM-debug routes /raw (the whole cache as Debug text) and /log (the request log).
+/// The site dir itself is FT_FRONTEND (default frontend, guarded by frontend_dir_name), so
+/// frontend2/ frontend3/ frontend4/ variants preview without replacing frontend/.
 #[launch]
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
@@ -1459,6 +1494,56 @@ fn test_static_blocks_traversal() {
 	// a backslash flavour and a dot-prefixed name are refused the same way.
 	assert!(read_frontend("..\\spec\\Twitter.agda").is_none());
 	assert!(read_frontend(".hidden").is_none());
+}
+
+/// The pure FT_FRONTEND name guard: clean variant names pass through verbatim and every
+/// hostile spelling falls back to the shipped "frontend", testable with zero env mutation.
+#[test]
+fn test_frontend_dir_name_validation() {
+	// the shipped default and the preview variants answer with the very name given.
+	assert_eq!(frontend_dir_name("frontend"), "frontend".to_string());
+	assert_eq!(frontend_dir_name("frontend2"), "frontend2".to_string());
+	assert_eq!(frontend_dir_name("frontend4"), "frontend4".to_string());
+	// the empty name, a literal climb, a nested one, a bare .. and a dot-prefixed name all fall
+	// back to the shipped site.
+	assert_eq!(frontend_dir_name(""), "frontend".to_string());
+	assert_eq!(frontend_dir_name("../evil"), "frontend".to_string());
+	assert_eq!(frontend_dir_name("a/b"), "frontend".to_string());
+	assert_eq!(frontend_dir_name(".."), "frontend".to_string());
+	assert_eq!(frontend_dir_name(".hidden"), "frontend".to_string());
+	// a backslash flavour is refused the same way, with and without a climb.
+	assert_eq!(frontend_dir_name("..\\evil"), "frontend".to_string());
+	assert_eq!(frontend_dir_name("a\\b"), "frontend".to_string());
+}
+
+/// frontend_root_named DEV fallback: under cargo test the install arm is absent (no $out),
+/// so every name resolves to CARGO_MANIFEST_DIR/../<name>, one level up from backend/.
+#[test]
+fn test_frontend_root_named_fallback() {
+	// the very dev shape the helper builds: backend/../ plus the name, spelled out here.
+	let base: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+	// the install arm stays absent: target/debug/../frontend2 is no site dir on the test
+	// machine, so the dev path answers for a variant the repo may not even ship.
+	assert_eq!(frontend_root_named("frontend2"), base.join("frontend2"));
+	// a second variant differs only by the name, so previewing frontend3 changes one component.
+	assert_eq!(frontend_root_named("frontend3"), base.join("frontend3"));
+	// the shipped name matches the old, unparameterized shape: backend/../frontend.
+	assert_eq!(frontend_root_named("frontend"), base.join("frontend"));
+	// the repo's default site exists, so the default resolves to a real dir (serve_static's source).
+	assert!(frontend_root_named("frontend").is_dir());
+}
+
+/// FT_FRONTEND default: cargo test never sets FT_FRONTEND, so frontend_root stays byte-identical
+/// to the named helper at the shipped site: today's behavior, unchanged, when the env is absent.
+#[test]
+fn test_ft_frontend_default() {
+	assert_eq!(frontend_root(), frontend_root_named("frontend"));
+	// the guard maps the empty name to the shipped site, so an absent env and an empty
+	// override land on the very same dir.
+	assert_eq!(
+		frontend_root(),
+		frontend_root_named(frontend_dir_name("").as_str())
+	);
 }
 
 /// (ST) the /raw body shape: the <pre> wrap around the World's Debug rendering, with real records
