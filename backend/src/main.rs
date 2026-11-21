@@ -60,12 +60,18 @@ fn leap(y: u64) -> bool {
 	y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400))
 }
 
-/// The current moment rendered as an IMF date: "Thu, 01 Jan 1970 00:00:00 GMT".
-pub fn http_date() -> String {
-	let secs: u64 = SystemTime::now()
-		.duration_since(UNIX_EPOCH)
+/// The epoch-second stamp of the current moment: ONE clock source for both the IMF Date
+/// headers and the /log request log, so log lines and headers never disagree.
+pub fn now_secs() -> u64 {
+	(SystemTime::now().duration_since(UNIX_EPOCH))
 		.unwrap_or_default()
-		.as_secs();
+		.as_secs()
+}
+
+/// An epoch-second count rendered as an IMF date: "Thu, 01 Jan 1970 00:00:00 GMT".  The pure
+/// core of http_date, so a /log line's stored timestamp formats through the very same calendar
+/// walk as a Date header.
+pub fn http_date_from(secs: u64) -> String {
 	let day: u64 = secs / 86_400;
 	let rest: u64 = secs % 86_400;
 	let hour: u64 = rest / 3_600;
@@ -109,6 +115,11 @@ pub fn http_date() -> String {
 		two(minute),
 		two(second)
 	)
+}
+
+/// The current moment rendered as an IMF date (the Date header every response carries).
+pub fn http_date() -> String {
+	http_date_from(now_secs())
 }
 
 /// from-output of Interface.agda: a model Result rendered as a wire ApiResponse.
@@ -241,6 +252,10 @@ pub fn read_frontend(name: &str) -> Option<String> {
 /// (F3) another server opening the same file reseeds it at startup.  A failed reopen or a
 /// (F3) rolled-back apply leaves max_seq alone, because no stamp changed in the DB from OUR
 /// (F3) writer (single writer per DB file).
+/// (ST) how many /log lines the RAM debug log keeps: older lines are evicted from the front,
+/// so the log's footprint never grows with the request count.
+pub const LOG_CAP: usize = 1_000;
+
 pub struct Server {
 	pub world: World,
 	pub db_path: String,
@@ -253,6 +268,11 @@ pub struct Server {
 	/// Side-index over the world; rebuilt only at reload sites (launch and the three reload arms),
 	/// so step_ix probes are O(1) per request.
 	pub index: WorldIndex,
+	/// (ST) the /log request log: (epoch secs from now_secs, endpoint name from command_to_logline)
+	/// per serve_command call, oldest first.  RAM debug only, NOT spec data: nothing is served from
+	/// it, no DB row mirrors it and a restart starts it empty, so it never feeds the model.  Capped
+	/// at LOG_CAP by evicting the front.
+	pub log: Vec<(u64, String)>,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -365,6 +385,43 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 	serve_command(command, state)
 }
 
+/// (ST) the /log endpoint name of a Command: the request-line name the spec's Interface uses for
+/// the route that produced it, so a log line reads like "post-tweet".  Publish serves both /api/post-tweet
+/// and /api/post-reply, whose model Command is the same Publish, so both land under post-tweet;
+/// TimePasses is not wire-reachable and is named for completeness.
+pub fn command_to_logline(c: &Command) -> String {
+	match c {
+		// both /api/post-tweet and /api/post-reply share the model's Publish
+		Command::Publish(..) => "post-tweet".to_string(),
+		Command::Delete(..) => "delete-tweet".to_string(),
+		// the spec's read-post is the get-tweet endpoint
+		Command::ReadPost(..) => "get-tweet".to_string(),
+		Command::ReadPersonalTimeline(..) => "private-timeline".to_string(),
+		Command::ReadGlobalTimeline(..) => "global-timeline".to_string(),
+		// login / logout are Authenticate / RevokeToken in the model
+		Command::Authenticate(..) => "login".to_string(),
+		Command::RevokeToken(..) => "logout".to_string(),
+		// signup is Register in the model
+		Command::Register(..) => "signup".to_string(),
+		// the follows endpoints keep their route names
+		Command::Follow(..) => "follow-user".to_string(),
+		Command::Unfollow(..) => "unfollow-user".to_string(),
+		// the like endpoints keep their route names
+		Command::Like(..) => "like-tweet".to_string(),
+		Command::Unlike(..) => "unlike-tweet".to_string(),
+		// TimePasses is the spec's silent clock tick: no route reaches it, so the name is nominal.
+		Command::TimePasses => "time-passes".to_string(),
+	}
+}
+
+/// (ST) the /raw body: the World's Debug rendering wrapped in <pre> so a browser shows the record
+/// verbatim.  Pure RAM debug, never served as spec data.
+pub fn raw_text(w: &World) -> String {
+	// std.debug.show == Rust's Debug rendering of the record
+	// one format!: the wrap and the record share one pass, no concat of three Strings
+	format!("<pre>{:?}</pre>", w)
+}
+
 /// The shared core behind all 13 POST routes and the 3 GET aliases: step, COMMIT,
 /// rotate, render.  Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7):
 /// the database is the source of truth, not RAM.  The world cache advances ONLY after
@@ -383,6 +440,15 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 		Ok(guard) => guard,
 		Err(poisoned) => poisoned.into_inner(),
 	};
+	// (ST) the /log debug line, first so every serve_command call is logged even when its commit
+	// rolls back: the same epoch clock the Date headers read plus the endpoint name.  The GET
+	// aliases come through here too, so they log for free; the 3 static frontend routes never do.
+	locked.log.push((now_secs(), command_to_logline(&command)));
+	// RAM debug only, not spec data: keep the newest LOG_CAP lines, evicting the oldest from the
+	// front (at most LOG_CAP moves of a small pair, so the footprint stays flat).
+	if locked.log.len() > LOG_CAP {
+		locked.log.remove(0);
+	}
 	// A private copy of the world so step and apply see before/after values.
 	let before: World = locked.world.clone();
 	// The spec fresh-id sampler, run under the lock: ONE 16-byte read yields both ids and the
@@ -738,8 +804,57 @@ fn app_js() -> Served {
 	}
 }
 
+/// (ST) the debug-body builder behind /raw and /log: a 200 with the given content type and
+/// a String body, in the very Response shape serve_static builds for a frontend hit.
+pub fn serve_text(body: String, mime: String) -> Response<'static> {
+	// (the same header/status/cursor fold serve_static uses, so /raw and /log never invent
+	// (a different wire shape than the static site already sends)
+	let mut hit = Response::build();
+	hit.header(Header::new("content-type", mime));
+	hit.status(Status::Ok);
+	hit.sized_body(body.len(), Cursor::new(body));
+	hit.finalize()
+}
+
+/// GET /raw: the whole RAM cache as plaintext Debug, <pre>-wrapped (ST) - a debug view only:
+/// it is never fed back and the database stays the source of truth.
+#[get("/raw")]
+fn raw(state: &State<Mutex<Server>>) -> Served {
+	// The same poison-tolerant lock serve_command takes: the guarded region keeps its invariants,
+	// so a poisoned guard still answers with its cache.
+	let locked = match state.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	};
+	Served {
+		response: serve_text(raw_text(&locked.world), "text/plain".to_string()),
+	}
+}
+
+/// GET /log: every request serve_command saw, IMF-timestamped (ST).  RAM debug only, never
+/// spec data: a restart re-opens the DB but starts the log empty, so nothing is served from
+/// the database here.
+#[get("/log")]
+fn request_log(state: &State<Mutex<Server>>) -> Served {
+	// The same poison-tolerant lock serve_command takes.
+	let locked = match state.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	};
+	// (one line per entry: the stored epoch secs through the very calendar walk a Date header
+	// (uses, so a log timestamp never disagrees with a response header, then the endpoint name
+	// (CRLF-terminated; the 3 static routes never log, so the site's own traffic stays out)
+	let mut lines: Vec<String> = vec![];
+	for (secs, name) in &locked.log {
+		lines.push(format!("{} {}\r\n", http_date_from(*secs), name));
+	}
+	Served {
+		response: serve_text(lines.join(""), "text/plain".to_string()),
+	}
+}
 /// Launch: re-load the world from FT_DB (default twitter.db) and mount all 13 POST
-/// endpoints plus the 3 GET aliases the legacy frontend speaks and the 3 static frontend routes.
+/// endpoints plus the 3 GET aliases the legacy frontend speaks, the 3 static frontend routes and
+/// the 2 RAM-debug routes /raw (the whole cache as Debug text) and /log (the request log).
 #[launch]
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
@@ -773,6 +888,8 @@ fn rocket() -> _ {
 			// (F9) the launch connection, alive for the whole process (None only if launch
 			// could not open the DB at all; failure arms then reopen on demand).
 			conn,
+			// (ST) the /log RAM debug log starts empty: a restart re-opens the DB but not the log.
+			log: vec![],
 		}))
 		.mount(
 			"/",
@@ -798,6 +915,9 @@ fn rocket() -> _ {
 				index,
 				style,
 				app_js,
+				// (ST) the state dump and the request log: RAM debug views, unlogged and never fed back.
+				raw,
+				request_log,
 			],
 		)
 }
@@ -1339,4 +1459,102 @@ fn test_static_blocks_traversal() {
 	// a backslash flavour and a dot-prefixed name are refused the same way.
 	assert!(read_frontend("..\\spec\\Twitter.agda").is_none());
 	assert!(read_frontend(".hidden").is_none());
+}
+
+/// (ST) the /raw body shape: the <pre> wrap around the World's Debug rendering, with real records
+/// inside - the struct names are what a reader greps the dump for.  Deliberately no Agda: the
+/// wrap is Rust rendering the spec never mentions (cf. the F2 note at ImplProofs.agda:516).
+#[test]
+fn test_raw_text_shape() {
+	// the model handles are scoped here so the non-test build keeps zero unused imports.
+	use formal_twitter::model::{Account, Post, PostStatus, Visibility};
+	// the smallest World that still carries every record the dump must show: one account, one post.
+	let tiny: World = World {
+		accounts: vec![(
+			"alice".to_string(),
+			Account {
+				password: "a".to_string(),
+				default_visibility: Visibility::Everyone,
+			},
+		)],
+		sessions: vec![],
+		posts: vec![(
+			1,
+			Post {
+				author: "alice".to_string(),
+				text: "hi".to_string(),
+				visibility: Visibility::Everyone,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent: None,
+			},
+		)],
+		follows: vec![],
+		newest_first: vec![1],
+		used_post_ids: vec![1],
+		used_session_ids: vec![],
+	};
+	let body: String = raw_text(&tiny);
+	// the wrap opens and closes the dump, so a browser shows the record verbatim.
+	assert!(body.starts_with("<pre>"));
+	assert!(body.ends_with("</pre>"));
+	// the payload is Debug of the record: both struct names appear in their record form.
+	assert!(body.contains("World {"));
+	assert!(body.contains("Post {"));
+}
+
+/// (ST) the /log naming: every Command constructor logs under the Interface request name of the
+/// route that produced it, i.e. command_to_logline after to_command is the request name the
+/// spec's Interface puts in the POST line.  Pinned by the 15 ImplWire.agda theorems read through
+/// from-input; Publish answers BOTH /api/post-tweet and /api/post-reply, whose model Command is
+/// the same Publish, and TimePasses is the spec's silent tick no route reaches.
+#[test]
+fn test_log_line_naming() {
+	assert_eq!(
+		command_to_logline(&Command::Publish(1, "x".to_string(), None)),
+		"post-tweet"
+	);
+	assert_eq!(
+		command_to_logline(&Command::Publish(1, "x".to_string(), Some(2))),
+		"post-tweet"
+	);
+	assert_eq!(command_to_logline(&Command::Delete(1, 2)), "delete-tweet");
+	assert_eq!(
+		command_to_logline(&Command::ReadPost(Some(1), 2)),
+		"get-tweet"
+	);
+	assert_eq!(command_to_logline(&Command::ReadPost(None, 2)), "get-tweet");
+	assert_eq!(
+		command_to_logline(&Command::ReadPersonalTimeline(1, 3)),
+		"private-timeline"
+	);
+	assert_eq!(
+		command_to_logline(&Command::ReadGlobalTimeline(Some(1), 3)),
+		"global-timeline"
+	);
+	assert_eq!(
+		command_to_logline(&Command::ReadGlobalTimeline(None, 3)),
+		"global-timeline"
+	);
+	assert_eq!(
+		command_to_logline(&Command::Authenticate("a".to_string(), "b".to_string())),
+		"login"
+	);
+	assert_eq!(command_to_logline(&Command::RevokeToken(1)), "logout");
+	assert_eq!(
+		command_to_logline(&Command::Register("a".to_string(), "b".to_string())),
+		"signup"
+	);
+	assert_eq!(
+		command_to_logline(&Command::Follow(1, "b".to_string())),
+		"follow-user"
+	);
+	assert_eq!(
+		command_to_logline(&Command::Unfollow(1, "b".to_string())),
+		"unfollow-user"
+	);
+	assert_eq!(command_to_logline(&Command::Like(1, 2)), "like-tweet");
+	assert_eq!(command_to_logline(&Command::Unlike(1, 2)), "unlike-tweet");
+	assert_eq!(command_to_logline(&Command::TimePasses), "time-passes");
 }

@@ -812,3 +812,74 @@ fn test_static_serving() {
 	);
 	ensure(wait_gone(8025), "the static server never exited");
 }
+/// (ST) the debug routes answer over the wire: /log holds one IMF-timestamped line per
+/// request serve_command served, /raw dumps the live cache as "<pre>" Debug text.
+#[test]
+fn test_raw_and_log() {
+	// (a fresh DB, so the log lines come from exactly the two requests below)
+	let db = "/tmp/ft-smoke-raw-log.sqlite".to_string();
+	fresh_db(&db);
+	spawn_server(8026, &db, 10);
+	ensure(wait_ready(8026), "the raw/log server never started");
+	// (signup then login: the shortest run that yields two serve_command calls)
+	let signed = req(8026, "/api/signup".to_string(), "erin\r\npw".to_string());
+	expect_status(&signed, "HTTP/1.1 200 OK");
+	let first = req(8026, "/api/login".to_string(), "erin\r\npw".to_string());
+	expect_status(&first, "HTTP/1.1 200 OK");
+	// (a fresh login issues a session token, so the world advanced and the cache is live)
+	ensure(
+		id_of(&first, "session_token") != 0,
+		"login issued no session token",
+	);
+	// the log route: 200 text/plain, one CRLF-terminated line per request
+	let logged = get(8026, "/log".to_string());
+	expect_status(&logged, "HTTP/1.1 200 OK");
+	ensure(
+		header_value(&logged, "content-type").contains("text/plain"),
+		"the log is not typed plain text",
+	);
+	let lines: Vec<String> = body_of(&logged)
+		.split("\r\n")
+		.filter(|l| !l.is_empty())
+		.map(|l| l.to_string())
+		.collect();
+	ensure(lines.len() >= 2, "the log holds fewer than two lines");
+	for line in &lines {
+		// (the year is the four-digit run http_date_from renders, so its value clears 1000)
+		ensure(
+			number_after(line.as_str(), 11) >= 1000,
+			"a log line carries no 4-digit year",
+		);
+		ensure(line.contains("GMT"), "a log line is not IMF-terminated");
+	}
+	ensure(
+		lines[0].contains("signup"),
+		"the first line does not name signup",
+	);
+	ensure(
+		lines[1].contains("login"),
+		"the second line does not name login",
+	);
+	// the dump route: 200 text/plain "<pre>"-wrapped Debug of the whole cache
+	let dumped = get(8026, "/raw".to_string());
+	expect_status(&dumped, "HTTP/1.1 200 OK");
+	ensure(
+		header_value(&dumped, "content-type").contains("text/plain"),
+		"the dump is not typed plain text",
+	);
+	let dump = body_of(&dumped);
+	ensure(
+		dump.starts_with("<pre>"),
+		"the dump never opens the pre tag",
+	);
+	ensure(
+		dump.ends_with("</pre>"),
+		"the dump never closes the pre tag",
+	);
+	ensure(dump.contains("World {"), "the dump holds no World record");
+	ensure(
+		dump.contains("Account {"),
+		"the dump holds no Account record",
+	);
+	ensure(wait_gone(8026), "the raw/log server never exited");
+}

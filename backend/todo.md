@@ -167,10 +167,22 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
       spawned server: GET / 200/text/html/doctype+<html shape, /style.css 200/text/css/"{", /app.js octet-pinned (declared
       len == collected, use strict/const /function tokens), /definitely-not-a-route -> 404 not-index — USER REQUIREMENT
       (server-run network tests eyeballing plausible bodies) MET. Gates rc 0; smoke 7/7, total 74 tests. '/' fixed.
-- [ ] ST2 (impl subagent): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
+- [x] ST2 (impl subagent, ACCEPTED, THIS COMMIT): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
       needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
       serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
       World (derive(Debug) additive), #[get("/log")] plaintext lines; tests for both formatters.
+      RESULT: now_secs + http_date_from(secs) split (ONE epoch source for headers AND log stamps); Server.log
+      Vec<(u64,String)> LOG_CAP=1000, push+front-evict right after the poison-tolerant lock in serve_command
+      (borrow &command: Command not Copy, perf); command_to_logline = Interface request-line names (Publish both
+      arities -> post-tweet, since from-input maps BOTH to Publish; TimePasses nominal, no route); raw_text =
+      format!("<pre>{:?}</pre>", w) single-pass (World ALREADY derives Debug - model.rs UNTOUCHED); serve_text
+      helper + #[get("/raw")] + #[get("/log")] (CRLF lines http_date_from secs + name; static routes unlogged,
+      commented); new bin tests test_raw_text_shape + test_log_line_naming (16 asserts, all 14 constructors +
+      both Publish/read arities); smoke test_raw_and_log :818-885 port 8026: /log 200 text/plain >=2 lines each
+      year (number_after >=1000) + GMT, order signup->login, /raw <pre>..</pre> w/ "World {" + "Account {".
+      Agda: NO new theorem, ImplProofs tail (ST) note - Interface's unlines-crlf is a POSTULATE (opaque), so
+      the name segment is unextractable; naming chain = ImplWire wi-* from-input pins + Rust table test (F2
+      precedent). Gates rc 0; 77 tests (53 lib + 16 bin + 8 smoke), smoke 8/8.
 - [ ] Final verify (ST): gates suite + launch probe: GET / must now serve index.html (no more "No matching routes").
 - [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
   71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
@@ -222,3 +234,5 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - Coordinator probe: `timeout 3 ./target/debug/formal-twitter` prints all 13 routes + graceful shutdown.
 - T4a note: apply() tests exist (test_apply_inserts_all/test_apply_diff) with ImplApply.agda pins; proofs landed.
 - T5 note: cargo test = 29 passed (4 suites, 32s); smoke reentrancy = 3 sequential servers on ONE /tmp sqlite file.
+- ST2 accepted + committed: /raw + /log RAM-debug layer (log ring cap 1000, one epoch source, Interface naming) green:
+  77 tests (53+16+8), smoke 8/8, agda ImplProofs + ImplWire rc 0 with comment-only (ST) tail note (unlines-crlf postulate = opaque, F2 precedent).

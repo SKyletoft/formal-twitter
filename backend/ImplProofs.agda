@@ -519,3 +519,11 @@ th-sample-id-fresh w =
 -- (F2) load_world == patch_world (plus the reply row and the ROLLBACK-on-PK-clash) is pinned
 -- (F2) by the Rust scenario tests test_apply_delta_* in db.rs, over the same DB helpers that
 -- (F2) the test_apply_* pins above already exercise.
+
+-- (ST) ST2 (the /raw dump and the /log request log) likewise adds no new Agda: the <pre> wrap
+-- (ST) around Rust's Debug rendering is spec-free, and the /log naming table is the ImplWire wi-*
+-- (ST) from-input pins composed with the request names Interface:to-request puts in the POST line -
+-- (ST) whose path segment is unreachable here because unlines-crlf is a postulate (Interface.agda:14).
+-- (ST) The Rust guards are test_raw_text_shape + test_log_line_naming (main.rs) and the network
+-- (ST) check test_raw_and_log (smoke.rs); publish/post-reply share the model's Publish, and
+-- (ST) TimePasses is the spec's silent tick, named in the log for exhaustiveness only.
