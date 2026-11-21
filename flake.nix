@@ -9,6 +9,9 @@
 			let
 				pkgs = import nixpkgs { inherit system; };
 
+				# store path of the frontend sources (already a drv input via prePatch)
+				frontendSrc = ./frontend;
+
 				devBuildInputs = with pkgs; [
 					cargo
 					rustc
@@ -27,7 +30,12 @@
 					buildInputs = with pkgs; [ sqlite ];
 					src         = ./backend;
 					prePatch  = ''
-						cp -r ${./frontend} ../frontend
+						cp -r ${frontendSrc} ../frontend
+					'';
+					# pin frontend/app.js JS syntax at build time (nodejs stays OUT of buildInputs so the
+					# rust hook cannot turn it into linker flags; we call the store binary by absolute path)
+					preBuild = ''
+						${pkgs.nodejs_24.out}/bin/node --check ${frontendSrc}/app.js
 					'';
 					cargoLock.lockFile = "${src}/Cargo.lock";
 					# smoke.rs spawns live servers + raw TCP; impossible in the no-network sandbox
@@ -35,7 +43,7 @@
 					dontCargoCheck = true;
 					meta.mainProgram = "formal-twitter";
 					postInstall = ''
-						cp -r ${./frontend} $out/frontend
+						cp -r ${frontendSrc} $out/frontend
 					'';
 				};
 			in {
