@@ -84,117 +84,24 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   site; + test_apply_conn_reuse (one establish, two successive apply commits same conn, both views == after2);
   test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
 
+## Completed since TDC (F4/F1/F2/ST waves, condensed; details in git log)
+- [x] F4a attempt 1 (REJECTED, d451d1c): subagent died mid-run (broken stubs) — reverted, model.rs HEAD-identical. Lesson: small generation units. DESIGN COMMITTED: WorldIndex side-index + _ix helpers; step keeps signature via build_index wrapper.
+- [x] F4a-1 (48a315e): model.rs WorldIndex{accounts/sessions/posts first-occurrence HashMaps, follows HashSet} + build_index + 9 _ix lookup/predicate helpers + 3 qc equiv props; 52->55 tests.
+- [x] F4a-2 (77c8c23): step body moved to step_ix(w,ix,..), every scan -> _ix twin; timelines delegate to _ix twins, pure-Vec *_timeline_ref kept as QuickCheck refs; borrow helpers zero per-probe clones; qc prop_timeline_*_ix; 60->61 tests.
+- [x] F4b (eafb425): main.rs Server +index: WorldIndex — launch build_index(&world), rebuilt after ALL THREE reload arms; serve_command steps via step_ix; +test_serve_index_consistency.
+- [x] F1a (525c028): Delta sum-type (None_/Publish/Delete/Authenticate/RevokeToken/Register/Follow/Unfollow/Like/Unlike/TimePasses) + step_d(&w,&ix,..) -> (Result,Delta) zero-World-clone + patch_world in-place; qc prop_delta_equiv (result equal AND patch == step-after); 64->65 tests.
+- [x] F1b (6d2209b): serve_command runs step_d + patch_world; max_seq bump delta-derived k (Publish -> 1 else 0); +test_delta_publish_equiv; apply signature unchanged (F2 owns body).
+- [x] F2 (ff1ea85): db.rs apply_delta(conn,&before,delta,max_hint) — per-branch O(delta) diesel statements mirroring apply's per-row idioms (Publish INSERT posts+used_pids(+reply row), Delete UPDATE tombstone, session/register/follow/like ops; PK clash -> ROLLBACK false); serve_command switched to apply_delta; apply() now test-only reference; 6 scenario pins; 65->71 tests.
+- [x] ST queue (AGENTS instruction restored at a0ae1b5: "/" serves frontend/, /raw Debug dump, /log request log):
+  - ST1 attempt 1 REJECTED (f6c6012, cancelled mid-run, partial main.rs reverted); split ST1a/ST1b.
+  - ST1a (c679b74): frontend_root() ($out/frontend via current_exe, dev fallback CARGO_MANIFEST_DIR/../frontend) + read_frontend() guard-first (empty/sep/.. /leading-dot -> None) + 2 bin tests; 71->73.
+  - ST1b (2d39d04): serve_static(name,mime) + #[get /][style.css][app.js] mounted (read per request, never RAM-cached); smoke test_static_serving over REAL TCP: doctype+shape pins, octet-pinned app.js len, bogus path -> 404; 74 tests, smoke 7/7.
+  - ST2 (28e7627): Server.log ring LOG_CAP=1000 (push+evict after poison-tolerant lock, &command borrow); now_secs + http_date_from single epoch source; #[get /raw] <pre>{:?}</pre> of cached World (Debug already derived); #[get /log] CRLF http_date+Interface request-line names (Publish both arities -> post-tweet); 16-assert naming test + smoke test_raw_and_log (order + GMT + >=1000 year); 77 tests, smoke 8/8. Subagent committed despite no-commit; coordinator re-verified gates + routes post-hoc, ACCEPTED (fb93502).
+- [x] Final verify (ST, DONE, fb93502): fmt --check / build 0 warnings / clippy --all-targets -D warnings silent / 77 tests (53 lib + 16 bin + 8 smoke) / agda ImplProofs + ImplWire rc 0; launch probe mounts all routes incl. /raw + /log. F-queue was complete; frontend-update queue (F10) then opened at c7dc308.
+
 ## Next (ordered queue)
-- [ ] F10 (research): What is missing from /frontend to display and call actions described in @spec/Interface?. (global vs private timeline views while logged in, like buttons, follow buttons etc?)
-- [x] F4a (attempt 1, REJECTED): subagent died mid-run leaving broken stubs (pub fun(, dangling 'a, comment-only
-      bodies) — partial reverted, model.rs back to HEAD byte-identical. Lesson: keep subagent generation units small;
-      split F4a into helpers-first, step-conversion second. DESIGN COMMITTED: WorldIndex{accounts_ix,sessions_ix,
-      posts_ix: first-occurrence HashMaps; follows_ix HashSet} + build_index (insert-if-absent = Vec first-match) +
-      _ix lookup/predicate helpers; step KEEPS signature: step(w,..) = step_ix(w, build_index(w), ..) (one ix body,
-      no 200-line copy); original timelines keep names/signatures, delegate to _ix twins; pure-Vec *_timeline_ref
-      kept test-only as QuickCheck reference; Server holds index, rebuilt on reload, serve_command passes it to step_ix.
-- [x] F4a-1 (impl subagent, ACCEPTED, THIS COMMIT): WorldIndex+build_index + 9 _ix helpers landed in
-      model.rs (1207->1446 lines): imports 3-4, WorldIndex 67-78, build_index 80-109, account_at_ix 190-194,
-      session_at_ix 206-213, post_at_ix 235-239, follows_ix 251-256, active_user_ix 289-296, valid_session_ix
-      306-313, access_ok_ix 342-349, can_read_ix 370-388, is_post_public_ix 398-405; 3 qc props (prop_ix_lookups_equiv,
-      prop_ix_predicates_equiv, prop_ix_build_firstwins w/ hand-built duplicate-username world, no well_formed guard)
-      at mod qc end ~1330-1446; tests 52->55 (39 lib + 10 bin + 6 smoke); gates fmt --check/build/clippy(-D warnings,
-      silent)/test/agda x2 all rc 0; no commit yet.
-- [x] F4a-2 (impl subagent, ACCEPTED, THIS COMMIT): step body MOVED to step_ix(w, ix, ..) — every scan lookup ->
-      _ix twin, World-construction blocks byte-identical, no intermediate-world lookups; step = build_index + step_ix
-      wrapper (signature kept, main.rs untouched); timelines: *_timeline_ref pure-Vec refs (test-only QuickCheck refs),
-      public names delegate to _ix twins via fresh index; borrow helpers active_user_bx/account_at_bx/post_at_bx +
-      indexed-borrow can_read_ix/is_post_public_ix (zero per-probe clones); qc prop_timeline_{global,personal,public}_ix
-- [x] F4b (impl subagent, ACCEPTED, THIS COMMIT): Server +index: WorldIndex (launch build_index(&world), rebuilt
-      after ALL THREE reload arms in serve_command: reopen-Err, committed tick-rotate, rollback resync); serve_command
-- [x] F1a (impl subagent, ACCEPTED, THIS COMMIT): Delta sum-type (None_, Publish(pid,author,text,vis,parent?),
-      Delete(pid), Authenticate(sid,user), RevokeToken(sid), Register(user,acct), Follow/Unfollow(f,g), Like/Unlike(pid,user),
-      TimePasses(Vec sids)) at :144 + step_d(&w,&ix,..) -> (Result,Delta) :968 (guards byte-mirror step_ix, zero World clones)
-      + patch_world(w: World, d) -> World :1131 (owned in-place, push/insert(0,)/retain/status/ids ops byte-match step_ix);
-      qc prop_delta_equiv (:2006: result equal AND patch_world(w.clone(),d) == step-after, well-formed guard) + test_delta_register
-- [x] F1b (impl subagent, ACCEPTED, THIS COMMIT): serve_command evaluates step_d(&before, &locked.index, ..) -> (Result,Delta),
-      after = patch_world(before.clone(), delta) (before clone kept + note: true single-copy move-swap is F2's job);
-      max_seq bump delta-derived k (Delta::Publish(..) -> 1 else 0; new_post_count kept #[cfg(test)] test-only);
-      imports: step_ix dropped (test-local use), Delta/patch_world/step_d added; +test_delta_publish_equiv (step_d/patch
-      == step on literal world, k == new_post_count == 1); 64->65 tests (47 lib + 12 bin + 6 smoke); apply signature
-      UNCHANGED (F2 owns delta-driven body); gates all rc 0, Agda untouched.
-      before clone KEPT for apply(&before,&after,hint) + failure arms (single-copy move-swap deferred; F2 owns apply);
-      new_post_count replaced by delta-derived k for max_seq bump (old fn kept test-only doc); +one bin pin test; smoke green.
-      == step via built index + reload-site round-trip hit/miss); 60->61 tests (44 lib + 11 bin + 6 smoke); gates
-      fmt/build/clippy -D warnings silent/test/agda x2 rc 0; main.rs only touched.
-- [x] F4b (eafb425, impl subagent, ACCEPTED): main.rs Server +index: WorldIndex — launch build_index(&world), rebuilt
-      after ALL THREE reload arms; serve_command steps via step_ix(&before,&locked.index,..); +test_serve_index_consistency.
-- [x] F1 (F1a 525c028 + F1b 6d2209b, impl subagents, ACCEPTED): Delta sum-type + step_d -> (Result,Delta) + patch_world;
-      serve_command runs step_d/patch_world, delta-derived k drives the max_seq bump; prop_delta_equiv + pins.
-- [x] F2 (impl subagent, ACCEPTED, THIS COMMIT): db.rs apply_delta(conn,&before,delta,max_hint) :882-1058 + doc; per-branch
-      diesel statements mirroring apply's per-row idioms verbatim: None_ zero-stmt COMMIT true; Publish INSERTs posts(seq=max_hint+1)+used_pids
-      (+replies row reply_pid=pid,parent when parent is Some — patch appends reply to parent list); Delete UPDATEs posts
-      cols apply's UPDATE sets (status+visibility, verify by reading); Authenticate/RevokeToken/TimePasses session-row ops
-      (one per sid); Register accounts INSERT cols; Follow/Unfollow follows-branch op; Like INSERT / Unlike DELETE likes row;
-      PK clash -> ROLLBACK false unchanged. apply() doc -> "test-only reference" (tests kept). serve_command :392 ->
-      apply_delta(&mut conn,&before,delta,locked.max_seq); after stays (moved into reload arms); import +1 (F2) comment.
-      6 db.rs scenario tests (publish seq=hint+1 + newest_first head, publish_reply load==want-PLUS-row (patch lags by the
-      row; reload_posts converges), delete UPDATE-only idempotent tombstone, follow/unfollow/ghost successive, collision
-      Publish+Register -> false&DB-unchanged&conn-reusable, None_/empty TimePasses/TimePasses/Authenticate/RevokeToken/
-      Like/Unlike pins) :1664-1939; apply_delta :882-1058; main.rs :392->apply_delta + import swap (apply dropped from top
-      import, test modules keep local imports) + delta.clone() for patch (commented) + (F1b) comment corrected; ImplProofs
-      7-line (F2) pointer comment ONLY (A4); 65->71 tests (53 lib + 12 bin + 6 smoke 31.7s), gates fmt/build/clippy/agda x2
-      all rc 0. Note: neither step_ix nor patch_world appends to a parent's replies FIELD — the replies ROW is the DB encoding
-      of child.parent, load_world re-derives it; Follow/Like deltas guarded by *_ix probes so INSERTs never re-clash.
-- [ ] ST1 (impl subagent): RESTORED INSTRUCTION (lost at 54155e6/a9cd7ad, recovered from git history): "The spec
-      describes /api, let / just statically serve frontend/". main.rs static routes: GET / -> frontend/index.html
-      (text/html), GET /style.css, GET /app.js; frontend_root resolution copied from 3857f06 (CARGO_MANIFEST_DIR/../..
-      fallback + current_exe ../.. for nix $out/bin -> $out/frontend), traversal guard, content_type_for copied; mount
-      in routes!; bin tests: index bytes == frontend/index.html on disk, traversal -> None/404.
-- [x] ST1 attempt 1 (impl subagent, REJECTED — cancelled mid-run, left partial main.rs): reverted via
-      `git show HEAD:backend/src/main.rs > src/main.rs` (NOTE: git paths are repo-root-relative, the redirect truncates
-      BEFORE git runs -> restore with the FULL path in one go, verify wc -l + build rc). Split ST1 into ST1a (helpers+
-      tests) and ST1b (routes+mount).
-- [ ] ST1a (impl subagent): helpers ONLY: frontend_root() (3857f06 strategy: current_exe ../.. -> $out/frontend if
-      present else CARGO_MANIFEST_DIR/../frontend dev fallback), read_frontend(name) plain-filename guard (reject '/','..',
-      empty; std::fs::read_to_string, Option<String>); 2 bin tests test_static_index_matches_disk + test_static_blocks_traversal
-      (is_none()). NO #[get] routes yet. Gates all rc 0 (73 tests).
-- [x] ST1a (impl subagent, ACCEPTED, THIS COMMIT): helpers ONLY — frontend_root() :200-214 (install: current_exe
-      ../..=[$out]->[$out/frontend] when is_dir, dev fallback CARGO_MANIFEST_DIR/../frontend) + read_frontend() :216-233
-      guard-FIRST (rejects empty, '/' or '\\' sep, '..' pair, leading-dot names; every io error -> None); 2 bin tests
-      (index bytes == disk, traversal totality incl. backslash + dot names); 71->73 tests (53 lib + 14 bin + 6 smoke),
-      gates fmt/build/clippy -D/agda x2 rc 0. NOTE '/' STILL 404: routes unmounted until ST1b.
-- [x] ST1b (impl subagent, ACCEPTED, THIS COMMIT): serve_static(name,mime) :695 — to_http-shape Response, None -> empty
-      NotFound built HERE (one coherent hit/miss strategy, no rocket template), hit -> content-type + 200 + sized_body,
-      read per request (disk = site's source, never RAM-cached); #[get("/")].index text/html :719, style :727, app_js :735
-      (Served wrapper) mounted routes! :797 + (ST) comment + launch doc; smoke.rs helpers header_value :203, get_raw :281
-      (octet reader: app.js carries multi-byte glyphs), bytes_find :308 + test_static_serving :726-814 — REAL network on
-      spawned server: GET / 200/text/html/doctype+<html shape, /style.css 200/text/css/"{", /app.js octet-pinned (declared
-      len == collected, use strict/const /function tokens), /definitely-not-a-route -> 404 not-index — USER REQUIREMENT
-      (server-run network tests eyeballing plausible bodies) MET. Gates rc 0; smoke 7/7, total 74 tests. '/' fixed.
-- [x] ST2 (impl subagent, ACCEPTED, THIS COMMIT): same lost block: "/raw returns plaintext Debug printing of State (wrapped in <pre> if
-      needed?)" + "/log returns a log of all requests + timestamps". Server +log Vec ring (cap, RAM debug only),
-      serve()/serve_command append request line + http_date epoch; #[get("/raw")] text/plain <pre> of Debug of cached
-      World (derive(Debug) additive), #[get("/log")] plaintext lines; tests for both formatters.
-      RESULT: now_secs + http_date_from(secs) split (ONE epoch source for headers AND log stamps); Server.log
-      Vec<(u64,String)> LOG_CAP=1000, push+front-evict right after the poison-tolerant lock in serve_command
-      (borrow &command: Command not Copy, perf); command_to_logline = Interface request-line names (Publish both
-      arities -> post-tweet, since from-input maps BOTH to Publish; TimePasses nominal, no route); raw_text =
-      format!("<pre>{:?}</pre>", w) single-pass (World ALREADY derives Debug - model.rs UNTOUCHED); serve_text
-      helper + #[get("/raw")] + #[get("/log")] (CRLF lines http_date_from secs + name; static routes unlogged,
-      commented); new bin tests test_raw_text_shape + test_log_line_naming (16 asserts, all 14 constructors +
-      both Publish/read arities); smoke test_raw_and_log :818-885 port 8026: /log 200 text/plain >=2 lines each
-      year (number_after >=1000) + GMT, order signup->login, /raw <pre>..</pre> w/ "World {" + "Account {".
-      Agda: NO new theorem, ImplProofs tail (ST) note - Interface's unlines-crlf is a POSTULATE (opaque), so
-      the name segment is unextractable; naming chain = ImplWire wi-* from-input pins + Rust table test (F2
-      precedent). Gates rc 0; 77 tests (53 lib + 16 bin + 8 smoke), smoke 8/8.
-- [x] Final verify (ST, DONE): post-ST2 gates suite (fmt rc 0, build 0 warnings, cargo test 77 = 53 lib + 16 bin +
-  8 smoke, clippy --all-targets -- -D warnings silent, agda ImplProofs + ImplWire rc 0 rechecked AFTER the ST tail
-  note landed); launch probe timeout 3 target/debug/formal-twitter mounts all routes incl. /raw + /log + graceful
-  shutdown; GET / index.html pinned live by smoke test_static_serving + test_raw_and_log (both in the 8/8 run).
-   ST-QUEUE COMPLETE — committed 28e7627 + this todo commit, co-author maki@qwen3.8-flash-next-coder on each.
-- [x] ST2 coordinator note: subagent DEVIATED — it committed 28e7627/fb93502 itself despite "do NOT commit" (lesson:
-      verify git log after every impl task, re-state no-commit). Coordinator re-verified post-hoc: full gates rc 0 (77 =
-      53 lib + 16 bin + 8 smoke 8/8), co-author on both commits, routes reviewed (:821/:837 poison-tolerant locks,
-      LOG_CAP=1000 ring in serve_command, http_date_from shared epoch source, <pre>-wrapped raw_text). ACCEPTED.
-- [x] Final verify (coordinator, DONE): fmt --check rc 0, build 0 warnings, clippy --all-targets -D warnings silent,
-  71 tests (53 lib + 12 bin + 6 smoke lifecycle green), agda ImplProofs + ImplWire rc 0, quick probe + nix run launch
-  OK; every accepted task committed with co-author maki@qwen3.8-flash-next-coder. QUEUE EMPTY — F-queue complete.
+- [x] TD300 (coordinator, THIS COMMIT): todo cleanup — F4/F1/F2/ST waves condensed to one line per commit out of the queue; superseded parents (ST1) + stale final-verify duplicates dropped; lesson notes kept.
+- [ ] F10 (research, subagent RUNNING): audit frontend/{index.html,app.js,style.css} vs spec/Interface.agda + Twitter.agda Actions — which endpoints app.js actually calls vs all 14 constructors; rendering gaps (returned-post author/text/likes/replies, timeline ids, private vs global view while logged in, created pid, issued sid); deliver fix list (like/unlike/follow/unfollow/delete/reply buttons, logout call, private-timeline view) -> then queue F11 frontend edits (+ alias/POST shapes per wire.rs rules, no new server permission logic).
 
 ## Reference: spec semantics (Twitter.agda + Interface.agda, from R4/R5)
 - `World` (:65-109): account-at String -> Maybe Account{password, default-visibility}; session-at Sid ->
