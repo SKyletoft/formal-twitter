@@ -3,7 +3,30 @@
 const TOKEN_KEY = 'formal-twitter-token';
 const USER_KEY = 'formal-twitter-user';
 const TIMELINE_LEN = 20;
-const ENDPOINTS = ['login', 'signup', 'post-tweet', 'get-tweet', 'timeline'];
+const ENDPOINTS = [
+  'login',
+  'signup',
+  'post-tweet',
+  'post-reply',
+  'delete-tweet',
+  'like-tweet',
+  'unlike-tweet',
+  'follow-user',
+  'unfollow-user',
+  'logout',
+  'get-tweet',
+  'timeline'
+];
+const BODY_KINDS = [
+  'post-tweet',
+  'post-reply',
+  'delete-tweet',
+  'like-tweet',
+  'unlike-tweet',
+  'follow-user',
+  'unfollow-user',
+  'logout'
+];
 
 const el = (id) => document.getElementById(id);
 
@@ -94,13 +117,34 @@ function byRegex(s) {
 }
 
 function buildBody(kind, args, token) {
+  const clean = (s) => String(s == null ? '' : s).replace(/[\r\n]/g, '');
   if (kind === 'login' || kind === 'signup') {
     return [args.username, args.password];
   }
   if (kind === 'post-tweet') {
-    return [token || '', args.text];
+    return [token || '', clean(args.text)];
+  }
+  if (kind === 'post-reply') {
+    return [token || '', clean(args.text), String(args.id)];
+  }
+  if (kind === 'delete-tweet' || kind === 'like-tweet' || kind === 'unlike-tweet') {
+    return [token || '', String(args.id)];
+  }
+  if (kind === 'follow-user' || kind === 'unfollow-user') {
+    return [token || '', args.username];
+  }
+  if (kind === 'logout') {
+    return [token || ''];
   }
   return [];
+}
+
+function wireBody(kind, args, token) {
+  const lines = buildBody(kind, args, token);
+  if (kind === 'login' || kind === 'signup' || kind === 'post-tweet') {
+    return lines.join('\n') + '\n';
+  }
+  return lines.join('\r\n');
 }
 
 // Browsers cannot send a GET body, so get-tweet/timeline arguments
@@ -123,7 +167,7 @@ async function performAction(kind, args, opts) {
   }
   const authAction = kind === 'login' || kind === 'signup';
   const token = authAction ? null : currentToken();
-  const useBody = kind === 'post-tweet' || authAction;
+  const useBody = BODY_KINDS.includes(kind) || authAction;
   const pathName = kind === 'timeline' ? (token ? 'private-timeline' : 'global-timeline') : kind;
   const url = '/api/' + pathName + (useBody ? '' : '?' + buildParams(kind, args, token));
   let response;
@@ -131,7 +175,7 @@ async function performAction(kind, args, opts) {
     response = await fetch(url, {
       method: useBody ? 'POST' : 'GET',
       headers: { 'Content-Type': 'text/plain' },
-      body: useBody ? buildBody(kind, args, token).join('\n') + '\n' : undefined
+      body: useBody ? wireBody(kind, args, token) : undefined
     });
   } catch (e) {
     return { error: 'network-error', message: 'Could not reach the server' };
@@ -161,7 +205,9 @@ async function performAction(kind, args, opts) {
     return {
       error: 'request-failed',
       status: response.status,
-      message: kind === 'get-tweet' && response.status === 403 ? 'Not allowed to view this post' : name
+      message: kind === 'signup' && response.status === 400
+        ? 'That username is already taken'
+        : kind === 'get-tweet' && response.status === 403 ? 'Not allowed to view this post' : name
     };
   }
   return { status: response.status, data: data || {} };
@@ -363,7 +409,8 @@ el('compose-form').addEventListener('submit', async (ev) => {
   return via(result);
 });
 
-el('logout-btn').addEventListener('click', () => {
+el('logout-btn').addEventListener('click', async () => {
+  await performAction('logout', {}, {});
   clearSession();
   pending = null;
   showAuth('');
