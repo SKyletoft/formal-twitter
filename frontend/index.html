@@ -49,6 +49,15 @@
       <p class="error" id="compose-error"></p>
     </form>
 
+    <form id="follow-form">
+      <h2>Follow</h2>
+      <input id="follow-username" autocomplete="username" placeholder="Username" required>
+      <button id="follow-btn" type="submit">Follow</button>
+      <button id="unfollow-btn" type="submit">Unfollow</button>
+      <p class="notice" id="follow-status"></p>
+      <p class="error" id="follow-error"></p>
+    </form>
+
     <section id="tweet-detail" hidden>
       <button id="back-btn">&#8592; Back to timeline</button>
       <div id="tweet-detail-content" class="tweet-card"></div>
@@ -57,6 +66,7 @@
 
     <section id="timeline-section">
       <h2>Timeline</h2>
+      <button id="global-btn">Global timeline</button>
       <ul id="timeline-list" class="tweet-list"></ul>
       <p class="error" id="timeline-error"></p>
     </section>

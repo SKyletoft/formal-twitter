@@ -118,6 +118,48 @@ form {
   margin: 0;
 }
 
+#follow-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+#follow-form input { flex: 1 1 100%; }
+
+#follow-form .notice,
+#follow-form .error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+#follow-btn,
+#unfollow-btn {
+  margin: 0;
+}
+
+#global-btn {
+  background: transparent;
+  color: var(--accent);
+  padding: 0.25rem 0;
+  margin: 0 0 0.75rem 0;
+}
+
+.tweet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.tweet-actions textarea { flex: 1 1 100%; }
+
+.tweet-actions .notice,
+.tweet-actions .error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
 h2 { font-size: 1.05rem; margin: 0 0 0.75rem 0; }
 
 .notice { color: #1b7a3e; }

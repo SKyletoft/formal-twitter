@@ -49,6 +49,7 @@ function clearSession() {
 }
 
 let pending = null;
+let currentDetailId = null;
 
 function showAuth(noticeText) {
   el('auth-panel').hidden = false;
@@ -168,7 +169,7 @@ async function performAction(kind, args, opts) {
   const authAction = kind === 'login' || kind === 'signup';
   const token = authAction ? null : currentToken();
   const useBody = BODY_KINDS.includes(kind) || authAction;
-  const pathName = kind === 'timeline' ? (token ? 'private-timeline' : 'global-timeline') : kind;
+  const pathName = kind === 'timeline' ? (token && !opts.forceGlobal ? 'private-timeline' : 'global-timeline') : kind;
   const url = '/api/' + pathName + (useBody ? '' : '?' + buildParams(kind, args, token));
   let response;
   try {
@@ -241,9 +242,9 @@ function timelineVia(listId, errorId) {
   };
 }
 
-async function loadTimelineInto(listId, errorId) {
+async function loadTimelineInto(listId, errorId, opts) {
   const via = timelineVia(listId, errorId);
-  const result = await performAction('timeline', { len: TIMELINE_LEN }, { via: via });
+  const result = await performAction('timeline', { len: TIMELINE_LEN }, Object.assign({ via: via }, opts || {}));
   return via(result);
 }
 
@@ -254,6 +255,12 @@ function loadPublicTimeline() {
 function loadTimeline() {
   return loadTimelineInto('timeline-list', 'timeline-error');
 }
+
+el('global-btn').addEventListener('click', async () => {
+  if (currentToken()) {
+    await loadTimelineInto('timeline-list', 'timeline-error', { forceGlobal: true });
+  }
+});
 
 function renderTweetIdList(listEl, ids, onOpen) {
   listEl.textContent = '';
@@ -323,6 +330,72 @@ function renderTweetDetail(id, data) {
   replyList.className = 'tweet-list';
   renderTweetIdList(replyList, replies, (replyId) => openTweet(replyId, {}));
   box.appendChild(replyList);
+  currentDetailId = id;
+  addTweetControls(box);
+}
+
+function addTweetControls(box) {
+  const controls = document.createElement('div');
+  controls.className = 'tweet-actions';
+  const okEl = document.createElement('p');
+  okEl.className = 'notice';
+  const errEl = document.createElement('p');
+  errEl.className = 'error';
+  const actions = [
+    ['like-tweet', 'Like', 'Liked.'],
+    ['unlike-tweet', 'Unlike', 'Unliked.'],
+    ['delete-tweet', 'Delete', 'Deleted.']
+  ];
+  for (const row of actions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = row[1];
+    btn.addEventListener('click', async () => {
+      okEl.textContent = '';
+      errEl.textContent = '';
+      const result = await performAction(row[0], { id: currentDetailId }, {});
+      if (result.handled) return;
+      if (result.status === 200) {
+        okEl.textContent = row[2];
+      } else {
+        errEl.textContent = result.message || 'Unexpected response';
+      }
+    });
+    controls.appendChild(btn);
+  }
+  const replyText = document.createElement('textarea');
+  replyText.className = 'reply-text';
+  replyText.rows = 3;
+  replyText.placeholder = 'Write a reply';
+  const replyBtn = document.createElement('button');
+  replyBtn.type = 'button';
+  replyBtn.textContent = 'Reply';
+  replyBtn.addEventListener('click', async () => {
+    const text = replyText.value;
+    if (!text) return;
+    okEl.textContent = '';
+    errEl.textContent = '';
+    const via = (result) => {
+      if (result.handled) return;
+      if (result.error) {
+        errEl.textContent = result.message;
+        return;
+      }
+      if (result.data && result.data.tweet_id != null) {
+        okEl.textContent = 'Posted as #' + result.data.tweet_id;
+        replyText.value = '';
+        return;
+      }
+      errEl.textContent = 'Unexpected response';
+    };
+    const result = await performAction('post-reply', { text: text, id: currentDetailId }, { via: via });
+    via(result);
+  });
+  controls.appendChild(replyText);
+  controls.appendChild(replyBtn);
+  controls.appendChild(okEl);
+  controls.appendChild(errEl);
+  box.appendChild(controls);
 }
 
 async function openTweet(id, opts) {
@@ -407,6 +480,34 @@ el('compose-form').addEventListener('submit', async (ev) => {
   };
   const result = await performAction('post-tweet', { text: text }, { via: via });
   return via(result);
+});
+
+el('follow-btn').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  el('follow-status').textContent = '';
+  el('follow-error').textContent = '';
+  const username = el('follow-username').value.trim();
+  const result = await performAction('follow-user', { username: username }, {});
+  if (result.handled) return;
+  if (result.status === 200) {
+    el('follow-status').textContent = 'Following.';
+  } else {
+    el('follow-error').textContent = result.message || 'Unexpected response';
+  }
+});
+
+el('unfollow-btn').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  el('follow-status').textContent = '';
+  el('follow-error').textContent = '';
+  const username = el('follow-username').value.trim();
+  const result = await performAction('unfollow-user', { username: username }, {});
+  if (result.handled) return;
+  if (result.status === 200) {
+    el('follow-status').textContent = 'Unfollowed.';
+  } else {
+    el('follow-error').textContent = result.message || 'Unexpected response';
+  }
 });
 
 el('logout-btn').addEventListener('click', async () => {
