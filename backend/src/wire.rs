@@ -540,9 +540,13 @@ mod wire_tests {
 		);
 	}
 
-	/// wi-out-* pins of backend/ImplWire.agda: the other 7 constructors have the
-	/// status code, header order - Date first, Cache-Control only for the three uncached
-	/// bodies and Content-Type iff the body is non-empty - of spec/Interface.agda:to-response.
+	/// 1:1 with backend/ImplWire.agda: wi-out-* (to-output ctors) pair each Result with
+	/// its Response constructor; wi-resp-* (to-response pins) fix the status line (200/403/401/400),
+	/// the header LIST, the Content-Length term and the body expression via plain refl.
+	/// Each block below asserts one pin with concrete values (wi-resp-ok and wi-resp-timeline
+	/// are asserted in timeline_bodies above).  Impl-defined, spec-free residuals: the exact
+	/// header ORDER on the wire and the unlines-crlf framing bytes stay opaque - unlines-crlf
+	/// is a postulate and the concrete-byte claim is only stated as commented wi-bytes-* signatures.
 	#[test]
 	fn respond_shapes() {
 		let d = "d".to_string();
