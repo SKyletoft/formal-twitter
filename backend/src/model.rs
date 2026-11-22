@@ -1235,8 +1235,8 @@ mod qc {
 		global_timeline_ix, global_timeline_ref, is_post_public, is_post_public_ix, len_u64,
 		member, patch_world, personal_timeline, personal_timeline_ix, personal_timeline_ref,
 		post_at, post_at_ix, post_at_ref, public_timeline, public_timeline_ix, public_timeline_ref,
-		session_at, session_at_ix, step, step_d, step_ix, take_n, unique, used_sid, valid_session,
-		valid_session_ix, well_formed,
+		session_at, session_at_ix, step, step_d, step_ix, take_n, unique, used_pid, used_sid,
+		valid_session, valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1329,6 +1329,13 @@ mod qc {
 	fn as_read(cmd: Command) -> Option<(Option<u64>, u64)> {
 		match cmd {
 			Command::ReadPost(msid, pid) => Some((msid, pid)),
+			_ => None,
+		}
+	}
+
+	fn as_publish(cmd: Command) -> Option<(u64, String, Option<u64>)> {
+		match cmd {
+			Command::Publish(sid, txt, parent) => Some((sid, txt.clone(), parent)),
 			_ => None,
 		}
 	}
@@ -1544,6 +1551,101 @@ mod qc {
 		}
 	}
 
+	/// RV5-3 publish cases: the world and the PUBLISH command are drawn TOGETHER (a plain
+	/// World/Command/StepArgs triple hits a publish-with-valid-session-and-fresh-id-and-readable-
+	/// parent only about once in 470 cases, so quickcheck's 100 would never reach the three publish
+	/// rules).  The command is aimed at the world it was generated with -- session from the world's
+	/// valid ones, child id from the world's unused ones, parent readable / blocked / NOTHING -- so
+	/// all three spec rules (successful-post, successful-reply, failed-reply) fire often, while the
+	/// random fallbacks keep the negative guards reachable.  Still an Arbitrary instance, hence the
+	/// props below stay universal tests.
+	#[derive(Clone, Debug)]
+	struct PublishCase {
+		/// the world the publish command is drawn against
+		w: World,
+		/// a publish command aimed at that world
+		cmd: Command,
+		/// the fresh post/session ids handed to step
+		ids: StepArgs,
+	}
+
+	impl Arbitrary for PublishCase {
+		fn arbitrary(g: &mut Gen) -> Self {
+			let w: World = build_world(g);
+			// a session that really has a ValidSession most of the time, so the publish rules'
+			// session premise is satisfiable (build_world's session pool is sparse)
+			let mut ok_sids: Vec<u64> = vec![];
+			for sid in SIDS {
+				if valid_session(&w, sid) {
+					ok_sids.push(sid);
+				}
+			}
+			let sid: u64 = if !ok_sids.is_empty() && pick(g, &[true, true, false]) {
+				pick(g, &ok_sids)
+			} else {
+				pick(g, &SIDS)
+			};
+			// a child id the world has NOT used, so step creates instead of refusing on its
+			// impl-defined used-post-ids guard
+			let mut free_pids: Vec<u64> = vec![];
+			for pid in PIDS {
+				if !used_pid(&w, pid) {
+					free_pids.push(pid);
+				}
+			}
+			let fresh_pid: u64 = if !free_pids.is_empty() && pick(g, &[true, true, false]) {
+				pick(g, &free_pids)
+			} else {
+				pick(g, &PIDS)
+			};
+			// readable/blocked parents for that session: successful-reply vs failed-reply
+			let mut readable: Vec<u64> = vec![];
+			let mut blocked: Vec<u64> = vec![];
+			for pp in PIDS {
+				if can_read(&w, sid, pp) {
+					readable.push(pp);
+				} else {
+					blocked.push(pp);
+				}
+			}
+			// parent choice: NOTHING (successful-post) / a parent the session CAN read (successful-
+			// reply) / a parent it cannot (failed-reply, missing posts included)
+			let mut parent: Option<u64> = None;
+			let choice: u64 = pick(g, &[0u64, 1u64, 2u64, 3u64]);
+			if choice == 0u64 {
+				// NOTHING parent: the successful-post half of step's Publish arm
+				parent = None;
+			} else {
+				let pool: Vec<u64> = if choice == 1u64 || choice == 2u64 {
+					readable
+				} else {
+					blocked
+				};
+				if !pool.is_empty() {
+					parent = Some(pick(g, &pool));
+				} else if pick(g, &[true, false]) {
+					// fallback parent so the blocked/missing branch stays reachable in sparse worlds
+					parent = Some(pick(g, &PIDS));
+				}
+			}
+			let pc = Command::Publish(sid, "t".to_string(), parent);
+			PublishCase {
+				w,
+				ids: StepArgs {
+					pid: fresh_pid,
+					sid: pick(g, &SIDS),
+				},
+				cmd: pc,
+			}
+		}
+
+		/// No shrinking: shrinking could break the world's well-formedness invariants.
+		fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+			let empty: Vec<Self> = vec![];
+			Box::new(empty.into_iter())
+		}
+	}
+
 	/// QC of expired-access: a command run through a session lacking a valid session leaves the world unchanged and yields Expired.
 	#[quickcheck]
 	fn prop_expired_access(w: World, cmd: Command, ids: StepArgs) -> bool {
@@ -1666,6 +1768,158 @@ mod qc {
 		{
 			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
 			return res == Result::LoginFailed && nw == w;
+		}
+		true
+	}
+
+	/// QC of publish-new (spec successful-post, Twitter.agda:387): a VALID session publishing with a
+	/// NOTHING parent and a FRESH post id creates exactly that post -- author = the session's user, text =
+	/// the command's txt, visibility = the ACCOUNT's default-visibility (step's Publish arm reads account-at
+	/// at model.rs:773-777, the spec's new-post, Twitter.agda:209), status live, likes empty, replies EMPTY,
+	/// parent Nothing -- with nw.posts GAINING that entry, newest_first PREPENDED with ids.pid
+	/// (nw.newest_first.insert(0, fresh_pid), model.rs:806 -- the spec premise pid ∷ newest-first before ≡
+	/// newest-first after) and used_post_ids GAINING ids.pid (model.rs:807), every other section carried
+	/// untouched, so nw == want outright.  Freshness of ids.pid is a HYPOTHESIS only: step's refusal of an
+	/// already-used id (Denied, world unchanged, model.rs:769-771) is IMPL-DEFINED -- the spec's successful-post
+	/// never names World.used-post-ids; its PostIsNew premise only forces World.post-at before pid ≡ nothing.
+	/// th-prop-publish-new (ImplProofs.agda) pins the spec-forced half: was-absent + is-present (the new-post
+	/// SHAPE) + the newest-first prepend + the constructor's POINTWISE rest, mirrored verbatim.
+	#[quickcheck]
+	fn prop_publish_new(c: PublishCase) -> bool {
+		let w: World = c.w;
+		let cmd: Command = c.cmd;
+		let ids: StepArgs = c.ids;
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, txt, parent)) = as_publish(cmd.clone())
+			&& parent.is_none()
+			&& valid_session(&w, sid)
+			&& !used_pid(&w, ids.pid)
+			&& let Some(user) = active_user(&w, sid)
+			&& let Some(acc) = account_at(&w, &user)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			// step's Publish arm (model.rs:795-807): the created post, one posts entry, newest-first
+			// prepend, used-id gain -- everything else identical
+			let fresh: Post = Post {
+				author: user.clone(),
+				text: txt.clone(),
+				visibility: acc.default_visibility,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				parent,
+			};
+			// the fresh id was absent beforehand: the spec's PostIsNew was-absent premise, implied here
+			// by well_formed (used-post-ids and posts agree) plus the !used_pid hypothesis
+			let absent: bool = post_at(&w, ids.pid).is_none();
+			let mut want: World = w;
+			want.posts.push((ids.pid, fresh.clone()));
+			want.newest_first.insert(0, ids.pid);
+			want.used_post_ids.push(ids.pid);
+			return res == Result::CreatedPost(ids.pid)
+				&& absent
+				// post-at after pid = just (new-post username txt acc): the spec's is-present premise
+				&& post_at(&nw, ids.pid) == Some(fresh)
+				&& nw == want;
+		}
+		true
+	}
+
+	/// QC of reply-publish (spec successful-reply, Twitter.agda:401): a VALID session publishing under a
+	/// READABLE parent -- can_read (the spec's CanReadPost, Twitter.agda:168-187: live AND (Everyone OR
+	/// FollowersOnly-with-follows)) -- with a FRESH child id and child pid != parent pid (the spec's pid ≢ ppid
+	/// premise) creates CreatedPost(ids.pid) whose post has parent = just ppid, status live, empty likes/replies,
+	/// and VISIBILITY INHERITED from the parent (model.rs:785-794 copies the parent's visibility when it is
+	/// FollowersOnly, else the account's default -- exactly the spec's new-reply pair, Twitter.agda:213-217) --
+	/// plus the RV5-0 reply bookkeeping: the PARENT post's replies list gains the child pid at the HEAD
+	/// (model.rs:813-819, the spec premise World.post-at after ppid ≡ just (post ... (pid ∷ preplies) ...)),
+	/// newest_first PREPENDED, used_post_ids GAINED, every other section untouched (nw == want outright).
+	/// step's used-pid refusal (model.rs:769-771) is IMPL-DEFINED -- the spec's successful-reply never names
+	/// World.used-post-ids -- so freshness stays a hypothesis only.  th-prop-publish-reply pins the spec half.
+	#[quickcheck]
+	fn prop_reply_publish(c: PublishCase) -> bool {
+		let w: World = c.w;
+		let cmd: Command = c.cmd;
+		let ids: StepArgs = c.ids;
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, txt, Some(ppid))) = as_publish(cmd.clone())
+			&& ids.pid != ppid
+			&& valid_session(&w, sid)
+			&& can_read(&w, sid, ppid)
+			&& !used_pid(&w, ids.pid)
+			&& let Some(pparent) = post_at(&w, ppid)
+			&& let Some(user) = active_user(&w, sid)
+			&& let Some(acc) = account_at(&w, &user)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			// VISIBILITY INHERITANCE (model.rs:785-794): the parent's FollowersOnly wins, otherwise the
+			// account's default-visibility -- the spec new-reply's two clauses on the parent's visibility
+			let vis: Visibility = if pparent.visibility == Visibility::FollowersOnly {
+				Visibility::FollowersOnly
+			} else {
+				acc.default_visibility
+			};
+			let child: Post = Post {
+				author: user.clone(),
+				text: txt.clone(),
+				visibility: vis,
+				status: PostStatus::Other,
+				likes: vec![],
+				replies: vec![],
+				// child.parent = just ppid: the spec's new-reply last argument
+				parent: Some(ppid),
+			};
+			// the parent post as it is AFTERWARDS: same author/text/visibility/status/likes, replies PREPENDED
+			// with the child pid (RV5-0, model.rs:813-819)
+			let mut parent_after: Post = pparent;
+			(parent_after.replies).insert(0, ids.pid);
+			// step pushes the new post FIRST (model.rs:805) and only then patches the parent entry
+			// (model.rs:813-819), so the posts section order is old ++ [child] with the parent rewritten in place
+			let mut want: World = w;
+			want.posts.push((ids.pid, child.clone()));
+			for e in &mut want.posts {
+				if e.0 == ppid {
+					e.1 = parent_after.clone();
+					break;
+				}
+			}
+			// newest-first PREPENDED (model.rs:806, the spec premise pid ∷ newest-first before ≡
+			// newest-first after) and used_post_ids GAINED (model.rs:807: no spec constructor names
+			// World.used-post-ids, so that gain is witnessed by OUR step, not by the spec relation)
+			want.newest_first.insert(0, ids.pid);
+			want.used_post_ids.push(ids.pid);
+			return res == Result::CreatedPost(ids.pid)
+				&& post_at(&nw, ids.pid) == Some(child)
+				&& post_at(&nw, ppid) == Some(parent_after)
+				&& nw == want;
+		}
+		true
+	}
+
+	/// QC of failed-reply (spec failed-reply, Twitter.agda:424): a VALID session whose JUST parent is NOT
+	/// readable -- no CanReadPost constructor fits, i.e. the parent is missing, deleted, or FollowersOnly by an
+	/// author the session user does not follow -- is Denied and the world is UNTOUCHED (step's model.rs:782-784,
+	/// w.clone() with no section touched).  step's used-pid guard (model.rs:769-771) returns the SAME (w, Denied)
+	/// but is IMPL-DEFINED -- the spec's failed-reply never names World.used-post-ids -- so freshness of ids.pid
+	/// stays out of the hypotheses; th-prop-publish-denied pins the spec-forced half (Denied forces after ≡ before).
+	#[quickcheck]
+	fn prop_reply_denied(c: PublishCase) -> bool {
+		let w: World = c.w;
+		let cmd: Command = c.cmd;
+		let ids: StepArgs = c.ids;
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, _, Some(ppid))) = as_publish(cmd.clone())
+			&& valid_session(&w, sid)
+			&& !can_read(&w, sid, ppid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::Denied && nw == w;
 		}
 		true
 	}

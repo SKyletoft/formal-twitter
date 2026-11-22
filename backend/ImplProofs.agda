@@ -927,3 +927,79 @@ th-prop-read-denied-deleted :
 th-prop-read-denied-deleted vs pa st (cant-read-post-private-deleted _ _ _) = refl
 th-prop-read-denied-deleted vs pa st (cant-read-post-private _ _ _ _ _) = refl
 th-prop-read-denied-deleted vs pa st (cant-read-post-public _ _) = refl
+
+--------------------------------------------------------------------------------
+-- (RV7) publish trio: model.rs prop_publish_new / prop_reply_publish /
+-- prop_reply_denied over the correlated PublishCase generator (model.rs:1554-1640), read
+-- off step's Publish arm (model.rs:752-825, whose parent-replies prepend is the
+-- RV5-0 fix).  The Step's command/result index pins the constructor so each
+-- theorem below has EXACTLY ONE live clause: a nothing parent rules out
+-- successful-reply / failed-reply (just-vs-nothing clash in the command), a
+-- created-post result rules out failed-reply, and a denied result rules out
+-- both success rules.  The impl's author = session username and vis = session
+-- account's default-visibility pins (Rust's nw == want) are an impl-defined
+-- refinement: spec's successful-post leaves the Account existential, so we
+-- witness with ∃ here; the new-reply visibility INHERITANCE (new-reply
+-- Twitter.agda:214-217: followers-only parent ⇒ followers-only child, else account
+-- default) is definitional via the new-reply application.  The used-post-ids
+-- gain (Rust used_post_ids.push) is IMPL-DEFINED -- Twitter.agda's World has no
+-- such field -- so it stays unclaimed; the pointwise "everything else unchanged"
+-- conjunct comes verbatim from the constructor's rest premise.
+--------------------------------------------------------------------------------
+
+-- (RV7a) prop_publish_new (spec successful-post, Twitter.agda:387-399): the pid WAS
+-- absent (PostIsNew.was-absent), the new post sits at pid after (is-present), and
+-- newest-first is PREPENDED with pid (the constructor's nf premise, kept as-is).
+th-prop-publish-new :
+  ∀ {before after sid txt pid} →
+  Step before (publish sid txt nothing) after (created-post pid) →
+  World.post-at before pid ≡ nothing
+  × (∃[ author ] ∃[ acct ] World.post-at after pid ≡ just (new-post author txt acct))
+  × (pid ∷ World.newest-first before ≡ World.newest-first after)
+th-prop-publish-new (successful-post {username = author} {user = acct} _ pnl nf _) =
+  PostIsNew.was-absent pnl
+  , (author , (acct , PostIsNew.is-present pnl))
+  , nf
+
+-- (RV7b) prop_reply_publish (spec successful-reply, Twitter.agda:401-422): pid was
+-- absent and the reply (new-reply author txt acct ppid ppost) sits at pid; the PARENT
+-- post at ppid existed before with the constructor's shape post pauthor ptxt pv live
+-- plikes preplies pparent and AFTER carries replies PREPENDED with pid (pp′-eq :410,
+-- the Rust parent.replies.insert(0,pid) fix); newest-first prepend; pid ≢ ppid (neq).
+th-prop-reply-publish :
+  ∀ {before after sid txt ppid pid} →
+  Step before (publish sid txt (just ppid)) after (created-post pid) →
+  World.post-at before pid ≡ nothing
+  × (∃[ author ] ∃[ acct ] ∃[ ppost ] ∃[ ppar ]
+      (World.post-at before ppid ≡ just ppost
+      × World.post-at after pid ≡ just (new-reply author txt acct ppar ppost)))
+  × (∃[ pauthor ] ∃[ ptxt ] ∃[ pv ] ∃[ plikes ] ∃[ preplies ] ∃[ pparent ]
+      (World.post-at before ppid
+        ≡ just (post pauthor ptxt pv live plikes preplies pparent)
+      × World.post-at after ppid
+        ≡ just (post pauthor ptxt pv live plikes (pid ∷ preplies) pparent)))
+  × (pid ∷ World.newest-first before ≡ World.newest-first after)
+  × pid ≢ ppid
+th-prop-reply-publish
+  (successful-reply {_} {_} {_} {_} {author} {acct} {_} {_} {ppar} {ppost}
+     vs₁ pnl nf
+     {ptxt = ptxt} {pauthor = pauthor} {pvisibility = pv}
+     {plikes = plikes} {preplies = preplies} {pparent = pparent}
+     crp pp-eq pp′-eq pa₀ pa₁ neq _) =
+  PostIsNew.was-absent pnl
+  , (author , (acct , (ppost , (ppar , (pa₀ , PostIsNew.is-present pnl)))))
+  , (pauthor , (ptxt , (pv , (plikes , (preplies , (pparent ,
+      (trans pa₀ (cong (λ q → just q) pp-eq)
+       , trans pa₁ (cong (λ q → just q) pp′-eq))))))))
+  , nf
+  , neq
+
+-- (RV7c) prop_reply_denied (spec failed-reply, Twitter.agda:424-428): the parent is
+-- NOT readable, so the result is denied AND the before world is carried outright
+-- (Rust's nw == w); the unreadability witness (Rust's !can_read guard) comes
+-- from the constructor's ¬ premise.
+th-prop-reply-denied :
+  ∀ {before after sid txt ppid} →
+  Step before (publish sid txt (just ppid)) after denied →
+  (after ≡ before) × (¬ CanReadPost before sid ppid)
+th-prop-reply-denied (failed-reply _ ncrp) = refl , ncrp
