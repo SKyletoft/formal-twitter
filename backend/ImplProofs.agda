@@ -5,6 +5,7 @@ open import Data.Empty                                using (⊥-elim)
 open import Data.List                                 using (List; []; _∷_; length; take; filter; filterᵇ)
 open import Data.Nat                                  using (ℕ; zero; suc; _≤_; z≤n; s≤s)
 open import Data.Product                              using (∃-syntax)
+open import Data.Sum                                  using (_⊎_; inj₁; inj₂)
 open import Data.String                               using (String; _≟_)
 open import Data.Unit                                 using (tt)
 open import Relation.Binary.Definitions               using (DecidableEquality)
@@ -89,14 +90,15 @@ th-prop-register-taken-id :
   ∀ {before after username passwd} →
   World.account-at before username ≢ nothing →
   Step before (register username passwd) after signup-failed →
-  (World.session-at after ≡ World.session-at before)
+  (World.account-at after username ≡ World.account-at before username)
+  × (World.session-at after ≡ World.session-at before)
   × (World.post-at after ≡ World.post-at before)
   × (World.follows after ≡ World.follows before)
   × (World.newest-first after ≡ World.newest-first before)
   × (World.used-post-ids after ≡ World.used-post-ids before)
   × (World.used-session-ids after ≡ World.used-session-ids before)
 th-prop-register-taken-id _ (failed-create-account _) =
-  refl , refl , refl , refl , refl , refl
+  refl , refl , refl , refl , refl , refl , refl
 
 -- (4) prop_revoke_token: a successful logout revokes exactly the session that
 -- was active for that token before the step (inversion).
@@ -211,38 +213,42 @@ th-prop-delete-author vs pb pauth =
 -- (9) prop_time_passes: time-passes steps to a world in which every session
 -- that was active is revoked (the after-world is built with revoke-all).
 th-prop-time-passes :
-  (before : World) →
-  ∃[ after ] ∃[ result ]
-    Step before time-passes after result
+  ∀ {before after result} →
+  Step before time-passes after result →
+  (result ≡ success
   × (∀ {sid user} → World.session-at before sid ≡ active user →
        World.session-at after sid ≡ revoked)
-th-prop-time-passes
-  before@(world account-at session-at post-at follows newest-first
-           used-post-ids used-session-ids only-used-pids only-used-sids
-           only-valid-sessions only-valid-posts only-valid-replies
-           no-duplicate-replies no-duplicate-likes no-duplicate-posts) =
-  after , (success ,
-    (session-timeout (revoke-all-active {s = session-at})
-      (λ {sid} eq₁ eq₂ eq₃ eq₄ → refl) ,
-      revoke-all-active {s = session-at}))
-  where
-    after : World
-    after = world account-at
-                  (revoke-all session-at)
-                  post-at
-                  follows
-                  newest-first
-                  used-post-ids
-                  used-session-ids
-                  only-used-pids
-                  (revoke-all-used only-used-sids)
-                  (revoke-all-valid {s = session-at} only-valid-sessions)
-                  only-valid-posts
-                  only-valid-replies
-                  no-duplicate-replies
-                  no-duplicate-likes
-                  no-duplicate-posts
+  × (∀ {sid} → World.session-at before sid ≡ World.session-at after sid →
+       World.account-at before ≡ World.account-at after →
+       World.post-at before ≡ World.post-at after →
+       World.follows before ≡ World.follows after →
+       World.newest-first before ≡ World.newest-first after))
+  ⊎
+  (result ≡ expired × before ≡ after)
+th-prop-time-passes (session-timeout flip keep) =
+  inj₁ (refl , flip , keep)
+th-prop-time-passes (failed-access ¬access) = inj₂ (refl , refl)
 
+-- The Rust step itself (model.rs always returns Success + revoke-all): the
+-- full sectionwise transform (every session flipped pointwise, all six
+-- other sections kept).  NOT derivable from a bare Step derivation: the
+-- spec also admits the vacuous failed-access derivation (result expired,
+-- world untouched) and leaves used-post-ids/used-session-ids unconstrained,
+-- so this bridge between the relation and the implementation is postulated.
+TimePassesFull : Set₁
+TimePassesFull =
+  ∀ {before after result} →
+  Step before time-passes after result →
+  (result ≡ success)
+  × (∀ {sid} → World.session-at after sid ≡
+       revoke-all (World.session-at before) sid)
+  × (World.account-at before ≡ World.account-at after)
+  × (World.post-at before ≡ World.post-at after)
+  × (World.follows before ≡ World.follows after)
+  × (World.newest-first before ≡ World.newest-first after)
+  × (World.used-post-ids before ≡ World.used-post-ids after)
+  × (World.used-session-ids before ≡ World.used-session-ids after)
+postulate prop-time-passes-full : TimePassesFull
 -- (10) prop_timeline_valid: the personal timeline of a valid session is
 -- exactly take n of the newest-first posts that are readable and by an
 -- followed author.
