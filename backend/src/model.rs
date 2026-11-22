@@ -1229,13 +1229,13 @@ pub fn patch_world(w: World, d: Delta) -> World {
 mod qc {
 	use super::{
 		Account, Command, Delta, Post, PostStatus, Result, SessionStatus, Visibility, World,
-		WorldIndex, access_ok, access_ok_ix, account_at, account_at_ix, active_user,
-		active_user_ix, build_index, can_read, can_read_ix, empty_world, extract_sid, follows,
-		follows_author, follows_ix, global_timeline, global_timeline_ix, global_timeline_ref,
-		is_post_public, is_post_public_ix, len_u64, member, patch_world, personal_timeline,
-		personal_timeline_ix, personal_timeline_ref, post_at, post_at_ix, public_timeline,
-		public_timeline_ix, public_timeline_ref, session_at, session_at_ix, step, step_d, step_ix,
-		take_n, unique, valid_session, valid_session_ix, well_formed,
+		WorldIndex, access_ok, access_ok_ix, account_at, account_at_ix, account_at_ref,
+		active_user, active_user_ix, build_index, can_read, can_read_ix, empty_world, extract_sid,
+		follows, follows_author, follows_ix, global_timeline, global_timeline_ix,
+		global_timeline_ref, is_post_public, is_post_public_ix, len_u64, member, patch_world,
+		personal_timeline, personal_timeline_ix, personal_timeline_ref, post_at, post_at_ix,
+		public_timeline, public_timeline_ix, public_timeline_ref, session_at, session_at_ix, step,
+		step_d, step_ix, take_n, unique, used_sid, valid_session, valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1268,6 +1268,12 @@ mod qc {
 		]
 	}
 
+	/// Password pool: build_world gives every account "p" (see the Account below), so commands
+	/// must mix "p" with a mismatch or prop_login_wrong_password could never fire.
+	fn passwd_pool() -> [String; 2] {
+		["p".to_string(), "q".to_string()]
+	}
+
 	/// Session status after a revoke/time-passes application.
 	fn expected_revoke(st: SessionStatus) -> SessionStatus {
 		match st {
@@ -1280,6 +1286,13 @@ mod qc {
 	fn as_register(cmd: Command) -> Option<String> {
 		match cmd {
 			Command::Register(user, _) => Some(user.clone()),
+			_ => None,
+		}
+	}
+
+	fn as_authenticate(cmd: Command) -> Option<(String, String)> {
+		match cmd {
+			Command::Authenticate(user, passwd) => Some((user.clone(), passwd.clone())),
 			_ => None,
 		}
 	}
@@ -1490,7 +1503,9 @@ mod qc {
 				2u64 => Command::ReadPost(msid, pid),
 				3u64 => Command::ReadPersonalTimeline(sid, n),
 				4u64 => Command::ReadGlobalTimeline(msid, n),
-				5u64 => Command::Authenticate(user, "p".to_string()),
+				// (RV5) passwords come from passwd_pool, so both the matching (login) and the
+				// mismatching (failed-login-2) branches of Authenticate occur in qc worlds.
+				5u64 => Command::Authenticate(user, pick(g, &passwd_pool())),
 				6u64 => Command::RevokeToken(sid),
 				7u64 => Command::Register(other, "p".to_string()),
 				8u64 => Command::Follow(sid, other),
@@ -1571,6 +1586,78 @@ mod qc {
 		{
 			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
 			return res == Result::SignupFailed && nw == w;
+		}
+		true
+	}
+
+	/// QC of login-success (spec login, Twitter.agda:490): a matching password plus a FRESH
+	/// session id issues exactly that session.  This pins the ACTUAL shape of step's Authenticate
+	/// arm: the result is IssuedSession(ids.sid), the sessions section gains sid -> Active(user)
+	/// (Rust's session-at representation), the used-session-ids section gains ids.sid, and every
+	/// other section is carried untouched (nw == want outright).  Freshness of ids.sid is a
+	/// HYPOTHESIS only: step's refusal of an already-used sid (LoginFailed, world unchanged) is
+	/// IMPL-DEFINED, not a spec rule -- the spec's login constructor never names World.used-session-ids
+	/// (the only-used-sids World field pairs that section with session-at), so no used-sid case is
+	/// asserted here.  th-prop-login-issued (ImplProofs.agda) pins the spec-forced half: the
+	/// session-at flip to active username plus the constructor's sectionwise rest premise.
+	#[quickcheck]
+	fn prop_login_success(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((user, passwd)) = as_authenticate(cmd.clone())
+			&& (match account_at_ref(&w, &user) {
+				Some(acc) => acc.password == passwd,
+				None => false,
+			}) && !used_sid(&w, ids.sid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			// step pushes exactly one session entry and exactly one used sid, carrying the rest
+			let mut want: World = w;
+			want.sessions
+				.push((ids.sid, SessionStatus::Active(user.clone())));
+			want.used_session_ids.push(ids.sid);
+			return res == Result::IssuedSession(ids.sid)
+				&& session_at(&nw, ids.sid) == SessionStatus::Active(user)
+				&& nw == want;
+		}
+		true
+	}
+
+	/// QC of login-unknown-user (spec failed-login-1, Twitter.agda:507): with no account at all
+	/// the login fails and the world is untouched.  ANY sid: extract-sid (authenticate _ _) is
+	/// nothing, so the failed-access constructor can never fire on this command.
+	#[quickcheck]
+	fn prop_login_unknown_user(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((user, _)) = as_authenticate(cmd.clone())
+			&& account_at(&w, &user).is_none()
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::LoginFailed && nw == w;
+		}
+		true
+	}
+
+	/// QC of login-wrong-password (spec failed-login-2, Twitter.agda:512): an account whose
+	/// password differs, with a FRESH sid, still fails and changes nothing -- the fresh-sid
+	/// hypothesis mirrors the spec's session-at before sid ≡ unused premise, and step's used-sid
+	/// guard (same LoginFailed, same world) stays impl-defined and unhypothesised.
+	#[quickcheck]
+	fn prop_login_wrong_password(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((user, passwd)) = as_authenticate(cmd.clone())
+			&& (match account_at_ref(&w, &user) {
+				Some(acc) => acc.password != passwd,
+				None => false,
+			}) && !used_sid(&w, ids.sid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::LoginFailed && nw == w;
 		}
 		true
 	}

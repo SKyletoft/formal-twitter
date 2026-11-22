@@ -100,6 +100,75 @@ th-prop-register-taken-id :
 th-prop-register-taken-id _ (failed-create-account _) =
   refl , refl , refl , refl , refl , refl , refl
 
+--------------------------------------------------------------------------------
+-- (3c) prop_login_success (model.rs): an ISSUED session (the login constructor, Twitter.agda:490)
+-- (3c) forces the token's session to be ACTIVE for the logging-in user, and the constructor's
+-- (3c) rest premise pins every OTHER section put -- mirrored verbatim, binders included, because
+-- (3c) login states its rest POINTWISE (other-sid pid u1 u2), unlike logout's eta-reduced rest.
+-- (3c) Deliberately NOT claimed here: World.used-session-ids.  The login constructor never names
+-- (3c) that field, so the Rust gain (used_session_ids.push(fresh_sid)) is impl-defined, tied to
+-- (3c) session-at only by the World's own only-used-sids field; cf. the spec-free caveat on
+-- (3c) th-prop-revoke-used.  Rust's used-sid LoginFailed refusal is impl-defined the same way
+-- (3c) (step's own guard, no spec rule) and stays out of both the hypotheses and the conclusion.
+th-prop-login-issued :
+  ∀ {before after username passwd sid} →
+  Step before (authenticate username passwd) after (issued-session sid) →
+  (World.session-at after sid ≡ active username)
+  × (∀ {other-sid pid u1 u2} →
+      sid ≢ other-sid →
+      World.session-at before other-sid ≡ World.session-at after other-sid
+      ∧ World.account-at before u1      ≡ World.account-at after u1
+      ∧ World.post-at before pid        ≡ World.post-at after pid
+      ∧ World.follows before u1 u2      ≡ World.follows after u1 u2
+      ∧ World.newest-first before       ≡ World.newest-first after)
+th-prop-login-issued (login _ h₂ _ _ rest _) = h₂ , rest
+
+-- (3d) prop_login_unknown_user (spec failed-login-1, Twitter.agda:507): with no account at all
+-- (3d) the login fails and after ≡ before OUTRIGHT, so all seven sections stay put (the same
+-- (3d) shape as th-prop-register-taken-id, whose proof is the sibling failed-create-account).
+-- (3d) The second clause covers the OTHER login-failed derivation shape (failed-login-2); its
+-- (3d) premises contradict this theorem's, but both constructors step to before itself, so the
+-- (3d) same identity holds -- the Rust claim (nw == w) is total on login-failed, not partial.
+th-prop-login-unknown :
+  ∀ {before after username passwd} →
+  World.account-at before username ≡ nothing →
+  Step before (authenticate username passwd) after login-failed →
+  (World.account-at after username ≡ World.account-at before username)
+  × (World.session-at after ≡ World.session-at before)
+  × (World.post-at after ≡ World.post-at before)
+  × (World.follows after ≡ World.follows before)
+  × (World.newest-first after ≡ World.newest-first before)
+  × (World.used-post-ids after ≡ World.used-post-ids before)
+  × (World.used-session-ids after ≡ World.used-session-ids before)
+th-prop-login-unknown _ (failed-login-1 _) =
+  refl , refl , refl , refl , refl , refl , refl
+th-prop-login-unknown _ (failed-login-2 _ _) =
+  refl , refl , refl , refl , refl , refl , refl
+
+-- (3e) prop_login_wrong_password (spec failed-login-2, Twitter.agda:512): the account is there
+-- (3e) but its password differs, and the very same login-failed identity holds.  The Rust prop's
+-- (3e) FRESH-sid hypothesis mirrors login's session-at before sid ≡ unused premise, but a failed
+-- (3e) login needs no session at all: failed-login-2 never mentions a sid, so none appears here
+-- (3e) and freshness is NOT a spec condition for login failure (Rust's used-sid guard is impl-defined
+-- (3e) and yields the same LoginFailed, same world).
+th-prop-login-wrong :
+  ∀ {before after username passwd user} →
+  World.account-at before username ≡ just user →
+  Account.password user ≢ passwd →
+  Step before (authenticate username passwd) after login-failed →
+  (World.account-at after username ≡ World.account-at before username)
+  × (World.session-at after ≡ World.session-at before)
+  × (World.post-at after ≡ World.post-at before)
+  × (World.follows after ≡ World.follows before)
+  × (World.newest-first after ≡ World.newest-first before)
+  × (World.used-post-ids after ≡ World.used-post-ids before)
+  × (World.used-session-ids after ≡ World.used-session-ids before)
+th-prop-login-wrong _ _ (failed-login-2 _ _) =
+  refl , refl , refl , refl , refl , refl , refl
+th-prop-login-wrong _ _ (failed-login-1 _) =
+  refl , refl , refl , refl , refl , refl , refl
+--------------------------------------------------------------------------------
+
 -- (4) prop_revoke_token TRIO.  The Rust test (model.rs prop_revoke_token, valid
 -- session) asserts nw == want: the FULL seven-section world identity.  The three
 -- theorems below pin exactly this much of it, and no more:
