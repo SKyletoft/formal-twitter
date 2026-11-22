@@ -1230,12 +1230,13 @@ mod qc {
 	use super::{
 		Account, Command, Delta, Post, PostStatus, Result, SessionStatus, Visibility, World,
 		WorldIndex, access_ok, access_ok_ix, account_at, account_at_ix, account_at_ref,
-		active_user, active_user_ix, build_index, can_read, can_read_ix, empty_world, extract_sid,
-		follows, follows_author, follows_ix, global_timeline, global_timeline_ix,
-		global_timeline_ref, is_post_public, is_post_public_ix, len_u64, member, patch_world,
-		personal_timeline, personal_timeline_ix, personal_timeline_ref, post_at, post_at_ix,
-		public_timeline, public_timeline_ix, public_timeline_ref, session_at, session_at_ix, step,
-		step_d, step_ix, take_n, unique, used_sid, valid_session, valid_session_ix, well_formed,
+		active_user, active_user_ix, active_user_ref, build_index, can_read, can_read_ix,
+		empty_world, extract_sid, follows, follows_author, follows_ix, global_timeline,
+		global_timeline_ix, global_timeline_ref, is_post_public, is_post_public_ix, len_u64,
+		member, patch_world, personal_timeline, personal_timeline_ix, personal_timeline_ref,
+		post_at, post_at_ix, post_at_ref, public_timeline, public_timeline_ix, public_timeline_ref,
+		session_at, session_at_ix, step, step_d, step_ix, take_n, unique, used_sid, valid_session,
+		valid_session_ix, well_formed,
 	};
 	use quickcheck::{Arbitrary, Gen};
 	use quickcheck_macros::quickcheck;
@@ -1321,6 +1322,13 @@ mod qc {
 	fn as_revoke(cmd: Command) -> Option<u64> {
 		match cmd {
 			Command::RevokeToken(sid) => Some(sid),
+			_ => None,
+		}
+	}
+
+	fn as_read(cmd: Command) -> Option<(Option<u64>, u64)> {
+		match cmd {
+			Command::ReadPost(msid, pid) => Some((msid, pid)),
 			_ => None,
 		}
 	}
@@ -2254,5 +2262,119 @@ mod qc {
 			patch_world(w.clone(), d) == want
 				&& post_at(&want, 3).unwrap().likes == vec!["a".to_string()]
 		);
+	}
+
+	/// QC of read-post-logged-in (spec read-post-logged-in, Twitter.agda:540): a VALID session that
+	/// passes CanReadPost -- can_read is exactly the spec's two CanReadPost constructors (post live AND
+	/// (everyone OR followers-only AND the session user follows the author)) -- returns the STORED post
+	/// unchanged: author, text, the like COUNT (len_u64, since Result's returned-post carries a Nat, not
+	/// Post.likes) and the replies list verbatim; and the world is carried untouched (step's ReadPost arm
+	/// clones w outright, model.rs:842).  th-prop-read-logged-in pins the same two asserts.
+	#[quickcheck]
+	fn prop_read_logged_in(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((Some(sid), pid)) = as_read(cmd.clone())
+			&& valid_session(&w, sid)
+			&& can_read(&w, sid, pid)
+			&& let Some(post) = post_at_ref(&w, pid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res
+				== Result::ReturnedPost(
+					post.author.clone(),
+					post.text.clone(),
+					len_u64(&post.likes),
+					post.replies.clone(),
+				) && nw == w;
+		}
+		true
+	}
+
+	/// QC of read-post-anonymously (spec read-post-anonymously, Twitter.agda:550): with the NOTHING
+	/// session token a LIVE Everyone post is returned in the very same ReturnedPost shape (author, text,
+	/// like count, replies) and the world is untouched.  NOT asserted: an anonymous read of a private,
+	/// deleted or missing post -- Twitter.agda has NO Step rule for it (read-post-anonymously needs
+	/// everyone AND live, and there is no read-post nothing denied constructor), so the impl's Denied is
+	/// impl-defined.  th-prop-read-public pins the shape plus after before.
+	#[quickcheck]
+	fn prop_read_public_shape(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((None, pid)) = as_read(cmd.clone())
+			&& is_post_public(&w, pid)
+			&& let Some(post) = post_at_ref(&w, pid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res
+				== Result::ReturnedPost(
+					post.author.clone(),
+					post.text.clone(),
+					len_u64(&post.likes),
+					post.replies.clone(),
+				) && nw == w;
+		}
+		true
+	}
+
+	/// QC of cant-read-post-public (spec name at Twitter.agda:518, the MISSING-post read): a VALID
+	/// session reading an id with no post is Denied and the world is untouched.  th-prop-read-denied-missing
+	/// pins result denied plus after before.
+	#[quickcheck]
+	fn prop_read_denied_missing(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((Some(sid), pid)) = as_read(cmd.clone())
+			&& valid_session(&w, sid)
+			&& post_at_ref(&w, pid).is_none()
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::Denied && nw == w;
+		}
+		true
+	}
+
+	/// QC of cant-read-post-private (spec Twitter.agda:524): a VALID session, a LIVE followers-only post
+	/// whose author the session user does NOT follow -- CanReadPost's followers-only branch fails, so the
+	/// read is Denied and the world is untouched.  th-prop-read-denied-private pins the same two asserts.
+	#[quickcheck]
+	fn prop_read_denied_private(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((Some(sid), pid)) = as_read(cmd.clone())
+			&& valid_session(&w, sid)
+			&& let Some(post) = post_at_ref(&w, pid)
+			&& let Some(user) = active_user_ref(&w, sid)
+			&& post.status == PostStatus::Other
+			&& post.visibility == Visibility::FollowersOnly
+			&& !follows(&w, user, &post.author)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::Denied && nw == w;
+		}
+		true
+	}
+
+	/// QC of cant-read-post-private-deleted (spec Twitter.agda:533): a VALID session, a post at pid whose
+	/// status is deleted (tombstone) -- no CanReadPost constructor accepts a deleted post, so Denied and
+	/// the world is untouched.  th-prop-read-denied-deleted pins the same two asserts.
+	#[quickcheck]
+	fn prop_read_denied_deleted(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((Some(sid), pid)) = as_read(cmd.clone())
+			&& valid_session(&w, sid)
+			&& let Some(post) = post_at_ref(&w, pid)
+			&& post.status == PostStatus::Deleted
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::Denied && nw == w;
+		}
+		true
 	}
 }

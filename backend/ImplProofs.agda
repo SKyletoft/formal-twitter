@@ -826,3 +826,104 @@ postulate
     ∀ (w : World) (n : ℕ) →
     timeline-ix-public w (build-index w) n
       ≡ take n (filter (is-post-public w) (World.newest-first w))
+
+--------------------------------------------------------------------------------
+-- (RV6) read-post quintet: model.rs prop_read_logged_in / prop_read_public_shape /
+-- prop_read_denied_missing / prop_read_denied_private / prop_read_denied_deleted, read off step's
+-- ReadPost arm (model.rs:842-862): readable is can_read_ix for Some sid and is_post_public_ix for
+-- the NOTHING token; unreadable returns (w.clone(), Denied); otherwise post_at_ix rebuilds
+-- ReturnedPost author text (len_u64 likes) replies -- the COUNT of Post.likes, since Result's
+-- returned-post carries a Nat -- and clones w OUTRIGHT, which is why every theorem below concludes
+-- after ≡ before, the Rust's `nw == w`.
+--------------------------------------------------------------------------------
+
+-- (RV6a) prop_read_logged_in (spec read-post-logged-in, Twitter.agda:540): the returned post IS the
+-- stored post at pid -- author, text, the NUMBER of likes, replies -- and the world is carried
+-- untouched.  The constructor names its OWN post, so each claim is sym-of-the-constructor's equation
+-- (Post.author post₁ ≡ author etc.) pushed along just-injective (trans (sym pa₁) pa) : post₁ ≡ post,
+-- the two post-at proofs at one id naming one post.
+th-prop-read-logged-in :
+  ∀ {before after pid sid acc user post author txt likes replies} →
+  ValidSession before sid acc user →
+  CanReadPost before sid pid →
+  World.post-at before pid ≡ just post →
+  Step before (read-post (just sid) pid) after (returned-post author txt likes replies) →
+  (after ≡ before)
+  × (author ≡ Post.author post)
+  × (txt ≡ Post.text post)
+  × (likes ≡ length (Post.likes post))
+  × (replies ≡ Post.replies post)
+th-prop-read-logged-in vs crp pa (read-post-logged-in _ pa₁ a₁ t₁ l₁ r₁) =
+  refl
+  , trans (sym a₁) (cong Post.author (just-injective (trans (sym pa₁) pa)))
+  , trans (sym t₁) (cong Post.text (just-injective (trans (sym pa₁) pa)))
+  , trans (sym l₁) (cong length (cong Post.likes (just-injective (trans (sym pa₁) pa))))
+  , trans (sym r₁) (cong Post.replies (just-injective (trans (sym pa₁) pa)))
+
+-- (RV6b) prop_read_public_shape (spec read-post-anonymously, Twitter.agda:550): the NOTHING session
+-- token reads a LIVE Everyone post, and the result is the very same ReturnedPost shape of the stored
+-- post -- return-post (Twitter.agda:362) is author text (length likes) replies by definition, so the
+-- theorem case-splits the post at pid to see that shape.  NOT claimed anywhere: an anonymous read of
+-- a private/deleted/missing post -- Twitter.agda has no such Step constructor (read-post-anonymously
+-- needs everyone AND live), so the impl's Denied there is impl-defined.
+th-prop-read-public :
+  ∀ {before after pid p author txt likes replies} →
+  World.post-at before pid ≡ just p →
+  Post.visibility p ≡ everyone →
+  Post.status p ≡ live →
+  Step before (read-post nothing pid) after (returned-post author txt likes replies) →
+  (after ≡ before)
+  × (author ≡ Post.author p)
+  × (txt ≡ Post.text p)
+  × (likes ≡ length (Post.likes p))
+  × (replies ≡ Post.replies p)
+th-prop-read-public pa vis st
+  (read-post-anonymously {p = post author₁ txt₁ vis₁ live₁ likes₁ replies₁ parent₁} pa₁ _ _) =
+  refl
+  , sym (cong Post.author (just-injective (trans (sym pa) pa₁)))
+  , sym (cong Post.text (just-injective (trans (sym pa) pa₁)))
+  , sym (cong length (cong Post.likes (just-injective (trans (sym pa) pa₁))))
+  , sym (cong Post.replies (just-injective (trans (sym pa) pa₁)))
+
+-- (RV6c) prop_read_denied_missing (spec cant-read-post-public, Twitter.agda:518 -- the read-post rule
+-- whose post-at premise is nothing, i.e. the MISSING post): the result index is pinned to the spec's
+-- denied (Rust's res == Result::Denied) and every cant-read-post-* constructor steps to before, so
+-- after ≡ before is refl; the three clauses cover the three denied read-post rules, failed-access
+-- (expired) being impossible for a denied result.
+th-prop-read-denied-missing :
+  ∀ {before after pid sid acc user} →
+  ValidSession before sid acc user →
+  World.post-at before pid ≡ nothing →
+  Step before (read-post (just sid) pid) after denied →
+  after ≡ before
+th-prop-read-denied-missing vs pa (cant-read-post-public _ _) = refl
+th-prop-read-denied-missing vs pa (cant-read-post-private _ _ _ _ _) = refl
+th-prop-read-denied-missing vs pa (cant-read-post-private-deleted _ _ _) = refl
+
+-- (RV6d) prop_read_denied_private (spec cant-read-post-private, Twitter.agda:524): live followers-only
+-- post, the session user does NOT follow the author, so CanReadPost's followers-only branch fails.
+th-prop-read-denied-private :
+  ∀ {before after pid sid acc user post} →
+  ValidSession before sid acc user →
+  World.post-at before pid ≡ just post →
+  Post.visibility post ≡ followers-only →
+  Post.status post ≡ live →
+  World.follows before user (Post.author post) ≡ false →
+  Step before (read-post (just sid) pid) after denied →
+  after ≡ before
+th-prop-read-denied-private vs pa vis slv flw (cant-read-post-private _ _ _ _ _) = refl
+th-prop-read-denied-private vs pa vis slv flw (cant-read-post-public _ _) = refl
+th-prop-read-denied-private vs pa vis slv flw (cant-read-post-private-deleted _ _ _) = refl
+
+-- (RV6e) prop_read_denied_deleted (spec cant-read-post-private-deleted, Twitter.agda:533): a tombstone
+-- post is unreadable, so Denied and the world is carried untouched.
+th-prop-read-denied-deleted :
+  ∀ {before after pid sid acc user post} →
+  ValidSession before sid acc user →
+  World.post-at before pid ≡ just post →
+  Post.status post ≡ deleted →
+  Step before (read-post (just sid) pid) after denied →
+  after ≡ before
+th-prop-read-denied-deleted vs pa st (cant-read-post-private-deleted _ _ _) = refl
+th-prop-read-denied-deleted vs pa st (cant-read-post-private _ _ _ _ _) = refl
+th-prop-read-denied-deleted vs pa st (cant-read-post-public _ _) = refl
