@@ -13,6 +13,9 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] (research) Missing tests? All constructors and proofs in spec/ (so not the ones in backend/) should have an associated quickcheck property.
 - [ ] (impl) /raw is already rawtext without extra <pre> tags and is currently printing the <pre>-tags. The struct should also be properly formatted like {:#?}, not {:?}.
 - [ ] (impl) /log is extremely redacted. EVERYTHING should be in there, ignore all security measures. Tokens, plaintext, everything
+- [ ] (research) Clean up redundant or unused code. Merge what should reasonably be merged. Remove what can reasonably be done by libraries. Use const instead of let where appropriate. Split this into multiple subagents, one per rust file.
+- [ ] (research) Design realistic performance benchmarks.
+- [ ] (research) Using the new performance benchmarks, optimise hot parts of the code.
 
 ## Done (history, condensed; details in git log)
 - [x] RV3 audit (research, this commit): test<->proof alignment review, 80 Rust tests vs 49 Agda theorems (ImplProofs+ImplWire): 9 aligned pairs, 0 orphan proofs, 5 MISALIGNMENTS (M1 register-taken missing account-at eq; M2 time-passes ∃-weakened vs full Rust characterization; M3 revoke used-ids spec-unconstrained; M4 respond_shapes concrete-HTTP vs wi-out-* abstract to-output, zero to-response pins; M5 commands() 13-vs-15 doc count) and 12 spec-level ORPHAN TESTS (Delta bridge, _ix bridge, endpoint_shapes) -> queued RV3a-e + RV4. Spot-checked M1 (ImplProofs.agda:78-99 omits account-at vs model.rs nw==w) and M5 (wire.rs:420 doc) before accepting.
