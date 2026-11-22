@@ -335,6 +335,8 @@ mod wire_tests {
 	use quickcheck_macros::quickcheck;
 
 	/// Every endpoint: the exact body shape of to-request parses to the expected action.
+	/// Covers the 13 endpoints; all 15 request-line arities incl. the anonymous
+	/// token-less variants are exercised by anonymous_and_tokened below.
 	#[test]
 	fn endpoint_shapes() {
 		let cases: Vec<(&str, &str, WireAction)> = vec![
@@ -417,7 +419,8 @@ mod wire_tests {
 		);
 	}
 
-	/// to_command agrees with from-input on all 13 actions.
+	/// to_command agrees with from-input on all 15 pins in backend/ImplWire.agda.
+	/// The two extra pins are the anonymous token-less arities, wi-get-tweet-anon and wi-global-timeline-anon.
 	#[test]
 	fn commands() {
 		let cases: Vec<(WireAction, Command)> = vec![
