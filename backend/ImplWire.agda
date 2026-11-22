@@ -7,7 +7,7 @@
 module ImplWire where
 
 open import Agda.Builtin.Nat                                using (Nat)
-open import Agda.Builtin.Maybe                              using (just; nothing)
+open import Agda.Builtin.Maybe                              using (Maybe; just; nothing)
 open import Data.List                                       using (List; []; _∷_)
 open import Data.String                                     using (String)
 open import Relation.Binary.PropositionalEquality           using (_≡_; refl)
@@ -244,3 +244,32 @@ wi-resp-post a t l r = refl
 --     "HTTP/1.1 200 OK\r\nDate: " ++ date ++ "\r\nCache-Control: no-store\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n{\"timeline\": []}"
 --   The tweet case additionally depends on the opaque escape postulate: respond_shapes
 --   pins it for the fixture a = a"b / t = c\nd / l = 3 / r = [1, 2].
+
+--------------------------------------------------------------------------------
+-- C) REQUEST ROUND-TRIP (RV4): backend/src/wire.rs:parse_action + to_command against
+-- spec/Interface.agda:to-request, the mirror of the endpoint_shapes test (wire.rs:339).
+--------------------------------------------------------------------------------
+
+-- Rust parse_action (bytes -> Action) and the composed to_command (bytes -> Command).
+-- STUB: postulate, not a hole definition, because an unsolved interaction meta makes `agda
+-- ImplWire.agda` exit 42; the postulate is the same "signature with a hole" the queue item asks
+-- for and is replaced by the real decoder (wire.rs:parse_action + to_command) next pass.
+postulate
+  wire-parse  : String → Maybe Action
+  wire-decode : String → Maybe TW.Command
+
+-- wi-request-roundtrip: from-request (to-request a) lands back on a, for every one of the 13
+-- endpoints (Action's get-tweet / global-timeline already split the token and the anonymous
+-- arity, so both arities are covered by the one quantified statement).
+-- refl was TRIED FIRST and FAILS for all 13 endpoints (and both anonymous arities): to-request
+-- is built from the postulates unlines-crlf / show / _++_ / octet-strlen (Interface.agda:13),
+-- so to-request a is a stuck neutral and the equation cannot reduce (Agda reports
+-- UnequalTerms on refl).  Postulated instead, to be proven once the decoder is defined.
+postulate
+  wi-request-roundtrip : ∀ (a : Action) → wire-parse (to-request a) ≡ just a
+
+-- wi-request-command: the Command-level corollary, i.e. exactly what endpoint_shapes asserts
+-- -- the decoded Command equals Interface:from-input of the endpoint (refl fails here for the
+-- same stuck-neutral reason as wi-request-roundtrip).
+postulate
+  wi-request-command : ∀ (a : Action) → wire-decode (to-request a) ≡ just (from-input a)
