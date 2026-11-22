@@ -3,6 +3,11 @@
 Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
+## Next
+- [ ] (reseach) Proof alignment review. Compare every test to it's proof and make sure they agree on what they show.
+- [ ] (research) Missing proofs? Add proof signature (that's just a hole for now) for every test that lacks a proof and isn't checking implementation details not covered by the spec, i.e. database cache interaction, networking, etc.
+- [ ] (research) Missing tests? All constructors and proofs in spec/ (so not the ones in backend/) should have an associated quickcheck property.
+
 ## Done (history, condensed; details in git log)
 - [x] Review of merge 123051e (spec/Interface wire protocol): ALL endpoints POST /api/<name>;
   body = CRLF-joined lines, token FIRST, no trailing newline; anonymous get-tweet/global-timeline omit token;
@@ -83,8 +88,6 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   rolled-back arm resyncs over held conn; reload_all_sections signature (conn,&w)->w, Err->cache-stays-put pinned at call
   site; + test_apply_conn_reuse (one establish, two successive apply commits same conn, both views == after2);
   test_reload_all_sections updated; 51->52 tests; fmt/clippy/agda x2 all 0.
-
-## Completed since TDC (F4/F1/F2/ST waves, condensed; details in git log)
 - [x] F4a attempt 1 (REJECTED, d451d1c): subagent died mid-run (broken stubs) — reverted, model.rs HEAD-identical. Lesson: small generation units. DESIGN COMMITTED: WorldIndex side-index + _ix helpers; step keeps signature via build_index wrapper.
 - [x] F4a-1 (48a315e): model.rs WorldIndex{accounts/sessions/posts first-occurrence HashMaps, follows HashSet} + build_index + 9 _ix lookup/predicate helpers + 3 qc equiv props; 52->55 tests.
 - [x] F4a-2 (77c8c23): step body moved to step_ix(w,ix,..), every scan -> _ix twin; timelines delegate to _ix twins, pure-Vec *_timeline_ref kept as QuickCheck refs; borrow helpers zero per-probe clones; qc prop_timeline_*_ix; 60->61 tests.
@@ -98,8 +101,6 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
   - ST1b (2d39d04): serve_static(name,mime) + #[get /][style.css][app.js] mounted (read per request, never RAM-cached); smoke test_static_serving over REAL TCP: doctype+shape pins, octet-pinned app.js len, bogus path -> 404; 74 tests, smoke 7/7.
   - ST2 (28e7627): Server.log ring LOG_CAP=1000 (push+evict after poison-tolerant lock, &command borrow); now_secs + http_date_from single epoch source; #[get /raw] <pre>{:?}</pre> of cached World (Debug already derived); #[get /log] CRLF http_date+Interface request-line names (Publish both arities -> post-tweet); 16-assert naming test + smoke test_raw_and_log (order + GMT + >=1000 year); 77 tests, smoke 8/8. Subagent committed despite no-commit; coordinator re-verified gates + routes post-hoc, ACCEPTED (fb93502).
 - [x] Final verify (ST, DONE, fb93502): fmt --check / build 0 warnings / clippy --all-targets -D warnings silent / 77 tests (53 lib + 16 bin + 8 smoke) / agda ImplProofs + ImplWire rc 0; launch probe mounts all routes incl. /raw + /log. F-queue was complete; frontend-update queue (F10) then opened at c7dc308.
-
-## Completed since FINAL VERIFY-F14 (waves F10-F14, condensed one-liners; details in git log + memory notes)
 - [x] F10 (research, 1a2630c): audit — frontend/ reached only 6/13 wire actions; missing post-reply/delete/like/unlike/follow/unfollow/logout (logout-btn was localStorage-only, server never revoked).
 - [x] F11a (bc8f643): frontend/app.js PROTOCOL layer — ENDPOINTS +7, buildBody token-first CRLF per wire.rs (clean() strips [\\r\\n]), logout endpoint BEFORE clearSession, signup-400 friendly msg; 384->431 lines.
 - [x] F11b (b72f3ca): frontend UI — detail like/unlike/delete/reply buttons + textarea, timeline-row controls, #follow-form, forced-global #global-btn; index 67->77, app.js 431->532.
@@ -109,8 +110,6 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] F14 (be2589f): flake — cargoTestFlags = "--lib --bin=formal-twitter" (string attr) replaces dontCargoCheck: 69 network-free unit tests run at nix build check phase, ZERO smoke; flag-placement proof from drv log; forced fresh build 41.3s.
 - [x] FINAL VERIFY (coordinator, 11069d4): 78 tests (53+16+9, smoke 9/9), fmt/build/clippy -D warnings clean, agda x2 rc 0, nix flake check/build 0 + nix run launch/shutdown OK. Queue empty at that point.
 - [x] TD300 (613e8ec): todo cleanup — F4/F1/F2/ST waves condensed above; superseded parents dropped; lessons kept.
-
-## Completed — USER TASK F16 wave (entirely new frontend designs to pick from; 8767cc7)
 User reqs: logged-out ~= current frontend/; logged-in = TWO PARALLEL timelines (private + global); Like button on EVERY displayed tweet; poster name = follow/unfollow TOGGLE showing ✓ when followed. Queue opened 29ad704; wire = POST /api/<name>, CRLF-joined lines token-first no trailing newline (see wire.rs + Reference section); liked/followed state = client-side caches (no wire read-endpoint; header-noted in each app.js).
 - [x] F16a (e500357, record d3b5c21): main.rs — frontend_dir_name pure guard (empty //\\/../leading-dot -> "frontend"), frontend_root_named(name) dev+install arms, frontend_root() = getenv FT_FRONTEND default; serve_static unchanged; +3 bin tests (validation table, dev-fallback shapes, absent-env byte-identical); 16->19 bin, 78->81 tests.
 - [x] F16c (a145932, record 5b54e56): frontend2/ — side-by-side PRIVATE/GLOBAL panels, closest to current look; Promise.all pair; likedIds Set + followState Map; CRLF join :128.
