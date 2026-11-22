@@ -1499,6 +1499,19 @@ mod qc {
 	}
 
 	/// QC of revoke-token: only the named session changes, and only to Revoked.
+	/// Theorem-backed half (ImplProofs.agda, th-prop-revoke-*): a SUCCESSFUL logout
+	/// flips EXACTLY the session that was active for that token.  th-prop-revoke-logout
+	/// pins that flip with inversion (session-at before sid ≡ active user forces
+	/// session-at after sid ≡ revoked), and th-prop-revoke-rest pins every other section
+	/// put for ANY derivation: all other sessions (sid ≢ other-sid) plus
+	/// accounts/posts/follows/newest-first.
+	/// The body's nw == want is the full seven-section world identity, and the used-id
+	/// pair is IMPL-DEFINED, not spec-forced: the spec's logout Step constructor never
+	/// mentions World.used-post-ids or World.used-session-ids in its premises, so those
+	/// two sections are unconstrained on logout and their preservation is NOT derivable
+	/// from an arbitrary derivation.  It is a property of OUR step (keyed session update,
+	/// every other field carried), witnessed existentially by th-prop-revoke-used; see the
+	/// matching spec-free caveat comment above that theorem.
 	#[quickcheck]
 	fn prop_revoke_token(w: World, cmd: Command, ids: StepArgs) -> bool {
 		if !well_formed(&w) {

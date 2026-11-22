@@ -100,8 +100,21 @@ th-prop-register-taken-id :
 th-prop-register-taken-id _ (failed-create-account _) =
   refl , refl , refl , refl , refl , refl , refl
 
--- (4) prop_revoke_token: a successful logout revokes exactly the session that
--- was active for that token before the step (inversion).
+-- (4) prop_revoke_token TRIO.  The Rust test (model.rs prop_revoke_token, valid
+-- session) asserts nw == want: the FULL seven-section world identity.  The three
+-- theorems below pin exactly this much of it, and no more:
+--   th-prop-revoke-logout (here):  for ANY logout derivation, the session that was
+--     `active user` before becomes `revoked` after -- inversion, so the flipped
+--     session is precisely the token's.
+--   th-prop-revoke-rest (4b):      for ANY logout derivation every other section is
+--     put: sessions at sid ≢ other-sid, plus accounts/posts/follows/newest-first.
+--   th-prop-revoke-used (4c):      EXISTENCE (not forall) of a logout step -- the one
+--     our Rust step performs -- that keeps World.used-post-ids and World.used-session-ids.
+-- Residual DELIBERATELY UNPROVED as a forall theorem: the used-id pair.  The spec's
+-- logout Step constructor omits both fields from its premises, so no arbitrary
+-- derivation forces them; their preservation is impl-defined and only witnessed
+-- existentially (4c).  Full spec-free caveat: see the comment on th-prop-revoke-used
+-- below -- cross-reference there rather than repeating it.
 th-prop-revoke-logout :
   ∀ {before after sid user} →
   World.session-at before sid ≡ active user →
@@ -361,6 +374,9 @@ take-len {x ∷ xs} (suc n) = s≤s (take-len {xs} n)
 -- derivable from an arbitrary derivation.  What the Rust step actually does -
 -- flip session-at sid via keyed update, keep every other field - is pinned
 -- existentially as a logout step preserving both used-id lists:
+-- (Cross-reference: the (4) TRIO block above names what each of th-prop-revoke-logout,
+--  th-prop-revoke-rest and this theorem pins, and flags this used-id pair as the
+--  residual that is deliberately left unproved for arbitrary derivations.)
 th-prop-revoke-used :
   ∀ {before sid acc user} →
   ValidSession before sid acc user →
