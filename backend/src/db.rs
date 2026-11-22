@@ -150,7 +150,9 @@ pub fn reopen(path: String) -> ConnectionResult<SqliteConnection> {
 /// missing table) is treated as no rows: an empty World component, never a
 /// panic; save_world rewrites everything regardless. Canonical row order
 /// keeps World equality stable (lexicographic per table; newest_first from
-/// ORDER BY seq DESC; likes/replies keep row order within a post).
+/// ORDER BY seq DESC; likes keep row order within a post; replies are rebuilt
+/// NEWEST-first from the replies table's rowid (creation) order, the order the
+/// model prepends children in (step_ix/patch_world, spec Twitter.agda:401).
 pub fn load_world(conn: &mut SqliteConnection) -> World {
 	let mut account_rows = accounts::dsl::accounts
 		.select((
@@ -184,7 +186,7 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		.select((likes::dsl::post_pid, likes::dsl::user))
 		.load::<(i64, String)>(conn)
 		.unwrap_or_default();
-	let mut reply_rows = replies::dsl::replies
+	let reply_rows = replies::dsl::replies
 		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
 		.load::<(i64, i64)>(conn)
 		.unwrap_or_default();
@@ -196,7 +198,8 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 	session_rows.sort();
 	post_rows.sort();
 	like_rows.sort();
-	reply_rows.sort();
+	// (NEW) reply_rows stay UNSORTED: the replies table has no PRIMARY KEY, so SQLite's
+	// (NEW) plain SELECT scans it in rowid order, i.e. INSERT/commit chronology.
 	follow_rows.sort();
 	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
 	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid),
@@ -332,10 +335,13 @@ pub fn reload_follows(conn: &mut SqliteConnection, w: World) -> World {
 }
 
 // ---- (F5) bucket likes/replies rows ONCE by post_pid (kills the P x (L + R) per-post rescans) ----
-// Both row lists are loaded tuple-sorted, so equal post_pid rows are contiguous and each bucket
-// keeps the query's ORDER BY order (likes asc by user, replies asc by reply_pid) - exactly the
-// subsequence the previous per-post full-list filter produced, so Post.likes / Post.replies stay
-// identical. Buckets are collected into a HashMap keyed by the u64 post id for O(1) lookup.
+// Like rows are loaded tuple-sorted, so equal post_pid rows are contiguous and each bucket keeps
+// the query's order (likes asc by user).  Reply rows are NOT sorted on load: the replies table has
+// no PRIMARY KEY, so a plain SELECT (no ORDER BY) scans it in ROWID order = INSERT/commit
+// chronology, which never reorders surviving rows.  bucket_reply_rows stable-sorts that chronology
+// by post_pid, then REVERSES each run, so a bucket matches model.rs's Post.replies, which step_ix
+// and patch_world PREPEND to (newest child first, spec Twitter.agda:401 pid : replies).
+// Buckets are collected into a HashMap keyed by the u64 post id for O(1) lookup.
 fn bucket_like_rows(rows: Vec<(i64, String)>) -> HashMap<u64, Vec<String>> {
 	// (F5) one pass over the sorted rows, collecting runs of equal post_pid.
 	let n = rows.len();
@@ -363,22 +369,29 @@ fn bucket_like_rows(rows: Vec<(i64, String)>) -> HashMap<u64, Vec<String>> {
 }
 
 fn bucket_reply_rows(rows: Vec<(i64, i64)>) -> HashMap<u64, Vec<u64>> {
-	// (F5) same contiguous-run grouping as bucket_like_rows: reply rows are tuple-sorted by
-	// (post_pid, reply_pid), so each bucket is exactly the query-order reply list of a post.
-	// (F5) one pass over the sorted rows.
-	let n = rows.len();
+	// (NEW) rows arrive in the SELECT's rowid order (INSERT chronology), NOT tuple-sorted.
+	// (NEW) a STABLE sort on the parent key only groups each post's rows together while keeping
+	// (NEW) their chronology inside each run, so reversing one run yields the model's newest-first
+	// (NEW) Post.replies (step_ix/patch_world insert(0, child)). No ORDER BY query is emitted.
+	// (NEW) one stable sort + one run pass: no ORDER BY query, no per-row HashMap insert.
+	let mut chronology: Vec<(i64, i64)> = rows;
+	chronology.sort_by(|x, y| x.0.cmp(&y.0));
+	let n = chronology.len();
 	// (F5) buckets keyed by the i64 post_pid, cast later.
 	let mut out: Vec<(i64, Vec<i64>)> = vec![];
 	let mut i = 0;
 	while i < n {
-		let pid = rows[i].0;
+		let pid = chronology[i].0;
 		let mut j = i + 1;
-		// (F5) run of equal post_pid rows.
-		while j < n && rows[j].0 == pid {
+		// (F5) run of equal post_pid rows (contiguous after the stable sort).
+		while j < n && chronology[j].0 == pid {
 			j += 1;
 		}
-		// (F5) bucket keeps ascending reply_pid order; push pair and skip the run.
-		out.push((pid, rows[i..j].iter().map(|row| row.1).collect()));
+		// (NEW) reversed run: newest reply first == the model's prepend order.
+		out.push((
+			pid,
+			chronology[i..j].iter().rev().map(|row| row.1).collect(),
+		));
 		i = j;
 	}
 	// (F5) collect into the HashMap keyed by the u64 post id.
@@ -393,7 +406,8 @@ fn bucket_reply_rows(rows: Vec<(i64, i64)>) -> HashMap<u64, Vec<u64>> {
 /// which all derive from the posts tables, so they must move together.  Re-queries
 /// posts (plus the likes/replies rows load_world's Post decode reads) and rebuilds
 /// newest_first with load_world's ORDER BY seq DESC query; accounts, sessions and
-/// follows keep their cached values.
+/// follows keep their cached values.  Reply buckets are rebuilt with load_world's newest-first
+/// rowid convention, so a reload never reorders Post.replies.
 pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 	let mut out = w;
 	let mut post_rows = posts::dsl::posts
@@ -412,13 +426,14 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 		.select((likes::dsl::post_pid, likes::dsl::user))
 		.load::<(i64, String)>(conn)
 		.unwrap_or_default();
-	let mut reply_rows = replies::dsl::replies
+	let reply_rows = replies::dsl::replies
 		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
 		.load::<(i64, i64)>(conn)
 		.unwrap_or_default();
 	post_rows.sort();
 	like_rows.sort();
-	reply_rows.sort();
+	// (NEW) reply_rows stay UNSORTED: SELECT without ORDER BY walks the replies table in
+	// (NEW) rowid order, which is INSERT chronology for the rows that survive.
 	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
 	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid);
 	// seqs are unique stamps, so ties cannot occur and the order equals the query's.
@@ -474,6 +489,8 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 /// a later ORDER BY seq DESC reproduces w.newest_first exactly.
 /// Lossy: pids absent from newest_first are stamped seq = 0 (seq_of.get unwrap_or),
 /// so their restart order is unrecoverable; save_world is used only in tests.
+/// Reply rows are written per post REVERSED (oldest reply first), so load_world's rowid-order
+/// read + prepend restores w.Post.replies exactly: save_world . load_world = identity.
 pub fn save_world(conn: &mut SqliteConnection, w: World) {
 	let _wiped_accounts = delete(accounts::dsl::accounts).execute(conn);
 	let _wiped_sessions = delete(sessions::dsl::sessions).execute(conn);
@@ -527,7 +544,9 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 				likes::dsl::user.eq(user),
 			));
 		}
-		for reply_pid in post.replies.into_iter() {
+		// (NEW) RAM replies are newest-first; the table stores chronology, so write them
+		// (NEW) reversed (oldest reply first) and load's rowid-order prepend reads them back.
+		for reply_pid in post.replies.into_iter().rev() {
 			reply_rows.push((
 				replies::dsl::post_pid.eq(pid as i64),
 				replies::dsl::reply_pid.eq(reply_pid as i64),
@@ -607,8 +626,9 @@ pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
 /// INSERT when new, DELETE when dropped (defensive). Posts: a new pid is INSERTed
 /// with seq = max_hint + 1, growing by one per insertion, so ORDER BY seq DESC keeps
 /// newest_first (new posts prepend); existing seqs stay put.
-/// Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE;
-/// follows likewise. Nothing existing is rewritten, so this is O(delta).
+/// Status flips (live<->deleted) UPDATE the row; likes/replies are pair INSERT/DELETE (reply
+/// INSERTs walk the RAM newest-first list REVERSED, so the table keeps INSERT chronology and
+/// load's rowid-order prepend read reproduces the RAM order); follows likewise. Nothing existing is rewritten, so this is O(delta).
 /// (F3) max_hint is the CALLER's cached maximum seq currently stored in the DB (0 =
 /// (F3) empty DB). Contract: max_hint >= every seq in the DB; the first new post is stamped
 /// (F3) max_hint + 1 and successive inserts increment from there. apply() NEVER re-reads the
@@ -726,7 +746,8 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 						.execute(conn)
 						.is_ok();
 				}
-				for reply_pid in post.replies.iter() {
+				// (NEW) reversed RAM => oldest-first rows: matches the rowid-chronology read back.
+				for reply_pid in post.replies.iter().rev() {
 					ok &= insert_into(replies::dsl::replies)
 						.values((
 							replies::dsl::post_pid.eq(*pid as i64),
@@ -784,7 +805,9 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 							.is_ok();
 					}
 				}
-				for reply_pid in post.replies.iter() {
+				// (NEW) reversed RAM: the new children are the newest, so the INSERTed rows get
+				// (NEW) rowids oldest-first among them and load's prepend read agrees with patch.
+				for reply_pid in post.replies.iter().rev() {
 					// (F6) O(1) probe replaces the old-replies any() scan.
 					if !old_replies.contains(reply_pid) {
 						ok &= insert_into(replies::dsl::replies)
@@ -1208,9 +1231,10 @@ mod db_tests {
 
 	/// The after-World for the bounded-diff test: signup zoe (INSERT),
 	/// session 100 Active->Revoked (UPDATE), 200 dropped (DELETE), 300 inserted
-	/// (INSERT, Unused), post 1 liked by carol and replied to by pid 500 (whose
-	/// parent stays 1), post 2 flipped to deleted, follows changed. Rows stay in
-	/// load_world's canonical sorted order.
+	/// (INSERT, Unused), post 1 liked by carol and replied to by pid 500 (whose parent
+	/// stays 1), post 2 flipped to deleted, follows changed. Rows stay in load_world's
+	/// canonical sorted order, and Post.replies is NEWEST-first (500 replied after 2,
+	/// so 500 heads the list, matching patch_world's prepend).
 	fn build_after() -> World {
 		World {
 			accounts: vec![
@@ -1246,7 +1270,7 @@ mod db_tests {
 						visibility: Visibility::Everyone,
 						status: PostStatus::Other,
 						likes: vec!["bob".to_string(), "carol".to_string()],
-						replies: vec![2, 500],
+						replies: vec![500, 2],
 						parent: None,
 					},
 				),
@@ -1697,9 +1721,9 @@ mod db_tests {
 
 	#[test]
 	/// F2 gate: a Publish with a parent gains the replies-row INSERT too, so the DB holds
-	/// BOTH halves of the spec's reply invariant.  patch_world only moves the child's
-	/// parent field, so the RAM cache lags by that row and load_world is the spec's
-	/// after: the parent gains the child in its replies list.
+	/// BOTH halves of the spec's reply invariant. patch_world already PREPENDS the child onto
+	/// the parent's replies (newest first), so the RAM cache and load_world agree on the same
+	/// newest-first list: post 1's replies become [900, 2].
 	fn test_apply_delta_publish_reply() {
 		let path = "/tmp/ft-delta-reply.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1716,13 +1740,14 @@ mod db_tests {
 			Visibility::Everyone,
 			Some(1),
 		);
-		// (F2) patch_world pushes the post (its own parent field) and never touches post 1.
+		// (NEW) patch_world pushes the post AND prepends 900 onto post 1's replies, so the
+		// (NEW) RAM cache already is the spec's successful-reply after: no manual push.
 		let cached: World = patch_world(before.clone(), reply.clone());
-		// (F2) the spec's successful-reply after: the parent's list gains the child pid.
-		let mut want: World = cached.clone();
-		// (F2) post 1 is the first pid-sorted entry in the cache.
+		// (NEW) canonical newest-first after: the fresh child heads the parent's reply list.
+		let want: World = cached.clone();
+		// (NEW) post 1 is the first pid-sorted entry in the cache: replies [900, 2].
 		assert!(want.posts[0].0 == 1);
-		want.posts[0].1.replies.push(900);
+		assert!(want.posts[0].1.replies == vec![900, 2]);
 		// (F2) the batch COMMITs: the posts INSERT plus the replies-row INSERT.
 		assert!(apply_delta(&mut conn, &before, reply, 3));
 		// (F2) load reads the reply row back: the parent's list carries the child.
@@ -1732,11 +1757,11 @@ mod db_tests {
 		assert!(load_world(&mut again) == want);
 		// (F2) the child's parent column is the other half of the invariant.
 		assert!(load_world(&mut again).posts[3].1.parent == Some(1));
-		// (F2) the row keys on the PARENT post_pid: post 1's bucket holds 2 and 900.
+		// (NEW) the row keys on the PARENT post_pid: post 1's bucket is newest-first [900, 2].
 		// (F2) the stamp is the hint plus one, so newest_first leads with the reply.
 		assert!(load_world(&mut again).newest_first == vec![900, 3, 2, 1]);
 		// (F2) the RAM cache rebuilt from the DB converges on the same replies list.
-		assert!(reload_posts(&mut again, cached.clone()).posts[0].1.replies == vec![2, 900]);
+		assert!(reload_posts(&mut again, cached.clone()).posts[0].1.replies == vec![900, 2]);
 	}
 
 	#[test]
@@ -1863,13 +1888,13 @@ mod db_tests {
 		);
 		let after: World = patch_world(before.clone(), good.clone());
 		assert!(apply_delta(&mut conn, &before, good, 3));
-		// (F2) the parent gains the reply row again, so the spec after is expected below.
-		// (F2) load equals patch plus the reply row on post 2 (apply's replies INSERT).
-		let mut want = after.clone();
-		// (F2) the reply row keys on the PARENT post_pid, so post 2 gains pid 900.
-		// (F2) patch pushed the post onto the pid-sorted list, so 900 is last.
+		// (NEW) patch already PREPENDED 900 onto post 2's replies, so the RAM cache is the
+		// (NEW) spec's after; apply_delta only adds the matching replies row to the DB.
+		let want: World = after.clone();
+		// (NEW) the reply row keys on the PARENT post_pid: post 2 (second in the pid-sorted
+		// (NEW) list) carries pid 900 as its newest reply.
 		assert!(want.posts[1].0 == 2);
-		want.posts[1].1.replies.push(900);
+		assert!(want.posts[1].1.replies == vec![900]);
 		// (F2) load agrees with the spec after, including the reply row.
 		assert!(load_world(&mut conn) == want);
 		// (F2) the two clashes moved no stamp, so the hint plus one still holds.

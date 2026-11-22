@@ -805,6 +805,19 @@ pub fn step_ix(
 			nw.posts.push((fresh_pid, post));
 			nw.newest_first.insert(0, fresh_pid);
 			nw.used_post_ids.push(fresh_pid);
+			// (RV5) spec successful-reply premise World.post-at after ppid = just ppost' with
+			// Post.replies ppost' = pid ∷ Post.replies ppost: the parent post's replies list
+			// gains the child pid at the head.  The readable guard above already proved ppid
+			// exists and is live, and fresh_pid is unused, so it appears in no replies list:
+			// the prepend keeps Post.replies uniq and child.parent = just ppid stays set.
+			if let Some(ppid) = parent {
+				for e in &mut nw.posts {
+					if e.0 == ppid {
+						(e.1.replies).insert(0, fresh_pid);
+						break;
+					}
+				}
+			}
 			(nw, Result::CreatedPost(fresh_pid))
 		}
 		Command::Delete(sid, pid) => {
@@ -1148,6 +1161,19 @@ pub fn patch_world(w: World, d: Delta) -> World {
 			));
 			nw.newest_first.insert(0, pid);
 			nw.used_post_ids.push(pid);
+			// (RV5) same successful-reply effect as step_ix, read off the Delta's parent payload:
+			// step_d already ships the parent in Publish, so patch prepends the child pid onto
+			// the parent's replies list, keeping the RAM cache equal to step's after-world
+			// (the DB gains the matching replies row in apply_delta, so reloads agree too).
+			// Only prepend when the parent exists; the fresh pid is unused, hence reply-uniq.
+			if let Some(ppid) = parent {
+				for e in &mut nw.posts {
+					if e.0 == ppid {
+						(e.1.replies).insert(0, pid);
+						break;
+					}
+				}
+			}
 		}
 		Delta::Delete(pid) => {
 			for e in &mut nw.posts {
@@ -1319,18 +1345,64 @@ mod qc {
 				w.used_session_ids.push(sid);
 			}
 		}
+		// (RV5) follows pairs, so qc worlds positively exercise follow-gated reads (personal
+		// timeline, FollowersOnly can-read via follows, prop_follow with a prior pair present).
+		// Followers range over users who HAVE accounts (session users come from accounts); the
+		// followee is any other pool user. One shot per ordered pair, so the pairs stay uniq.
+		// A copy kept in follows_pool drives the author bias below.
+		let us_all: [String; 4] = users_pool();
+		let mut follows_pool: Vec<(String, String)> = vec![];
+		for (follower, _) in &w.accounts {
+			for followee in &us_all {
+				if *followee != *follower && pick(g, &[true, false, false]) {
+					w.follows.push((follower.clone(), followee.clone()));
+					follows_pool.push((follower.clone(), followee.clone()));
+				}
+			}
+		}
+		// at least one pair whenever any account exists, so follow-gated positives fire often
+		if follows_pool.is_empty() && !w.accounts.is_empty() {
+			let (follower, _acct) = pick(g, &w.accounts);
+			let mut cands: Vec<String> = vec![];
+			for u in &us_all {
+				if *u != follower {
+					cands.push(u.clone());
+				}
+			}
+			let pair: (String, String) = (follower.clone(), pick(g, &cands));
+			w.follows.push(pair.clone());
+			follows_pool.push(pair);
+		}
+		// (RV5) reply bookkeeping: parents records (pid, parent) for the reply-backlink pass;
+		// readable_parents tracks live+Everyone pids so reply posts pick a READABLE parent
+		// (a qc Publish with that parent then passes the can_read guard, not only failed-reply).
 		let mut parents: Vec<(u64, Option<u64>)> = vec![];
+		let mut readable_parents: Vec<u64> = vec![];
 		for pid in PIDS {
 			if pick(g, &[true, true, false]) {
 				let us: [String; 4] = users_pool();
-				let author: String = pick(g, &us);
+				// (RV5) author bias: with prob 2/3 the author is a followed user, so worlds
+				// positively exercise follow-gated reads (personal timeline, FO can-read via follows)
+				// and private posts by followed authors occur (VIS already mixes both).
+				let author: String = if !follows_pool.is_empty() && pick(g, &[true, true, false]) {
+					pick(g, &follows_pool).1
+				} else {
+					pick(g, &us)
+				};
 				let vis: Visibility = pick(g, &VIS);
 				let status: PostStatus = pick(g, &STA);
-				let parent: Option<u64> = if parents.is_empty() || !coin(g) {
-					None
-				} else {
-					Some(pick(g, &parents).0)
-				};
+				// (RV5) reply parent preference: 2/3 of replies point at a live+Everyone post,
+				// i.e. a parent any valid session can READ, so qc reply-publish hits the
+				// successful-reply rule (not only failed-reply); the rest keep the old,
+				// arbitrary-parent behaviour including deleted/FO parents.
+				let parent: Option<u64> =
+					if !readable_parents.is_empty() && pick(g, &[true, true, false]) {
+						Some(pick(g, &readable_parents))
+					} else if parents.is_empty() || !coin(g) {
+						None
+					} else {
+						Some(pick(g, &parents).0)
+					};
 				let mut likes: Vec<String> = vec![];
 				for u in users_pool() {
 					if coin(g) {
@@ -1338,6 +1410,11 @@ mod qc {
 					}
 				}
 				parents.push((pid, parent));
+				// (RV5) candidate for readable reply-parents: live (status Other) AND public
+				// (Everyone) so a later reply pointing at it passes can_read with any valid sid.
+				if status == PostStatus::Other && vis == Visibility::Everyone {
+					readable_parents.push(pid);
+				}
 				w.posts.push((
 					pid,
 					Post {
