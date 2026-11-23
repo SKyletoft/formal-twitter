@@ -4,11 +4,6 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] RV5-0 (model.rs): SPEC-CONFORMANCE FIXES found by missing-tests audit — (b) reply publish must APPEND child pid to the parent post's replies list in step/step_ix/step_d+patch_world (spec successful-reply premise post-at after ppid = pid ∷ replies; today only db apply_delta writes the reply row, model-level reload converges but step-level does not); (c) Arbitrary build_world must GENERATE follows pairs + private/followers-only posts + deleted posts + reply parents so positive CanReadPost cases occur in qc worlds (today follows never emitted).
-- [ ] RV5-1 (model.rs + ImplProofs): LOGIN props prop_login_success (fresh sid + matching password -> IssuedSession, session-at after = active user, rest unchanged), prop_login_unknown_user (no account -> LoginFailed world unchanged), prop_login_wrong_password + th-prop-login-* refl pins (spec Twitter.agda:490/507/512). NOTE impl guards (used-sid LoginFailed) stay OUT of hypotheses.
-- [ ] RV5-2 (model.rs + ImplProofs): READ-POST props prop_read_logged_in (CanReadPost -> ReturnedPost author text (len likes) replies exact shape), prop_read_public_shape (anonymous), prop_read_denied_missing/private/deleted + th-prop-read-* pins (Twitter.agda:518/524/533/540/550); note anonymous read of non-public = impl-defined 403/denied family (no spec rule).
-- [ ] RV5-3 (model.rs + ImplProofs): PUBLISH props prop_publish_new (CreatedPost + post-at + newest-first prepend), prop_reply_publish (child.parent=just ppid, vis=parent followers-only case, parent replies append — needs RV5-0), prop_reply_denied (¬CanReadPost parent -> Denied unchanged) + th-prop-publish-* pins (Twitter.agda:387/401/424/173).
-- [ ] RV5-4 (model.rs + ImplProofs): UNLIKE ok/denied + prop_unfollow (set-difference + idempotent on absent pair) + prop_follow_gates_timeline (followed private author readable: like ok + appears in personal timeline) + prop_timeline_excludes_deleted (no deleted/unreadable post in ReturnedTimeline; prefix of newest-first) + th-prop-unlike/unfollow/follow-gate pins (Twitter.agda:621/649/666/371/376, 557/568/578).
 - [ ] (impl) /raw is already rawtext without extra <pre> tags and is currently printing the <pre>-tags. The struct should also be properly formatted like {:#?}, not {:?}.
 - [ ] (impl) /log is extremely redacted. EVERYTHING should be in there, ignore all security measures. Tokens, plaintext, everything
 - [ ] (research) Clean up redundant or unused code. Merge what should reasonably be merged. Remove what can reasonably be done by libraries. Use const instead of let where appropriate. Split this into multiple subagents, one per rust file.
@@ -21,6 +16,11 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [ ] (research) Using the new performance benchmarks, optimise hot parts of the code.
 
 ## Done (history, condensed; details in git log)
+- [x] RV5-4 (255267f, retry): UNLIKE ok/denied + unfollow (set-semantics, idempotent absent pair) + follow-gates-timeline (like ok + personal-timeline membership) + timeline-excludes-deleted (live/readable/prefix strengthens prop_timeline_valid) + th-prop-unlike-ok/denied/unfollow/follow-gate/timeline-excludes (proved contra-Bool absurd helper, NO postulates, ∈-filterᵇ-keep impossible branch fixed via contra-Bool not ⊥-elim metas). ATTEMPT 1 REJECTED — variantly 0.4.0 dependency contamination + dead subagent: reverted Cargo.toml/lock, deleted scripts/runqc.sh, rewrote derive + as_unlike/as_unfollow plain-style. Lesson: subagents forbidden from adding deps; VERIFY manifest after any general task.
+- [x] RV5-3 (055a77a): PUBLISH trio — prop_publish_new/prop_reply_publish (vis inheritance + parent replies PREPEND)/prop_reply_denied over correlated PublishCase generator, mutation-probe non-vacuous; th-prop-publish-new/th-prop-reply-publish/th-prop-reply-denied refl-on-constructors. 64 lib.
+- [x] RV5-2 (e6f6606): READ-POST — prop_read_logged_in/public_shape (ReturnedPost fields == stored post), denied trio missing/private/deleted; th-prop-read-logged-in/public + denied trio ALL refl-by-inversion (just-injective inline replaced post-at-unique; slv pattern rename). 61 lib + 9 smoke.
+- [x] RV5-1 (293c307): LOGIN trio — prop_login_success/unknown_user/wrong_password + passwd_pool non-vacuity + as_authenticate; th-prop-login-issued (flip + pointwise rest)/unknown/wrong (7-section identity), refl-by-inversion; non-vacuity witness-checked. 56 lib.
+- [x] RV5-0 (a9a3857): SPEC CONFORMANCE — step_ix/patch_world PREPEND reply child to parent.replies (Twitter.agda:401; step/step_d thin wrappers inherit); build_world generator +follows pairs +followed-author bias +readable reply parents; db.rs canonical reply order RAM newest-first / rows INSERT-chronological (no ascending sort; stable pid-group + reverse runs; save/apply write reversed); two stale db push(900)-hack tests replaced with spec-order pins.
 - [x] RV5 audit (research, this commit): missing-tests review — 120 active spec constructors/rule shapes vs qc+tests: 17 GAP items (login trio, read-post shape trio + denied trio, publish/ reply pair + reply-denied, unlike pair, unfollow, follow-gates-timeline, timeline-excludes-deleted, publish-new) -> RV5-0..4 queued; COVERED highlights: 15 from-input + 15 to-request + 9 to-response/Response ctors (commands/anonymous_and_tokened/respond_shapes/timeline_bodies), CreateNew -> prop_pid/sid_fresh. EXCLUDED: commented-out collect-dead-posts/reap-tombstones, postulates unlines-crlf/show/escape/octet-strlen, ValidSession/PostIsNew/CanReadPost helper DATA (exercise through props). KEY FINDINGS: model step never appends parent.replies on reply publish (DB-only convergence today) -> RV5-0; build_world emits NO follows -> RV5-0; impl guards used-pid/!used-sid spec-free, keep out of hypotheses; each new prop needs matching th-prop-* in ImplProofs.
 - [x] RV4 (3aa7135): ImplProofs Delta-bridge (data Delta 11 ctors + patch/res-of postulates + th-delta-equiv/register/like/publish) + Index-bridge (IndexW record + build-index/step-ix/timeline-ix stubs + 7 th-ix-* signatures); ImplWire wi-request-roundtrip/command (refl TRIED -> stuck-neutral via unlines-crlf/show/++/octet-strlen, postulated). Postulate-style: unsolved metas exit 42, agda-rc 0 required.
 - [x] RV3d (06c3016): ImplWire wi-resp-* — 9 refl to-response pins (status line, header LIST order, Content-Length term, body expr per Result ctor) + commented wi-bytes-* opaque framing signatures; respond_shapes /// doc asserts-1:1-theorems, header ORDER/framing impl-defined.
@@ -192,3 +192,32 @@ User reqs: logged-out ~= current frontend/; logged-in = TWO PARALLEL timelines (
 - Agda gate quirk: UNSOLVED interaction metas ('= ?') make `agda FILE.agda` exit 42 in Agda 2.8; signature-with-hole must be written as POSTULATE to keep the rc-0 gate (RV4 style).
 
 - M4-followup (wire pins) ACCEPTED, not committed: ImplWire.agda + wi-resp-* section (9 refl theorems pinning each to-response clause: status line, header LIST, Content-Length term, body expr; let-bound bodies inlined; + []/_∷_ added to the existing Data.List import, imports kept) + commented wi-bytes-* postulate signatures for the opaque unlines-crlf framing bytes (octet-strlen values 26/28/25/26/18/22/16); wire.rs respond_shapes /// doc rewritten (comments only, +4 lines) mapping asserts 1:1 to wi-out-*/wi-resp-* and marking header ORDER + framing bytes as impl-defined residuals. Gates: agda ImplWire rc 0; fmt/build/clippy -D warnings silent; tests 53 lib + 19 bin unchanged. Note: $ (_$_) not re-exported through open import Interface -> theorems use unlines-crlf (...) application instead.
+- RV6 (read-post quintet) ACCEPTED, not committed: model.rs + as_read destructor + 5 quickcheck props
+  (prop_read_logged_in / prop_read_public_shape / prop_read_denied_missing / prop_read_denied_private /
+  prop_read_denied_deleted, pinned to step's ReadPost arm incl. likes-as-COUNT via len_u64 and nw == w;
+  + active_user_ref/post_at_ref added to the qc use super::{...} list); ImplProofs.agda + RV6 section
+  th-prop-read-logged-in (refl terms on read-post-logged-in) / th-prop-read-public (read-post-anonymously) /
+  th-prop-read-denied-{missing,private,deleted} (refl on the three cant-read-post-* rules, all 3x3 clauses).
+  Gates: agda ImplProofs rc 0; fmt/build/clippy -D warnings silent; cargo test = 61 lib + 19 bin + 9 smoke.
+  Lessons: (a) `where`-block types CANNOT see clause-telescope implicit vars (NotInScope) -> inline the
+  proof term in the RHS; (b) post-at-unique's {w pid} implicits are UNSOLVABLE (inverting the record
+  projection World.post-at blocks) -> use just-injective (trans (sym eq₁) eq₂) inline instead; (c) PostStatus
+  constructors (live/deleted) and Visibility (followers-only) are in scope as constructors, so a pattern var
+  named `live` = ConstructorPatternInWrongDatatype -> rename proof vars (slv).
+
+- RV7 (publish trio) ACCEPTED, not committed: model.rs + PublishCase correlated generator
+  (struct {w cmd ids} + Arbitrary ~1554-1640: sid from valid_session list 2/3, fresh_pid from
+  PIDS minus used_pid 2/3, parent 4-way Nothing/readable/blocked/arbitrary; the independent
+  World/Command/StepArgs triple made publish props VACUOUS ~1/470) +
+  prop_publish_new / prop_reply_publish / prop_reply_denied taking (c : PublishCase), claims
+  pinned to step's Publish arm incl. parent replies PREPEND (RV5-0 fix) + vis inheritance;
+  non-vacuity via mutation probe (each `false &&` -> FAILED 63 passed 1 failed). ImplProofs.agda
+  + RV7 section th-prop-publish-new / th-prop-reply-publish / th-prop-reply-denied (one live
+  Step clause each; index clashes make the other publish constructors absurd). Gates: agda
+  ImplProofs rc 0; fmt/build/clippy -D warnings silent; cargo test = 64 lib + 19 bin.
+  Agda lessons: (d) constructor IMPLICIT args are NOT bound in a clause RHS -- bind named braces
+  AT TELESCOPE POSITION (block-2 implicits sit between the nf premise and CanReadPost, not lumped
+  first); (e) successful-reply declares ppid in BOTH implicit blocks and name lookup picks the
+  INNER one -- bind block-1 implicits positionally {_} {_} ... {ppar} {ppost} and claim the new-reply
+  parent-id via ∃[ ppar ]; (f) only bracket ∃[x] B syntax is in scope (Data.Product using (∃-syntax)),
+  `∃ λ x →` = NotInScope.
