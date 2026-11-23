@@ -16,6 +16,11 @@ pub enum PostStatus {
 	Deleted,
 }
 
+/// Visibility::Everyone: the default a freshly registered account gets.
+const DEFAULT_VIS: Visibility = Visibility::Everyone;
+/// PostStatus::Other: the spec's live status for a freshly created post.
+const LIVE_STATUS: PostStatus = PostStatus::Other;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionStatus {
 	Unused,
@@ -79,24 +84,21 @@ pub struct WorldIndex {
 
 /// Build the side-index for a World; first occurrence of each key wins, matching the Vec scans.
 pub fn build_index(w: &World) -> WorldIndex {
-	// keep the first position per key, like the scan's first match
+	// first-wins, one hash per row: iterating rows BACKWARDS and plain-inserting means
+	// the earliest row index is written last, so each map keeps the first occurrence's index
 	let mut accounts_ix: HashMap<String, usize> = HashMap::new();
-	for (i, (name, _)) in w.accounts.iter().enumerate() {
-		if !accounts_ix.contains_key(name) {
-			accounts_ix.insert(name.clone(), i);
-		}
+	for (i, (name, _)) in w.accounts.iter().enumerate().rev() {
+		accounts_ix.insert(name.clone(), i);
 	}
+	// first-wins, one hash per row
 	let mut sessions_ix: HashMap<u64, usize> = HashMap::new();
-	for (i, (sid, _)) in w.sessions.iter().enumerate() {
-		if !sessions_ix.contains_key(sid) {
-			sessions_ix.insert(*sid, i);
-		}
+	for (i, (sid, _)) in w.sessions.iter().enumerate().rev() {
+		sessions_ix.insert(*sid, i);
 	}
+	// first-wins, one hash per row
 	let mut posts_ix: HashMap<u64, usize> = HashMap::new();
-	for (i, (pid, _)) in w.posts.iter().enumerate() {
-		if !posts_ix.contains_key(pid) {
-			posts_ix.insert(*pid, i);
-		}
+	for (i, (pid, _)) in w.posts.iter().enumerate().rev() {
+		posts_ix.insert(*pid, i);
 	}
 	// follows pairs are deduplicated by the set
 	let follows_ix: HashSet<(String, String)> = w.follows.iter().cloned().collect();
@@ -771,7 +773,7 @@ pub fn step_ix(
 			}
 			let user = active_user_ix(w, ix, sid).unwrap();
 			let acc = account_at_ix(w, ix, &user);
-			let mut vis: Visibility = Visibility::Everyone;
+			let mut vis: Visibility = DEFAULT_VIS;
 			if let Some(a) = acc {
 				vis = a.default_visibility;
 			}
@@ -796,7 +798,7 @@ pub fn step_ix(
 				author: user.clone(),
 				text: txt.clone(),
 				visibility: vis,
-				status: PostStatus::Other,
+				status: LIVE_STATUS,
 				likes: vec![],
 				replies: vec![],
 				parent,
@@ -904,7 +906,7 @@ pub fn step_ix(
 					user,
 					Account {
 						password: passwd,
-						default_visibility: Visibility::Everyone,
+						default_visibility: DEFAULT_VIS,
 					},
 				));
 				(nw, Result::Success)
@@ -999,7 +1001,7 @@ pub fn step_d(
 			}
 			let user = active_user_ix(w, ix, sid).unwrap();
 			let acc = account_at_ix(w, ix, &user);
-			let mut vis: Visibility = Visibility::Everyone;
+			let mut vis: Visibility = DEFAULT_VIS;
 			if let Some(a) = acc {
 				vis = a.default_visibility;
 			}
@@ -1095,7 +1097,7 @@ pub fn step_d(
 						user,
 						Account {
 							password: passwd,
-							default_visibility: Visibility::Everyone,
+							default_visibility: DEFAULT_VIS,
 						},
 					),
 				)
@@ -1153,7 +1155,7 @@ pub fn patch_world(w: World, d: Delta) -> World {
 					author,
 					text,
 					visibility,
-					status: PostStatus::Other,
+					status: LIVE_STATUS,
 					likes: vec![],
 					replies: vec![],
 					parent,
