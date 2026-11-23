@@ -4,18 +4,24 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] CLN research wave LAUNCHED (background, awaiting results): 5 research agents — model.rs/wire.rs/db.rs/main.rs+lib.rs/smoke.rs audits (call ids call_5cce.., call_ea52.., call_5465.., call_f10e.., call_c57d..). Results -> CLN impl wave tasks (small, per finding-cluster, gated, one per file).
-- [ ] BENCH research LAUNCHED (background call_e5c0..): realistic benchmark design (std-timed, no new deps) + hot-spot ranking -> feeds OPT wave.
-- [ ] CLN impl wave: apply accepted findings per file, small gated tasks.
-- [ ] OPT (impl): benchmark-guided hot-path optimisation after BENCH report lands.
+- [ ] CLN research wave — RECVED: wire.rs, db.rs, smoke.rs (full lists in memory cln-*-audit.md). AWAITING: model.rs call_5cce.., main.rs call_f10e.., BENCH call_e5c0..
+- [ ] CLN-w1 (impl, wire.rs, SAFE batch): :229 drop pub on escape_json (VERIFY zero cross-module callers first), :59 bytes().all(is_ascii_digit), :60 delete dead empty-guard, :73 unwrap_or_default, :104 lines.last(), :230 module const HEX, :235 reserve sized for 6x escape growth. Gate: fmt/build/clippy/test(69+20+9)/agda x2.
+- [ ] CLN-w2 (impl, wire.rs, byte-exact): :72 line_text &[u8], :80 split_lines split(13) rework, :253 format!("\\u{:04x}"), :290 respond const statics. ImplWire wi-resp-* pins MUST stay refl-green.
+- [ ] CLN-w3 (impl wire.rs optional): arity combinator + (path,parser,ctor) table — only if w1+w2 clean.
+- [ ] CLN-d1 (impl db.rs SAFE): BEGIN/COMMIT/ROLLBACK pragma consts (x6 literals), enc/dec code consts (0/1/2), enc_sess_row twin merge (drop _ref), unwrap_or_default+cloned bucket fetches, db_max_seq max-fold.
+- [ ] CLN-d2 (impl db.rs MERGE): shared posts-section loader (load_world<->reload_posts 90-line verbatim), per-table loaders accounts/sessions/follows, shared run-grouping helper bucket_like/reply. db_tests green.
+- [ ] CLN-d3 (impl db.rs optional): init_or_open post-ignore table-exists probe (CREATE fault vs reentrant collision).
+- [ ] CLN-s1 (impl smoke.rs SAFE): send_and_read fold (req/get), hoist want out of read loops (O(n^2) fix), drop dead World assert, 4096 header-cap const, ports consts, numbers_in->number_after fold, bytes_find windows().any.
+- [ ] CLN-s2 (impl smoke.rs MERGE+ROBUST): boot() prologue 11x + wait_gone epilogue 7x + expect_same 5x; FLAKE FIX: wait_gone round cap derived from secs ((secs+10)*10); consts for sleeps/tries/rounds/misses.
+- [ ] OPT (impl, after BENCH lands): reload_posts bounded/windowed reload; apply_delta Delete-branch side-index lookup (O(P) find gone); benchmark-guided extras.
+- [ ] CLN impl waves for model.rs/main.rs once their audits land.
 
 ## Done (history, condensed; details in git log)
+- [x] CLN smoke.rs audit RECVED (call_c57d.., ACCEPTED): 15 findings incl. FLAKE ROOT CAUSE wait_gone 200x100ms budget == secs=20 spawn timeout, 0.5s slack only; queued CLN-s1/s2/s3. Memory cln-smoke-audit.md.
+- [x] CLN db.rs audit RECVED (call_5465.., ACCEPTED): 15 findings incl. reload_posts triple-SELECT + Delete-branch O(P) find (->OPT); apply()/save_world KEPT deliberately (H2 precedent); queued CLN-d1/d2/d3. Memory cln-db-audit.md.
+- [x] CLN wire.rs audit RECVED (agent call_ea52.., ACCEPTED): 14 findings queued as CLN-w1 (SAFE mechanical) / CLN-w2 (byte-exact LIBRARY) / CLN-w3 (structural merges, optional). Full list in memory cln-wire-audit.md.
 - [x] LOG1b (9759ca0): test_log_entry_capture (reopen-arm false -> commit-arm true, verbatim body/token pins) + smoke BODY["erin\r\npw"] + /api/signup pins; 20 bin tests. NOTE: smoke test_new_actions_roundtrip flaky ~0.5s wait_gone slack vs 20s spawn timeout (pre-existing, untouched) — candidate FIX in CLN wave.
-- [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line BODY[..] CMD[..] RES[..] COMMITTED[..] render; naming table test-only; smoke green unchanged. Gates 69+19+9.
-- [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line rendering w/ BODY[..] CMD[..] RES[..] COMMITTED[..]; naming table demoted test-only; smoke green UNCHANGED (IMF date front, names inside request line). Gates 69+19+9.
-- [x] RAW1 (069a045): /raw raw plaintext {:#?} — <pre> wrap dropped, pretty-print pins re-targeted (lib test_raw_text_shape + smoke test_raw_and_log); ImplProofs ST2 prose comment-only. Gates 69+19+9, clippy/agda/fmt 0.
-
-## Done (history, condensed; details in git log)
+- [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line BODY[..] CMD[..] RES[..] COMMITTED[..] render; naming table demoted test-only; smoke green UNCHANGED (IMF date front, names inside request line). Gates 69+19+9.
 - [x] RV5-4 (255267f, retry): UNLIKE ok/denied + unfollow (set-semantics, idempotent absent pair) + follow-gates-timeline (like ok + personal-timeline membership) + timeline-excludes-deleted (live/readable/prefix strengthens prop_timeline_valid) + th-prop-unlike-ok/denied/unfollow/follow-gate/timeline-excludes (proved contra-Bool absurd helper, NO postulates, ∈-filterᵇ-keep impossible branch fixed via contra-Bool not ⊥-elim metas). ATTEMPT 1 REJECTED — variantly 0.4.0 dependency contamination + dead subagent: reverted Cargo.toml/lock, deleted scripts/runqc.sh, rewrote derive + as_unlike/as_unfollow plain-style. Lesson: subagents forbidden from adding deps; VERIFY manifest after any general task.
 - [x] RV5-3 (055a77a): PUBLISH trio — prop_publish_new/prop_reply_publish (vis inheritance + parent replies PREPEND)/prop_reply_denied over correlated PublishCase generator, mutation-probe non-vacuous; th-prop-publish-new/th-prop-reply-publish/th-prop-reply-denied refl-on-constructors. 64 lib.
 - [x] RV5-2 (e6f6606): READ-POST — prop_read_logged_in/public_shape (ReturnedPost fields == stored post), denied trio missing/private/deleted; th-prop-read-logged-in/public + denied trio ALL refl-by-inversion (just-injective inline replaced post-at-unique; slv pattern rename). 61 lib + 9 smoke.
