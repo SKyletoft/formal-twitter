@@ -4,19 +4,28 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] CLN research wave — RECVED: wire.rs, db.rs, smoke.rs (full lists in memory cln-*-audit.md). AWAITING: model.rs call_5cce.., main.rs call_f10e.., BENCH call_e5c0..
-- [ ] CLN-w1 (impl, wire.rs, SAFE batch): :229 drop pub on escape_json (VERIFY zero cross-module callers first), :59 bytes().all(is_ascii_digit), :60 delete dead empty-guard, :73 unwrap_or_default, :104 lines.last(), :230 module const HEX, :235 reserve sized for 6x escape growth. Gate: fmt/build/clippy/test(69+20+9)/agda x2.
+- [x] CLN research wave — ALL RECVED: wire.rs, db.rs, smoke.rs, model.rs + main.rs (call_f10ef086.., saved to memory cln-main-audit.md) + BENCH design. ACCEPTED.
+- [x] CLN-w1 ACCEPTED+COMMITTED (b0da64f): all 7 SAFE items landed; report confirms HEX@:10 + sized reserves + comment honesty; wi-resp-* pins green.
 - [ ] CLN-w2 (impl, wire.rs, byte-exact): :72 line_text &[u8], :80 split_lines split(13) rework, :253 format!("\\u{:04x}"), :290 respond const statics. ImplWire wi-resp-* pins MUST stay refl-green.
 - [ ] CLN-w3 (impl wire.rs optional): arity combinator + (path,parser,ctor) table — only if w1+w2 clean.
-- [ ] CLN-d1 (impl db.rs SAFE): BEGIN/COMMIT/ROLLBACK pragma consts (x6 literals), enc/dec code consts (0/1/2), enc_sess_row twin merge (drop _ref), unwrap_or_default+cloned bucket fetches, db_max_seq max-fold.
+- [x] CLN-d1 ACCEPTED+COMMITTED (50685be): pragma/code consts, enc_sess_row by-ref twin merge, bucket unwrap_or_default, max-fold. Agent died mid-gate (db.rs:621 churn), coordinator-verified all gates.
 - [ ] CLN-d2 (impl db.rs MERGE): shared posts-section loader (load_world<->reload_posts 90-line verbatim), per-table loaders accounts/sessions/follows, shared run-grouping helper bucket_like/reply. db_tests green.
 - [ ] CLN-d3 (impl db.rs optional): init_or_open post-ignore table-exists probe (CREATE fault vs reentrant collision).
 - [ ] CLN-s1 (impl smoke.rs SAFE): send_and_read fold (req/get), hoist want out of read loops (O(n^2) fix), drop dead World assert, 4096 header-cap const, ports consts, numbers_in->number_after fold, bytes_find windows().any.
 - [ ] CLN-s2 (impl smoke.rs MERGE+ROBUST): boot() prologue 11x + wait_gone epilogue 7x + expect_same 5x; FLAKE FIX: wait_gone round cap derived from secs ((secs+10)*10); consts for sleeps/tries/rounds/misses.
-- [ ] OPT (impl, after BENCH lands): reload_posts bounded/windowed reload; apply_delta Delete-branch side-index lookup (O(P) find gone); benchmark-guided extras.
-- [ ] CLN impl waves for model.rs/main.rs once their audits land.
+- [ ] BENCH-impl (impl): tests/bench.rs TCP harness — env-gated FT_BENCH (unset -> early skip), RELEASE binary spawn, 4KB slurp client (smoke framing, token-first CRLF, reply parent LAST), server-seeded small tier (~100 posts/20 acc/~300 mixed reqs), prints median+p99 ms/req & req/s per class; nix check excludes it (cargoTestFlags --lib --bin), gate run <60s. — RELAUNCH RUNNING (call_fca5 died silent, bench.rs never created).
+- [ ] OPT-1 (impl main.rs ONLY): kill full World copy — swap-out idiom (empty_world placeholder + std::swap, F9 conn precedent): before owned locally, zero clone; after = patch_world(before-moved, delta) in success arm; EVERY non-committed arm restores locked.world explicitly incl. reopen-Err (move before back); apply_delta gets &before unchanged; patch_world signature untouched. — RUNNING call_61155296e2a2448ab7abf8fd.
+- [ ] OPT-2 (impl): push_log ring (fixed Vec + start index + rotated read in request_log); then bench-measure index-rebuild candidate before touching it.
+- [ ] OPT-3 (impl db.rs): CREATE INDEX lines (likes post_pid, follows) + db_max_seq MAX SQL — keep CREATE_SQL collision-reentrancy.
+- [ ] OPT-4 (impl): sample_id used-ids set probe + Delete-branch visibility lookup via side-index (db.rs apply_delta :956 O(P) find gone).
+- [ ] CLN-m2 (impl main.rs SAFE batch, per cln-main-audit.md): log_parse_failure extract (serve/serve_alias twin), lock_server guard fn (serve_command keeps guard, conn swap at 564), single LogEntry + committed local, hoist result_txt, build_response(status,mime,body) fold (serve_static 200/404 + serve_text + to_http), #[cfg(test)] command_to_logline, doc-once for serve(), consts near LOG_CAP ("POST "," HTTP/1.1","parse-failure","access_denied","twitter.db","frontend"), query_param &str + alias_body allocs. WAIT — same file as OPT-1, launch only after call_61155296 lands.
+- [ ] CLN-m3 (impl main.rs CHECK, optional): define_post!/alias macro family, deny_response vs phantom _e, CACHE_SECTIONS=4 table, cache frontend_root at launch (join("..")->parent_path), smoke timeout -s KILL note. Only if m2 clean.
+- [ ] CLN-m1b (low value): unique O(n^2) kept — HashSet body impossible under pinned PartialEq sig; revisit only bound-preserving.
+- [x] CLN-m1 ACCEPTED+COMMITTED (092b45e): build_index enumerate().rev() one-hash first-wins + DEFAULT_VIS/LIVE_STATUS at 6 expr sites (report verified; gates coordinator-run, bash-denied agent).
 
 ## Done (history, condensed; details in git log)
+- [x] BENCH design RECVED (call_e5c0.., ACCEPTED): ranked hot-spots (double World copy 10-30ms/req; index rebuild 3-8ms; reload_* every-4th re-query; unindexed DELETE scans; O(P) RAM scans; push_log remove(0)) + harness plan (tests/bench.rs env-gated, release binary). Memory bench-report.md.
+- [x] CLN model.rs audit RECVED (call_5cce.., ACCEPTED): production closure = step_d/patch_world/build_index/empty_world; reference layer Agda-pinned; SAFE wins -> CLN-m1. Memory cln-model-audit.md.
 - [x] CLN smoke.rs audit RECVED (call_c57d.., ACCEPTED): 15 findings incl. FLAKE ROOT CAUSE wait_gone 200x100ms budget == secs=20 spawn timeout, 0.5s slack only; queued CLN-s1/s2/s3. Memory cln-smoke-audit.md.
 - [x] CLN db.rs audit RECVED (call_5465.., ACCEPTED): 15 findings incl. reload_posts triple-SELECT + Delete-branch O(P) find (->OPT); apply()/save_world KEPT deliberately (H2 precedent); queued CLN-d1/d2/d3. Memory cln-db-audit.md.
 - [x] CLN wire.rs audit RECVED (agent call_ea52.., ACCEPTED): 14 findings queued as CLN-w1 (SAFE mechanical) / CLN-w2 (byte-exact LIBRARY) / CLN-w3 (structural merges, optional). Full list in memory cln-wire-audit.md.
