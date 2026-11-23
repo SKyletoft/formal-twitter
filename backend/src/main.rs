@@ -447,12 +447,14 @@ pub fn command_to_logline(c: &Command) -> String {
 	}
 }
 
-/// (ST) the /raw body: the World's Debug rendering wrapped in <pre> so a browser shows the record
-/// verbatim.  Pure RAM debug, never served as spec data.
+/// (ST) the /raw body: the World's Debug rendering as raw plaintext, pretty-printed with {:#?} so
+/// it is one field per line and curl or a browser shows the record verbatim.  Pure RAM debug,
+/// never served as spec data.
 pub fn raw_text(w: &World) -> String {
 	// std.debug.show == Rust's Debug rendering of the record
-	// one format!: the wrap and the record share one pass, no concat of three Strings
-	format!("<pre>{:?}</pre>", w)
+	// one format!: the {:#} flag and the record share one pass, no concat of Strings
+	// the reference renders through World's own Debug, so the # flag reaches every field
+	format!("{:#?}", w)
 }
 
 /// The shared core behind all 13 POST routes and the 3 GET aliases: step, COMMIT,
@@ -849,7 +851,7 @@ pub fn serve_text(body: String, mime: String) -> Response<'static> {
 	hit.finalize()
 }
 
-/// GET /raw: the whole RAM cache as plaintext Debug, <pre>-wrapped (ST) - a debug view only:
+/// GET /raw: the whole RAM cache as raw plaintext Debug, pretty-printed (ST) - a debug view only:
 /// it is never fed back and the database stays the source of truth.
 #[get("/raw")]
 fn raw(state: &State<Mutex<Server>>) -> Served {
@@ -1546,9 +1548,10 @@ fn test_ft_frontend_default() {
 	);
 }
 
-/// (ST) the /raw body shape: the <pre> wrap around the World's Debug rendering, with real records
-/// inside - the struct names are what a reader greps the dump for.  Deliberately no Agda: the
-/// wrap is Rust rendering the spec never mentions (cf. the F2 note at ImplProofs.agda:516).
+/// (ST) the /raw body shape: raw plaintext pretty-printing of the World's Debug rendering, with real
+/// records inside - the struct names are what a reader greps the dump for.  Deliberately no Agda:
+/// the rendering is Rust's own that the spec never mentions (cf. the F2 note at
+/// ImplProofs.agda:516).
 #[test]
 fn test_raw_text_shape() {
 	// the model handles are scoped here so the non-test build keeps zero unused imports.
@@ -1581,9 +1584,11 @@ fn test_raw_text_shape() {
 		used_session_ids: vec![],
 	};
 	let body: String = raw_text(&tiny);
-	// the wrap opens and closes the dump, so a browser shows the record verbatim.
-	assert!(body.starts_with("<pre>"));
-	assert!(body.ends_with("</pre>"));
+	// raw plaintext: nothing wraps the dump, and it opens on the record itself, one field per line
+	// (Rust's pretty Debug indents each field with four spaces).
+	assert!(!body.starts_with("<pre>"));
+	assert!(body.starts_with("World {"));
+	assert!(body.contains("\n    "));
 	// the payload is Debug of the record: both struct names appear in their record form.
 	assert!(body.contains("World {"));
 	assert!(body.contains("Post {"));

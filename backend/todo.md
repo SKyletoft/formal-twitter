@@ -4,16 +4,14 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] (impl) /raw is already rawtext without extra <pre> tags and is currently printing the <pre>-tags. The struct should also be properly formatted like {:#?}, not {:?}.
-- [ ] (impl) /log is extremely redacted. EVERYTHING should be in there, ignore all security measures. Tokens, plaintext, everything
-- [ ] (research) Clean up redundant or unused code. Merge what should reasonably be merged. Remove what can reasonably be done by libraries. Use const instead of let where appropriate. Split this into multiple subagents, one per rust file.
-- [ ] (research) Design realistic performance benchmarks.
-- [ ] (research) Using the new performance benchmarks, optimise hot parts of the code.
-- [ ] (impl) /raw is already rawtext without extra <pre> tags and is currently printing the <pre>-tags. The struct should also be properly formatted like {:#?}, not {:?}.
-- [ ] (impl) /log is extremely redacted. EVERYTHING should be in there, ignore all security measures. Tokens, plaintext, everything
-- [ ] (research) Clean up redundant or unused code. Merge what should reasonably be merged. Remove what can reasonably be done by libraries. Use const instead of let where appropriate. Split this into multiple subagents, one per rust file.
-- [ ] (research) Design realistic performance benchmarks.
-- [ ] (research) Using the new performance benchmarks, optimise hot parts of the code.
+- [ ] RAW1 (impl) main.rs: /raw — DROP <pre> wrap (already rawtext), pretty-print World {:#?} not {:?}; retarget test_raw_text_shape + smoke test_raw_and_log pins. Subagent: general, main.rs only.
+- [ ] LOG1 (impl) main.rs: /log un-redacted — EVERY line carries epoch ts + method+path + RAW request body (tokens/plaintext verbatim) + parsed Command + Result; drop endpoint-name-only logline. Retarget test_log_line_naming + smoke pins. Subagent: general, main.rs only.
+- [ ] CLN research wave: 4 research agents, one per rust file (model.rs, wire.rs, db.rs, main.rs) — redundant/unused code, merge candidates, library-replaceable code, const-vs-let. Report-only, file:line refs, compact.
+- [ ] CLN impl wave: per-file small impl tasks applying accepted findings (sequential, gates per task: fmt/build/clippy/test/agda).
+- [ ] BENCH (research): design realistic perf benchmarks — NO new deps (subagents forbidden to touch Cargo.toml; lesson RV5-4); std-timed bench harness or bench bin target. Deliver design + numbers.
+- [ ] OPT (impl): benchmark-guided hot-path optimisation, small per-site tasks, gates as usual.
+
+## Done (history, condensed; details in git log)
 
 ## Done (history, condensed; details in git log)
 - [x] RV5-4 (255267f, retry): UNLIKE ok/denied + unfollow (set-semantics, idempotent absent pair) + follow-gates-timeline (like ok + personal-timeline membership) + timeline-excludes-deleted (live/readable/prefix strengthens prop_timeline_valid) + th-prop-unlike-ok/denied/unfollow/follow-gate/timeline-excludes (proved contra-Bool absurd helper, NO postulates, ∈-filterᵇ-keep impossible branch fixed via contra-Bool not ⊥-elim metas). ATTEMPT 1 REJECTED — variantly 0.4.0 dependency contamination + dead subagent: reverted Cargo.toml/lock, deleted scripts/runqc.sh, rewrote derive + as_unlike/as_unfollow plain-style. Lesson: subagents forbidden from adding deps; VERIFY manifest after any general task.

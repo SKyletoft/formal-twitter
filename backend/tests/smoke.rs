@@ -813,7 +813,7 @@ fn test_static_serving() {
 	ensure(wait_gone(8025), "the static server never exited");
 }
 /// (ST) the debug routes answer over the wire: /log holds one IMF-timestamped line per
-/// request serve_command served, /raw dumps the live cache as "<pre>" Debug text.
+/// request serve_command served, /raw dumps the live cache as pretty plaintext Debug.
 #[test]
 fn test_raw_and_log() {
 	// (a fresh DB, so the log lines come from exactly the two requests below)
@@ -860,7 +860,7 @@ fn test_raw_and_log() {
 		lines[1].contains("login"),
 		"the second line does not name login",
 	);
-	// the dump route: 200 text/plain "<pre>"-wrapped Debug of the whole cache
+	// the dump route: 200 text/plain pretty plaintext Debug of the whole cache
 	let dumped = get(8026, "/raw".to_string());
 	expect_status(&dumped, "HTTP/1.1 200 OK");
 	ensure(
@@ -869,13 +869,10 @@ fn test_raw_and_log() {
 	);
 	let dump = body_of(&dumped);
 	ensure(
-		dump.starts_with("<pre>"),
-		"the dump never opens the pre tag",
+		dump.starts_with("World {"),
+		"the dump never opens the World record",
 	);
-	ensure(
-		dump.ends_with("</pre>"),
-		"the dump never closes the pre tag",
-	);
+	ensure(!dump.contains("<pre>"), "the dump is wrapped in markup");
 	ensure(dump.contains("World {"), "the dump holds no World record");
 	ensure(
 		dump.contains("Account {"),
