@@ -128,7 +128,9 @@ CREATE TABLE sessions (sid INTEGER PRIMARY KEY, status INTEGER, user TEXT);
 CREATE TABLE posts (pid INTEGER PRIMARY KEY, author TEXT, text TEXT, visibility INTEGER, status INTEGER, parent BIGINT, seq BIGINT);
 CREATE TABLE likes (post_pid INTEGER, user TEXT);
 CREATE TABLE replies (post_pid INTEGER, reply_pid INTEGER);
-CREATE TABLE follows (follower TEXT, followee TEXT);";
+CREATE TABLE follows (follower TEXT, followee TEXT);
+CREATE INDEX likes_by_post_pid ON likes (post_pid);
+CREATE INDEX follows_follower_followee ON follows (follower, followee);";
 
 /// One sqlite transaction per batch: BEGIN opens it, COMMIT closes it, ROLLBACK undoes it.
 const BEGIN_SQL: &str = "BEGIN TRANSACTION;";
@@ -552,20 +554,15 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 /// (F3) is scanned for a maximum, and it runs at server startup, never per request.
 /// Returns 0 for an empty DB, which apply() reads as "stamp the first post at seq 1".
 pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
-	// (F3) Bounded once-per-launch: plain load of the seq column, hand-folded for the
-	// (F3) maximum (the Aggregates type soup stays out of the way).
-	let seqs: Vec<i64> = posts::dsl::posts
-		.select(posts::dsl::seq)
-		.load::<i64>(conn)
-		.unwrap_or_default();
-	// (F3) Guard before the signed-to-unsigned cast, so save_world's lossy seq = 0
-	// (F3) rows and any negative stamp never raise the hint: non-positive stamps are
-	// (F3) filtered out before the cast; an all-filtered/empty DB defaults to 0.
-	seqs.into_iter()
-		.filter(|s| *s > 0)
-		.map(|s| s as u64)
-		.max()
+	// (F3) One SQL aggregate: SELECT MAX(seq) WHERE seq > 0, so the (F3) guard runs in
+	// (F3) SQL (non-positive stamps never raise the hint) and an empty/all-filtered DB
+	// (F3) gives NULL -> None -> 0; no seq row ever lands in RAM to fold in Rust.
+	posts::dsl::posts
+		.filter(posts::dsl::seq.gt(0))
+		.select(diesel::dsl::max(posts::dsl::seq))
+		.first::<Option<i64>>(conn)
 		.unwrap_or_default()
+		.unwrap_or_default() as u64
 }
 
 /// test-only reference: Bounded write-through: the DB must already mirror `before`; we mutate only
