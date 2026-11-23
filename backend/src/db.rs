@@ -152,14 +152,13 @@ pub fn reopen(path: String) -> ConnectionResult<SqliteConnection> {
 
 // ---- Loading World from the DB ----
 
-/// Load every table with static typed queries. A query error (corrupt or
-/// missing table) is treated as no rows: an empty World component, never a
-/// panic; save_world rewrites everything regardless. Canonical row order
-/// keeps World equality stable (lexicographic per table; newest_first from
-/// ORDER BY seq DESC; likes keep row order within a post; replies are rebuilt
-/// NEWEST-first from the replies table's rowid (creation) order, the order the
-/// model prepends children in (step_ix/patch_world, spec Twitter.agda:401).
-pub fn load_world(conn: &mut SqliteConnection) -> World {
+// (CLN-d2) ONE shared read per table: load_world and the matching reload_* call the same helper,
+// so a reloaded section can never drift from the launch load.  Each keeps load_world's canonical
+// pipeline: static typed SELECT, unwrap_or_default on a query error (corrupt or missing table =
+// no rows, never a panic), then the sort/decode order this section had before.
+
+/// (CLN-d2) accounts: select + tuple-sort + Account decode, load_world's canonical row order.
+fn load_accounts_section(conn: &mut SqliteConnection) -> Vec<(String, Account)> {
 	let mut account_rows = accounts::dsl::accounts
 		.select((
 			accounts::dsl::username,
@@ -168,6 +167,23 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		))
 		.load::<(String, String, i32)>(conn)
 		.unwrap_or_default();
+	account_rows.sort();
+	account_rows
+		.into_iter()
+		.map(|(username, password, vis)| {
+			(
+				username,
+				Account {
+					password,
+					default_visibility: dec_vis(vis),
+				},
+			)
+		})
+		.collect()
+}
+
+/// (CLN-d2) sessions AND their derived used_session_ids: ONE section, so they stay consistent.
+fn load_sessions_section(conn: &mut SqliteConnection) -> (Vec<(u64, SessionStatus)>, Vec<u64>) {
 	let mut session_rows = sessions::dsl::sessions
 		.select((
 			sessions::dsl::sid,
@@ -176,6 +192,37 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		))
 		.load::<(i64, i32, Option<String>)>(conn)
 		.unwrap_or_default();
+	session_rows.sort();
+	let used_session_ids: Vec<u64> = session_rows.iter().map(|row| row.0 as u64).collect();
+	// (CLN-d2) load_world's sessions map; the used ids come off the same sorted rows.
+	(
+		session_rows
+			.into_iter()
+			.map(|(sid, code, user)| (sid as u64, dec_sess_row(code, user)))
+			.collect(),
+		used_session_ids,
+	)
+}
+
+/// (CLN-d2) follows: select + tuple-sort, the raw (follower, followee) rows.
+fn load_follows_section(conn: &mut SqliteConnection) -> Vec<(String, String)> {
+	let mut follow_rows = follows::dsl::follows
+		.select((follows::dsl::follower, follows::dsl::followee))
+		.load::<(String, String)>(conn)
+		.unwrap_or_default();
+	follow_rows.sort();
+	follow_rows
+}
+
+/// (CLN-d2) posts, newest_first and used_post_ids: the ONE posts-section read load_world and
+/// reload_posts share, so the three fields derived from the posts tables always move together.
+/// (F7) newest_first stably sorts the already-loaded post_rows on (seq, pid) DESC - no 4th
+/// full-table ORDER BY scan.  (F5) likes/replies rows are bucketed ONCE by post_pid through
+/// group_key_runs and each Post copies its bucket.  (NEW) reply_rows stay UNSORTED: a plain
+/// SELECT walks the replies table in rowid = INSERT chronology, and bucket_reply_rows reverses
+/// each run, so Post.replies is newest-first, the order step_ix/patch_world prepends children
+/// in (spec Twitter.agda:401).
+fn load_posts_section(conn: &mut SqliteConnection) -> (Vec<(u64, Post)>, Vec<u64>, Vec<u64>) {
 	let mut post_rows = posts::dsl::posts
 		.select((
 			posts::dsl::pid,
@@ -196,17 +243,10 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
 		.load::<(i64, i64)>(conn)
 		.unwrap_or_default();
-	let mut follow_rows = follows::dsl::follows
-		.select((follows::dsl::follower, follows::dsl::followee))
-		.load::<(String, String)>(conn)
-		.unwrap_or_default();
-	account_rows.sort();
-	session_rows.sort();
 	post_rows.sort();
 	like_rows.sort();
 	// (NEW) reply_rows stay UNSORTED: the replies table has no PRIMARY KEY, so SQLite's
 	// (NEW) plain SELECT scans it in rowid order, i.e. INSERT/commit chronology.
-	follow_rows.sort();
 	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
 	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid),
 	// which are already pid-sorted here; stable sort keeps pid order on seq ties, matching
@@ -231,13 +271,13 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 					// (F5) O(1) bucket lookup replaces the full-row-list filter;
 					likes: like_map
 						.get(&(pid as u64))
-						.map(|users| users.iter().map(|user| user.clone()).collect())
+						.map(|users| users.to_vec())
 						.unwrap_or_default(),
 					// (F5) same for the reply buckets (u64 ids are copied).
 					// (F5) deref gives the u64 id.
 					replies: reply_map
 						.get(&(pid as u64))
-						.map(|v| v.clone())
+						.map(|v| v.to_vec())
 						.unwrap_or_default(),
 					parent: parent.map(|p| p as u64),
 				},
@@ -245,26 +285,25 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 		})
 		.collect();
 	let used_post_ids: Vec<u64> = posts_map.iter().map(|row| row.0).collect();
-	let used_session_ids: Vec<u64> = session_rows.iter().map(|row| row.0 as u64).collect();
+	(posts_map, newest_first, used_post_ids)
+}
+
+/// Load every table with static typed queries. A query error (corrupt or
+/// missing table) is treated as no rows: an empty World component, never a
+/// panic; save_world rewrites everything regardless. Canonical row order
+/// keeps World equality stable (lexicographic per table; newest_first from
+/// ORDER BY seq DESC; likes keep row order within a post; replies are rebuilt
+/// NEWEST-first from the replies table's rowid (creation) order, the order the
+/// model prepends children in (step_ix/patch_world, spec Twitter.agda:401).
+pub fn load_world(conn: &mut SqliteConnection) -> World {
+	// (CLN-d2) every section goes through the shared loader its reload_* also uses.
+	let (posts_map, newest_first, used_post_ids) = load_posts_section(conn);
+	let (sessions_section, used_session_ids) = load_sessions_section(conn);
 	World {
-		accounts: account_rows
-			.into_iter()
-			.map(|(username, password, vis)| {
-				(
-					username,
-					Account {
-						password,
-						default_visibility: dec_vis(vis),
-					},
-				)
-			})
-			.collect(),
-		sessions: session_rows
-			.into_iter()
-			.map(|(sid, code, user)| (sid as u64, dec_sess_row(code, user)))
-			.collect(),
+		accounts: load_accounts_section(conn),
+		sessions: sessions_section,
 		posts: posts_map,
-		follows: follow_rows,
+		follows: load_follows_section(conn),
 		newest_first,
 		used_post_ids,
 		used_session_ids,
@@ -279,28 +318,9 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 /// reloaded section always agrees with load_world.  Lets main.rs rotate one
 /// World field group per request instead of re-loading the whole World.
 pub fn reload_accounts(conn: &mut SqliteConnection, w: World) -> World {
+	// (CLN-d2) the accounts section re-queried through load_world's shared read.
 	let mut out = w;
-	let mut account_rows = accounts::dsl::accounts
-		.select((
-			accounts::dsl::username,
-			accounts::dsl::password,
-			accounts::dsl::visibility,
-		))
-		.load::<(String, String, i32)>(conn)
-		.unwrap_or_default();
-	account_rows.sort();
-	out.accounts = account_rows
-		.into_iter()
-		.map(|(username, password, vis)| {
-			(
-				username,
-				Account {
-					password,
-					default_visibility: dec_vis(vis),
-				},
-			)
-		})
-		.collect();
+	out.accounts = load_accounts_section(conn);
 	out
 }
 
@@ -309,21 +329,11 @@ pub fn reload_accounts(conn: &mut SqliteConnection, w: World) -> World {
 /// Same select + sort + decode as load_world's sessions query; all other fields
 /// keep their cached values.
 pub fn reload_sessions(conn: &mut SqliteConnection, w: World) -> World {
+	// (CLN-d2) sessions AND used_session_ids come from the same shared read.
 	let mut out = w;
-	let mut session_rows = sessions::dsl::sessions
-		.select((
-			sessions::dsl::sid,
-			sessions::dsl::status,
-			sessions::dsl::user,
-		))
-		.load::<(i64, i32, Option<String>)>(conn)
-		.unwrap_or_default();
-	session_rows.sort();
-	out.used_session_ids = session_rows.iter().map(|row| row.0 as u64).collect();
-	out.sessions = session_rows
-		.into_iter()
-		.map(|(sid, code, user)| (sid as u64, dec_sess_row(code, user)))
-		.collect();
+	let (sessions_section, used_session_ids) = load_sessions_section(conn);
+	out.sessions = sessions_section;
+	out.used_session_ids = used_session_ids;
 	out
 }
 
@@ -331,13 +341,9 @@ pub fn reload_sessions(conn: &mut SqliteConnection, w: World) -> World {
 /// rows are dropped and re-queried with load_world's select + sort.
 /// Everything else keeps its cached value.
 pub fn reload_follows(conn: &mut SqliteConnection, w: World) -> World {
+	// (CLN-d2) the follows section re-queried through load_world's shared read.
 	let mut out = w;
-	let mut follow_rows = follows::dsl::follows
-		.select((follows::dsl::follower, follows::dsl::followee))
-		.load::<(String, String)>(conn)
-		.unwrap_or_default();
-	follow_rows.sort();
-	out.follows = follow_rows;
+	out.follows = load_follows_section(conn);
 	out
 }
 
@@ -349,62 +355,61 @@ pub fn reload_follows(conn: &mut SqliteConnection, w: World) -> World {
 // by post_pid, then REVERSES each run, so a bucket matches model.rs's Post.replies, which step_ix
 // and patch_world PREPEND to (newest child first, spec Twitter.agda:401 pid : replies).
 // Buckets are collected into a HashMap keyed by the u64 post id for O(1) lookup.
-fn bucket_like_rows(rows: Vec<(i64, String)>) -> HashMap<u64, Vec<String>> {
-	// (F5) one pass over the sorted rows, collecting runs of equal post_pid.
+/// (F5) Shared run-grouping for both bucket helpers: ROWS ALREADY GROUPED so equal keys are
+/// contiguous (like rows arrive tuple-sorted; reply rows are stable-sorted by parent key first).
+/// One bucket per key run; reverse_runs = false keeps the query's row order (likes asc by user),
+/// reverse_runs = true REVERSES each run, matching model.rs Post.replies, which step_ix and
+/// patch_world PREPEND to (newest child first, spec Twitter.agda:401 pid : replies).
+fn group_key_runs<T: Clone>(rows: Vec<(i64, T)>, reverse_runs: bool) -> Vec<(i64, Vec<T>)> {
+	// (F5) one pass, collecting runs of equal keys.
 	let n = rows.len();
-	// (F5) buckets keyed by the i64 post_pid, cast to u64 when collected.
-	let mut out: Vec<(i64, Vec<String>)> = vec![];
+	let mut out: Vec<(i64, Vec<T>)> = vec![];
 	let mut i = 0;
 	while i < n {
-		// (F5) key of the run starting at i.
 		let pid = rows[i].0;
 		let mut j = i + 1;
-		// (F5) rows are sorted by key, so a mismatch ends the bucket.
+		// (F5) grouped rows, so a mismatch ends the bucket.
 		while j < n && rows[j].0 == pid {
 			j += 1;
 		}
-		// (F5) bucket keeps the row order the query gave; users clone so each Post owns its list.
-		// (F5) push the (key, bucket) pair and jump past the run.
-		out.push((pid, rows[i..j].iter().map(|row| row.1.clone()).collect()));
+		// (F5) the run keeps the order the query gave; values clone so each Post owns its list.
+		let bucket = rows[i..j].iter().map(|row| row.1.clone());
+		// (NEW) reversed run for replies: newest child first == the model's prepend order.
+		if reverse_runs {
+			out.push((pid, bucket.rev().collect()));
+		} else {
+			out.push((pid, bucket.collect()));
+		}
 		i = j;
 	}
-	// (F5) collect buckets straight into the HashMap (no per-row insert loop).
+	// (F5) buckets straight out; callers cast the key to the u64 post id.
+	out
+}
+
+// (F5) like buckets: rows arrive tuple-sorted, so each run keeps the query's order (likes asc by user).
+fn bucket_like_rows(rows: Vec<(i64, String)>) -> HashMap<u64, Vec<String>> {
+	// (F5) one run pass + key cast, collected straight into the HashMap (no per-row insert loop).
 	// (F5) key cast to u64.
-	out.into_iter()
+	// (F5) no per-row insert loop, so clippy's insert-in-loop style lint stays quiet.
+	group_key_runs(rows, false)
+		.into_iter()
 		.map(|(pid, users)| (pid as u64, users))
 		.collect()
 }
 
+// (NEW) reply buckets: rows arrive in the SELECT's rowid order (INSERT chronology), NOT tuple-sorted.
+// (NEW) A STABLE sort on the parent key groups each post's rows while keeping their chronology inside
+// (NEW) each run, so reversing one run yields the model's newest-first Post.replies (step_ix/patch_world
+// (NEW) insert(0, child)).  No ORDER BY query is emitted.
 fn bucket_reply_rows(rows: Vec<(i64, i64)>) -> HashMap<u64, Vec<u64>> {
-	// (NEW) rows arrive in the SELECT's rowid order (INSERT chronology), NOT tuple-sorted.
-	// (NEW) a STABLE sort on the parent key only groups each post's rows together while keeping
-	// (NEW) their chronology inside each run, so reversing one run yields the model's newest-first
-	// (NEW) Post.replies (step_ix/patch_world insert(0, child)). No ORDER BY query is emitted.
-	// (NEW) one stable sort + one run pass: no ORDER BY query, no per-row HashMap insert.
+	// (NEW) one stable sort + one run pass.
 	let mut chronology: Vec<(i64, i64)> = rows;
 	chronology.sort_by(|x, y| x.0.cmp(&y.0));
-	let n = chronology.len();
-	// (F5) buckets keyed by the i64 post_pid, cast later.
-	let mut out: Vec<(i64, Vec<i64>)> = vec![];
-	let mut i = 0;
-	while i < n {
-		let pid = chronology[i].0;
-		let mut j = i + 1;
-		// (F5) run of equal post_pid rows (contiguous after the stable sort).
-		while j < n && chronology[j].0 == pid {
-			j += 1;
-		}
-		// (NEW) reversed run: newest reply first == the model's prepend order.
-		out.push((
-			pid,
-			chronology[i..j].iter().rev().map(|row| row.1).collect(),
-		));
-		i = j;
-	}
-	// (F5) collect into the HashMap keyed by the u64 post id.
+	// (F5) collect buckets straight into the HashMap keyed by the u64 post id (no per-row insert loop).
 	// (F5) reply ids i64 -> u64, so Post.replies stays a Vec<u64>.
 	// (F5) no per-row insert loop, so clippy's insert-in-loop style lint stays quiet.
-	out.into_iter()
+	group_key_runs(chronology, true)
+		.into_iter()
 		.map(|(pid, kids)| (pid as u64, kids.into_iter().map(|k| k as u64).collect()))
 		.collect()
 }
@@ -416,77 +421,13 @@ fn bucket_reply_rows(rows: Vec<(i64, i64)>) -> HashMap<u64, Vec<u64>> {
 /// follows keep their cached values.  Reply buckets are rebuilt with load_world's newest-first
 /// rowid convention, so a reload never reorders Post.replies.
 pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
+	// (CLN-d2) the SAME posts-section loader load_world runs at launch: posts, newest_first
 	let mut out = w;
-	let mut post_rows = posts::dsl::posts
-		.select((
-			posts::dsl::pid,
-			posts::dsl::author,
-			posts::dsl::text,
-			posts::dsl::visibility,
-			posts::dsl::status,
-			posts::dsl::parent,
-			posts::dsl::seq,
-		))
-		.load::<(i64, String, String, i32, i32, Option<i64>, i64)>(conn)
-		.unwrap_or_default();
-	let mut like_rows = likes::dsl::likes
-		.select((likes::dsl::post_pid, likes::dsl::user))
-		.load::<(i64, String)>(conn)
-		.unwrap_or_default();
-	let reply_rows = replies::dsl::replies
-		.select((replies::dsl::post_pid, replies::dsl::reply_pid))
-		.load::<(i64, i64)>(conn)
-		.unwrap_or_default();
-	post_rows.sort();
-	like_rows.sort();
-	// (NEW) reply_rows stay UNSORTED: SELECT without ORDER BY walks the replies table in
-	// (NEW) rowid order, which is INSERT chronology for the rows that survive.
-	// (F7) The 4th full-table query (ORDER BY seq DESC pid re-scan) is gone: derive that
-	// order by stable-sorting the already-loaded post_rows (row.6 = seq, row.0 = pid);
-	// seqs are unique stamps, so ties cannot occur and the order equals the query's.
-	let mut nf_pairs: Vec<(i64, i64)> = post_rows.iter().map(|row| (row.6, row.0)).collect();
-	nf_pairs.sort_by(|x, y| y.0.cmp(&x.0));
-	let newest_first: Vec<u64> = nf_pairs.into_iter().map(|(_, pid)| pid as u64).collect();
-	// (F5) bucket the sorted row lists once, then look each post's bucket up per post.
-	// (F5) keys are the u64 post ids; each Post keeps a fresh copy of its bucket.
-	let like_map = bucket_like_rows(like_rows);
-	// (F5) reply buckets keyed the same way.
-	// (F5) both built before the Post decode loop.
-	let reply_map = bucket_reply_rows(reply_rows);
-	// (F5) decode loop now reads buckets, never the whole row list.
-	// (F5) pids iterate ascending (post_rows sorted), buckets keyed by pid.
-	let posts_map: Vec<(u64, Post)> = post_rows
-		.into_iter()
-		.map(|(pid, author, text, vis, code, parent, _seq)| {
-			(
-				pid as u64,
-				Post {
-					author,
-					text,
-					visibility: dec_vis(vis),
-					status: dec_status(code),
-					// (F5) O(1) bucket lookup replaces the full-row-list filter;
-					// (F5) get borrows the bucket, so elements are copied into this Post.
-					// (F5) None (no likes) falls back to an empty list.
-					likes: like_map
-						.get(&(pid as u64))
-						.map(|users| users.iter().map(|user| user.clone()).collect())
-						.unwrap_or_default(),
-					// (F5) same for the reply buckets (u64 ids are copied).
-					// (F5) deref gives the u64 id.
-					// (F5) None means the post has no replies.
-					replies: reply_map
-						.get(&(pid as u64))
-						.map(|v| v.clone())
-						.unwrap_or_default(),
-					parent: parent.map(|p| p as u64),
-				},
-			)
-		})
-		.collect();
-	out.used_post_ids = posts_map.iter().map(|row| row.0).collect();
+	// (CLN-d2) and used_post_ids move together; accounts/sessions/follows stay cached.
+	let (posts_map, newest_first, used_post_ids) = load_posts_section(conn);
 	out.posts = posts_map;
 	out.newest_first = newest_first;
+	out.used_post_ids = used_post_ids;
 	out
 }
 
