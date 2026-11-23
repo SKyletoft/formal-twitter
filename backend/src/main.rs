@@ -514,7 +514,7 @@ pub fn raw_text(w: &World) -> String {
 /// connection, rotating follows -> sessions -> accounts -> posts by tick: RAM is refreshed
 /// periodically, never all at once, and load_world runs only at launch (as does the one
 /// max(seq) scan behind Server.max_seq, so apply() gets its stamp hint from RAM).  The lock is
-/// poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable
+/// poison-tolerant: the guarded region keeps its invariants (move-swap + step + recoverable
 /// DB errors), so a poisoned guard still holds a valid Server.
 pub fn serve_command(
 	command: Command,
@@ -530,8 +530,15 @@ pub fn serve_command(
 	// (ST) one epoch stamp per request: every request is logged at BOTH exits below, and the
 	// committed flag distinguishes the rollbacks from the committed answers.
 	let ts: u64 = now_secs();
-	// A private copy of the world so step and apply see before/after values.
-	let before: World = locked.world.clone();
+	// (OPT-1) the (F9) swap-out idiom applied to the World: `before` MOVES out of the Server and
+	// (OPT-1) empty_world() (the Agda-pinned identity) is the placeholder left in its stead, so a
+	// (OPT-1) request costs ZERO World deep-copies.  Every exit below hands `before` back into
+	// (OPT-1) locked.world (directly or through a reload that consumes it), undoing the swap.
+	// (OPT-1) A panic between the swap and a restore leaves the placeholder, exactly as a panic
+	// (OPT-1) between the conn swap and a store-back leaves Server.conn = None: the DB stays the
+	// (OPT-1) source of truth, and the next request's reopen/reload re-syncs RAM.
+	let mut before: World = empty_world();
+	std::mem::swap(&mut locked.world, &mut before);
 	// The spec fresh-id sampler, run under the lock: ONE 16-byte read yields both ids and the
 	// world is read by reference, so neither per-request World clone survives.
 	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
@@ -539,8 +546,8 @@ pub fn serve_command(
 	let command_txt: String = format!("{:?}", command);
 	// (F4b) evaluate through the held side-index: zero index rebuilds per request.
 	// (F1b) effect-only step: step_d returns (Result, Delta) and patch_world rebuilds the after
-	// World, so no World is cloned inside the model; the before clone below stays because step_d,
-	// patch_world, apply_delta and the failure arms still need it (the move-swap is future work).
+	// World, so no World is cloned inside the model; (OPT-1) step_d, apply_delta and the failure
+	// arms read `before` by reference or move, so it never gets copied per request.
 	let stepped: (Result, Delta) = step_d(&before, &locked.index, command, fresh_pid, fresh_sid);
 	let result: Result = stepped.0;
 	let delta: Delta = stepped.1;
@@ -549,10 +556,10 @@ pub fn serve_command(
 		Delta::Publish(..) => 1,
 		_ => 0,
 	};
-	// one World copy per request: before.clone() plus the Delta payload.
-	// (F2) delta copied: apply_delta takes the payload by value below, so patch_world keeps
-	// (F2) its own copy.
-	let after: World = patch_world(before.clone(), delta.clone());
+	// (OPT-1) NO World copy on this path at all: `after` is built INSIDE the committed arm below,
+	// (OPT-1) once apply_delta has borrowed `before` and can hand it over by move.  Delta still
+	// (OPT-1) has two consumers (apply_delta below and patch_world in the committed arm), so the
+	// (OPT-1) single Delta payload copy stays - it is the small side, never a World.
 	// COMMIT FIRST: (F9) the connection HELD in Server answers every request - no reopen and
 	// no db_path String copy on the happy path.  RAM-sampled ids can collide; apply PK failure
 	// rolls back and reports false.
@@ -571,8 +578,15 @@ pub fn serve_command(
 		// (F3) max_seq stays as it is: no batch ran, so OUR writer moved no stamp.
 		// (F9) reopen happens ONLY here: launch lost the connection somehow.
 		None => match reopen(locked.db_path.clone()) {
-			Err(_) => false,
+			Err(_) => {
+				// (OPT-1) restore arm: nothing reopened, so `before` MOVES back into the Server,
+				// (OPT-1) undoing the swap-out above (the DB view never existed on this exit).
+				std::mem::swap(&mut locked.world, &mut before);
+				false
+			}
 			Ok(mut fresh_conn) => {
+				// (OPT-1) restore arm: `before` MOVES into the reload and the re-synced World lands
+				// (OPT-1) back in the Server, so the swap-out above is undone on this exit.
 				locked.world = reload_all_sections(&mut fresh_conn, before);
 				// (F4b) reload site: re-sync the side-index with the reassigned world.
 				locked.index = build_index(&locked.world);
@@ -589,11 +603,16 @@ pub fn serve_command(
 		// (F3) posts table for it.
 		{
 			// (F2) delta-driven commit: one batch per Command effect, no two-World diff.
-			if apply_delta(&mut conn, &before, delta, locked.max_seq) {
+			// (OPT-1) the Delta is copied HERE so the original moves into patch_world below.
+			if apply_delta(&mut conn, &before, delta.clone(), locked.max_seq) {
 				// (F3) Committed: apply() stamped exactly new_posts new posts at max_seq + 1
 				// (F3) .. max_seq + k, so the cache hint advances by k and stays exact for the
 				// (F3) next request (the failure arms above leave it put).
 				locked.max_seq += new_posts;
+				// (OPT-1) patch_world(before, delta) MOVES `before`: apply_delta borrowed it just
+				// (OPT-1) above, so the Server's World is rebuilt from the local copy with zero
+				// (OPT-1) World clones, and the swap-out is consumed on this committed path.
+				let after: World = patch_world(before, delta);
 				// Committed: advance the cache AND rotate ONE section through the SAME held
 				// connection (F9: this connection was established at launch, not per request);
 				// after the commit so the fresh writes stay visible.  after is moved, so the
@@ -618,6 +637,8 @@ pub fn serve_command(
 				// one conn (and by test_apply_conn_reuse below).
 				// (F3) max_seq stays as it is: the ROLLBACK restored every stamp, so OUR writer
 				// (F3) changed nothing in the DB and the hint is still exact.
+				// (OPT-1) restore arm: `before` MOVES into the reload and the re-synced World lands
+				// (OPT-1) back in the Server, so the swap-out above is undone on this exit.
 				locked.world = reload_all_sections(&mut conn, before);
 				// (F4b) reload site: re-sync the side-index after the rolled-back re-sync.
 				locked.index = build_index(&locked.world);
