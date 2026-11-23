@@ -4,13 +4,14 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] LOG1b (impl) tests: NEW bin test test_log_entry_capture — local Mutex<Server> over fresh /tmp DB, two serve_command calls (reopen arm committed=false, then committed=true), pins: request_line byte-exact, body verbatim incl token plaintext, command_txt contains Register, RESULT text; + smoke test_raw_and_log pins BODY["erin\r\npw"] + request line. Gates.
-- [ ] CLN research wave: 4 research agents one per rust file (model.rs, wire.rs, db.rs, main.rs) — report-only findings.
-- [ ] CLN impl wave: per-file small impl tasks applying accepted findings.
-- [ ] BENCH (research): design realistic perf benchmarks — NO new deps.
-- [ ] OPT (impl): benchmark-guided hot-path optimisation.
+- [ ] CLN research wave LAUNCHED (background, awaiting results): 5 research agents — model.rs/wire.rs/db.rs/main.rs+lib.rs/smoke.rs audits (call ids call_5cce.., call_ea52.., call_5465.., call_f10e.., call_c57d..). Results -> CLN impl wave tasks (small, per finding-cluster, gated, one per file).
+- [ ] BENCH research LAUNCHED (background call_e5c0..): realistic benchmark design (std-timed, no new deps) + hot-spot ranking -> feeds OPT wave.
+- [ ] CLN impl wave: apply accepted findings per file, small gated tasks.
+- [ ] OPT (impl): benchmark-guided hot-path optimisation after BENCH report lands.
 
 ## Done (history, condensed; details in git log)
+- [x] LOG1b (9759ca0): test_log_entry_capture (reopen-arm false -> commit-arm true, verbatim body/token pins) + smoke BODY["erin\r\npw"] + /api/signup pins; 20 bin tests. NOTE: smoke test_new_actions_roundtrip flaky ~0.5s wait_gone slack vs 20s spawn timeout (pre-existing, untouched) — candidate FIX in CLN wave.
+- [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line BODY[..] CMD[..] RES[..] COMMITTED[..] render; naming table test-only; smoke green unchanged. Gates 69+19+9.
 - [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line rendering w/ BODY[..] CMD[..] RES[..] COMMITTED[..]; naming table demoted test-only; smoke green UNCHANGED (IMF date front, names inside request line). Gates 69+19+9.
 - [x] RAW1 (069a045): /raw raw plaintext {:#?} — <pre> wrap dropped, pretty-print pins re-targeted (lib test_raw_text_shape + smoke test_raw_and_log); ImplProofs ST2 prose comment-only. Gates 69+19+9, clippy/agda/fmt 0.
 
