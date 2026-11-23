@@ -6,11 +6,6 @@
 //! Content-Length itself. Everything else (order, spelling, body bytes) is exact.
 use crate::model::Command;
 
-/// Hex nibbles for the \\u00XY escapes in escape_json.
-const HEX: [char; 16] = [
-	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-];
-
 /// Parse errors: unknown path, wrong line count, non-numeric line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WireError {
@@ -70,37 +65,55 @@ fn parse_u64(s: &str) -> Option<u64> {
 }
 
 /// Decode one line of the body; empty string when the bytes are not UTF-8.
-fn line_text(bytes: Vec<u8>) -> String {
+fn line_text(bytes: &[u8]) -> String {
 	// non-UTF-8 bytes decode to the empty string
-	String::from_utf8(bytes).unwrap_or_default()
+	// the copy spans one request line at most
+	String::from_utf8(bytes.to_vec()).unwrap_or_default()
 }
 
 /// Split a body on CRLF, LF or bare CR; drop exactly one trailing empty line.
 fn split_lines(body: &[u8]) -> Vec<String> {
-	let mut lines: Vec<String> = vec![];
-	let mut current: Vec<u8> = vec![];
-	let mut i = 0;
-	while i < body.len() {
-		let c = body[i];
-		if c == 13 {
-			lines.push(line_text(current));
-			current = vec![];
-			if i + 1 < body.len() && body[i + 1] == 10 {
-				i += 2;
-			} else {
-				i += 1;
-			}
-		} else if c == 10 {
-			lines.push(line_text(current));
-			current = vec![];
-			i += 1;
-		} else {
-			current.push(c);
-			i += 1;
+	// split the body on CR into segments, strip the LF that a CR is followed
+	// by (it ends the separator), then split every segment on LF: no per-line
+	// look-ahead and no byte-by-byte accumulator
+	// each CR ends a segment; the LF of a CRLF is the head of the next segment
+	let mut segments: Vec<&[u8]> = vec![];
+	// first byte of the segment currently scanned
+	let mut seg_start: usize = 0;
+	// one pass over the body collecting the CR positions
+	for (cr_idx, byte) in body.iter().enumerate() {
+		// 13 is CR: the bytes before it end a segment
+		if *byte == 13 {
+			segments.push(&body[seg_start..cr_idx]);
+			seg_start = cr_idx + 1;
 		}
 	}
-	lines.push(line_text(current));
-	// drop exactly one trailing empty line; the vec always has one here, guard anyway
+	// the bytes after the last CR
+	segments.push(&body[seg_start..]);
+	// strip one leading LF from every segment after the first: that LF is the
+	// second byte of a CRLF, not part of a line
+	let mut seg_idx: usize = 1;
+	while seg_idx < segments.len() {
+		let head: &[u8] = segments[seg_idx];
+		if !head.is_empty() && head[0] == 10 {
+			segments[seg_idx] = &head[1..];
+		}
+		seg_idx += 1;
+	}
+	// split each segment on LF and decode
+	let mut lines: Vec<String> = Vec::with_capacity(segments.len());
+	for seg in segments {
+		let mut line_start: usize = 0;
+		for (lf_idx, byte) in seg.iter().enumerate() {
+			if *byte == 10 {
+				lines.push(line_text(&seg[line_start..lf_idx]));
+				line_start = lf_idx + 1;
+			}
+		}
+		lines.push(line_text(&seg[line_start..]));
+	}
+	// drop exactly one trailing empty line; the vec always has one here,
+	// guard anyway
 	if lines.last().map(|l| l.is_empty()).unwrap_or(false) {
 		lines.pop();
 	}
@@ -248,12 +261,9 @@ fn escape_json(s: String) -> String {
 			out.push('t');
 		} else if c < ' ' {
 			let code = c as u32;
-			out.push('\\');
-			out.push('u');
-			out.push('0');
-			out.push('0');
-			out.push(HEX[(code / 16) as usize]);
-			out.push(HEX[(code % 16) as usize]);
+			// backslash-u then four lowercase hex digits: same bytes as the manual
+			// nibble pushes, but one format call instead of five pushes
+			out.push_str(&format!("\\u{:04x}", code));
 		} else {
 			out.push(c);
 		}
@@ -277,6 +287,14 @@ fn show_tweets(xs: Vec<u64>) -> String {
 	}
 	out
 }
+
+/// Header names and values reused by every response: module-level so the
+/// same bytes are emitted without retyping the literals.
+const DATE_HDR: &str = "Date";
+const CACHE_CONTROL_HDR: &str = "Cache-Control";
+const NO_STORE_VAL: &str = "no-store";
+const CONTENT_TYPE_HDR: &str = "Content-Type";
+const JSON_VAL: &str = "application/json";
 
 /// Render one of the 9 responses. The status line and Content-Length are
 /// left to rocket; Date is always first, Cache-Control second (only for the
@@ -309,12 +327,12 @@ pub fn respond(r: ApiResponse, date: String) -> WireResponse {
 			),
 		),
 	};
-	let mut headers: Vec<(String, String)> = vec![("Date".to_string(), date)];
+	let mut headers: Vec<(String, String)> = vec![(DATE_HDR.to_string(), date)];
 	if cached {
-		headers.push(("Cache-Control".to_string(), "no-store".to_string()));
+		headers.push((CACHE_CONTROL_HDR.to_string(), NO_STORE_VAL.to_string()));
 	}
 	if !body.is_empty() {
-		headers.push(("Content-Type".to_string(), "application/json".to_string()));
+		headers.push((CONTENT_TYPE_HDR.to_string(), JSON_VAL.to_string()));
 	}
 	WireResponse {
 		status_code: code,
