@@ -614,13 +614,8 @@ th-sample-id-fresh w =
 -- (ST) ST2 (the /raw dump and the /log request log) likewise adds no new Agda: the raw {:#?}
 -- (ST) rendering of the World in Rust (RAW1: plaintext, no markup) is spec-free, and the /log naming
 -- (ST) table is the ImplWire wi-* from-input pins composed with the request names Interface:to-request
--- (ST) puts in the POST line -
--- (ST) whose path segment is unreachable here because unlines-crlf is a postulate (Interface.agda:14).
--- (ST) from-input pins composed with the request names Interface:to-request puts in the POST line -
--- (ST) whose path segment is unreachable here because unlines-crlf is a postulate (Interface.agda:14).
--- (ST) The Rust guards are test_raw_text_shape + test_log_line_naming (main.rs) and the network
--- (ST) check test_raw_and_log (smoke.rs); publish/post-reply share the model's Publish, and
--- (ST) TimePasses is the spec's silent tick, named in the log for exhaustiveness only.
+-- (ST) puts in the POST line - LOG1a: /log lines now carry the real method+path request line and the
+-- (ST) raw body, so command_to_logline survives only as the test-only naming table test_log_line_naming.
 --------------------------------------------------------------------------------
 -- A) DELTA BRIDGE (RV4: every orphan spec-level Rust test gets a proof SIGNATURE).
 -- backend/src/model.rs:enum Delta (144), patch_world (1130), step_d (967) and backend/src

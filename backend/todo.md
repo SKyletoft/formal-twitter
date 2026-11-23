@@ -4,14 +4,16 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] RAW1 (impl) main.rs: /raw — DROP <pre> wrap (already rawtext), pretty-print World {:#?} not {:?}; retarget test_raw_text_shape + smoke test_raw_and_log pins. Subagent: general, main.rs only.
-- [ ] LOG1 (impl) main.rs: /log un-redacted — EVERY line carries epoch ts + method+path + RAW request body (tokens/plaintext verbatim) + parsed Command + Result; drop endpoint-name-only logline. Retarget test_log_line_naming + smoke pins. Subagent: general, main.rs only.
-- [ ] CLN research wave: 4 research agents, one per rust file (model.rs, wire.rs, db.rs, main.rs) — redundant/unused code, merge candidates, library-replaceable code, const-vs-let. Report-only, file:line refs, compact.
-- [ ] CLN impl wave: per-file small impl tasks applying accepted findings (sequential, gates per task: fmt/build/clippy/test/agda).
-- [ ] BENCH (research): design realistic perf benchmarks — NO new deps (subagents forbidden to touch Cargo.toml; lesson RV5-4); std-timed bench harness or bench bin target. Deliver design + numbers.
-- [ ] OPT (impl): benchmark-guided hot-path optimisation, small per-site tasks, gates as usual.
+- [ ] LOG1a (impl) main.rs: plumbing — LogEntry{ts,request_line,body,command,result,committed} + push_log + Server.log:Vec<LogEntry> + serve_command(+request_line,body) pushes at BOTH exits (committed flag) + serve()/serve_alias() build request_line & move body + parse-failure branch logs + /log rendering un-redacted one-liner (http_date + request_line + BODY[..] CMD[..] RES[..] COMMITTED[..]) + all unit-test serve_command call sites arity-fixed. command_to_logline KEPT test-only. Gates per-edit cargo build; final fmt/clippy/test green.
+- [ ] LOG1b (impl) tests: retarget test_log_line_naming coexisting with NEW test_log_entry_capture (verbatim body/tokens/command-Debug/committed pins) + smoke test_raw_and_log body-plaintext pins. Gates.
+- [ ] CLN research wave: 4 research agents one per rust file (model.rs, wire.rs, db.rs, main.rs) — report-only findings.
+- [ ] CLN impl wave: per-file small impl tasks applying accepted findings.
+- [ ] BENCH (research): design realistic perf benchmarks — NO new deps.
+- [ ] OPT (impl): benchmark-guided hot-path optimisation.
 
 ## Done (history, condensed; details in git log)
+- [x] LOG1 attempt 1 REJECTED: subagent died mid-run emitting pseudo-tool-call; left partial main.rs (build RC 101) — coordinator reverted via edit-tool (git checkout DENIED by sandbox). Lesson: subagents MUST run cargo build after EVERY edit; split impl tasks <=40 diff lines each.
+- [x] RAW1 (069a045): /raw raw plaintext {:#?} — <pre> wrap dropped, pretty-print pins re-targeted (lib test_raw_text_shape + smoke test_raw_and_log); ImplProofs ST2 prose comment-only. Gates 69+19+9, clippy/agda/fmt 0.
 
 ## Done (history, condensed; details in git log)
 - [x] RV5-4 (255267f, retry): UNLIKE ok/denied + unfollow (set-semantics, idempotent absent pair) + follow-gates-timeline (like ok + personal-timeline membership) + timeline-excludes-deleted (live/readable/prefix strengthens prop_timeline_valid) + th-prop-unlike-ok/denied/unfollow/follow-gate/timeline-excludes (proved contra-Bool absurd helper, NO postulates, ∈-filterᵇ-keep impossible branch fixed via contra-Bool not ⊥-elim metas). ATTEMPT 1 REJECTED — variantly 0.4.0 dependency contamination + dead subagent: reverted Cargo.toml/lock, deleted scripts/runqc.sh, rewrote derive + as_unlike/as_unfollow plain-style. Lesson: subagents forbidden from adding deps; VERIFY manifest after any general task.

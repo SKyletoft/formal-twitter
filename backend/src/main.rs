@@ -289,6 +289,30 @@ pub fn read_frontend(name: &str) -> Option<String> {
 /// so the log's footprint never grows with the request count.
 pub const LOG_CAP: usize = 1_000;
 
+/// (ST) one /log entry, fully un-redacted per user instruction: the raw request line, the
+/// verbatim request body (session tokens and passwords stay plaintext inside the Debug quotes
+/// of the rendered line), the parsed Command and the step Result as Debug text, and whether
+/// the DB commit succeeded.
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+	pub ts_secs: u64,
+	pub request_line: String,
+	pub body: String,
+	pub command: String,
+	pub result: String,
+	pub committed: bool,
+}
+
+/// (ST) append one /log entry and keep the log flat: push, then evict the oldest front entry
+/// while over cap, so the footprint never grows with the request count.
+pub fn push_log(log: &mut Vec<LogEntry>, entry: LogEntry) {
+	log.push(entry);
+	// RAM debug only, not spec data: keep the newest LOG_CAP entries, evicting the front.
+	if log.len() > LOG_CAP {
+		log.remove(0);
+	}
+}
+
 pub struct Server {
 	pub world: World,
 	pub db_path: String,
@@ -301,11 +325,12 @@ pub struct Server {
 	/// Side-index over the world; rebuilt only at reload sites (launch and the three reload arms),
 	/// so step_ix probes are O(1) per request.
 	pub index: WorldIndex,
-	/// (ST) the /log request log: (epoch secs from now_secs, endpoint name from command_to_logline)
-	/// per serve_command call, oldest first.  RAM debug only, NOT spec data: nothing is served from
-	/// it, no DB row mirrors it and a restart starts it empty, so it never feeds the model.  Capped
-	/// at LOG_CAP by evicting the front.
-	pub log: Vec<(u64, String)>,
+	/// (ST) the /log request log: one fully un-redacted LogEntry per request (epoch secs, the raw
+	/// request line, the raw body verbatim - tokens and passwords in plaintext - the Command and
+	/// Result Debug texts, and the commit flag), oldest first.  RAM debug only, NOT spec data:
+	/// nothing is served from it, no DB row mirrors it and a restart starts it empty, so it never
+	/// feeds the model.  Capped at LOG_CAP by evicting the front.
+	pub log: Vec<LogEntry>,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -406,22 +431,44 @@ impl<'r> Responder<'r, 'static> for Served {
 /// guarded region keeps its invariants (clone + step + recoverable DB errors), so a
 /// poisoned guard still holds a valid Server.
 pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Served {
+	// (ST) the request line, built ONCE here so every /log exit below names the request verbatim.
+	let request_line: String = "POST ".to_string() + &path + " HTTP/1.1";
 	// Parse first so malformed bodies never touch the world.
 	let command: Command = match parse_action(path.as_str(), body.value.as_bytes()) {
 		Err(e) => {
+			// (ST) a parse failure is logged too (un-redacted, committed stays false): the request
+			// never reaches the world, so the DB stays untouched.
+			{
+				let mut locked = match state.lock() {
+					Ok(guard) => guard,
+					Err(poisoned) => poisoned.into_inner(),
+				};
+				push_log(
+					&mut locked.log,
+					LogEntry {
+						ts_secs: now_secs(),
+						request_line,
+						body: body.value,
+						command: "parse-failure".to_string(),
+						result: "access_denied".to_string(),
+						committed: false,
+					},
+				);
+			}
 			return Served {
 				response: to_http(wire_error(e)),
 			};
 		}
 		Ok(action) => to_command(action),
 	};
-	serve_command(command, state)
+	serve_command(command, request_line, body.value, state)
 }
 
 /// (ST) the /log endpoint name of a Command: the request-line name the spec's Interface uses for
 /// the route that produced it, so a log line reads like "post-tweet".  Publish serves both /api/post-tweet
 /// and /api/post-reply, whose model Command is the same Publish, so both land under post-tweet;
-/// TimePasses is not wire-reachable and is named for completeness.
+/// TimePasses is not wire-reachable and is named for completeness.  (ST) Since the LOG1 change
+/// this naming table is test-only: /log lines carry the real request line instead.
 pub fn command_to_logline(c: &Command) -> String {
 	match c {
 		// both /api/post-tweet and /api/post-reply share the model's Publish
@@ -469,26 +516,27 @@ pub fn raw_text(w: &World) -> String {
 /// max(seq) scan behind Server.max_seq, so apply() gets its stamp hint from RAM).  The lock is
 /// poison-tolerant: the guarded region keeps its invariants (clone + step + recoverable
 /// DB errors), so a poisoned guard still holds a valid Server.
-pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
+pub fn serve_command(
+	command: Command,
+	request_line: String,
+	body: String,
+	state: &Mutex<Server>,
+) -> Served {
 	// Poison-tolerant lock: the Err carries a PoisonError whose guard we recover.
 	let mut locked = match state.lock() {
 		Ok(guard) => guard,
 		Err(poisoned) => poisoned.into_inner(),
 	};
-	// (ST) the /log debug line, first so every serve_command call is logged even when its commit
-	// rolls back: the same epoch clock the Date headers read plus the endpoint name.  The GET
-	// aliases come through here too, so they log for free; the 3 static frontend routes never do.
-	locked.log.push((now_secs(), command_to_logline(&command)));
-	// RAM debug only, not spec data: keep the newest LOG_CAP lines, evicting the oldest from the
-	// front (at most LOG_CAP moves of a small pair, so the footprint stays flat).
-	if locked.log.len() > LOG_CAP {
-		locked.log.remove(0);
-	}
+	// (ST) one epoch stamp per request: every request is logged at BOTH exits below, and the
+	// committed flag distinguishes the rollbacks from the committed answers.
+	let ts: u64 = now_secs();
 	// A private copy of the world so step and apply see before/after values.
 	let before: World = locked.world.clone();
 	// The spec fresh-id sampler, run under the lock: ONE 16-byte read yields both ids and the
 	// world is read by reference, so neither per-request World clone survives.
 	let (fresh_pid, fresh_sid): (u64, u64) = sample_id(&before);
+	// (ST) the Command's Debug text, taken BEFORE command moves into step_d.
+	let command_txt: String = format!("{:?}", command);
 	// (F4b) evaluate through the held side-index: zero index rebuilds per request.
 	// (F1b) effect-only step: step_d returns (Result, Delta) and patch_world rebuilds the after
 	// World, so no World is cloned inside the model; the before clone below stays because step_d,
@@ -583,13 +631,37 @@ pub fn serve_command(command: Command, state: &Mutex<Server>) -> Served {
 	if !committed {
 		// Nothing was committed, so no data may be served: the same 403 access_denied shape
 		// as a parse failure (wire_error discards its argument).
+		push_log(
+			&mut locked.log,
+			LogEntry {
+				ts_secs: ts,
+				request_line,
+				body,
+				command: command_txt,
+				result: format!("{:?}", result),
+				committed: false,
+			},
+		);
 		return Served {
 			response: to_http(wire_error(WireError::UnknownEndpoint)),
 		};
 	}
 	// Only reachable after a successful commit, so every served byte is DB-backed.
-	Served {
-		response: to_http(respond(to_output(result), http_date())),
+	{
+		push_log(
+			&mut locked.log,
+			LogEntry {
+				ts_secs: ts,
+				request_line,
+				body,
+				command: command_txt,
+				result: format!("{:?}", result),
+				committed: true,
+			},
+		);
+		Served {
+			response: to_http(respond(to_output(result), http_date())),
+		}
 	}
 }
 
@@ -739,6 +811,12 @@ pub fn serve_alias(
 		query_param(query, "token".to_string()),
 		query_param(query, value_name),
 	);
+	// (ST) the request line as it arrived: the query part only when the Origin carried one.
+	let query_part: String = match query.is_empty() {
+		true => "".to_string(),
+		false => "?".to_string() + query,
+	};
+	let request_line: String = "GET ".to_string() + &path + &query_part + " HTTP/1.1";
 	let command: Command = match parse_action(path.as_str(), body.as_bytes()) {
 		Err(e) => {
 			// Malformed or missing numbers render as the same 403 access_denied shape
@@ -746,6 +824,24 @@ pub fn serve_alias(
 			// (the request never reaches the world, so the DB stays untouched)
 			// (identical bytes to a POST parse failure, header for header)
 			// (404 and 422 can never surface for an alias request)
+			// (ST) logged un-redacted with the raw body, before the early return
+			{
+				let mut locked = match state.lock() {
+					Ok(guard) => guard,
+					Err(poisoned) => poisoned.into_inner(),
+				};
+				push_log(
+					&mut locked.log,
+					LogEntry {
+						ts_secs: now_secs(),
+						request_line,
+						body,
+						command: "parse-failure".to_string(),
+						result: "access_denied".to_string(),
+						committed: false,
+					},
+				);
+			}
 			return Served {
 				// (the answer is rendered by the very same to_http every POST route uses)
 				response: to_http(wire_error(e)),
@@ -753,7 +849,7 @@ pub fn serve_alias(
 		}
 		Ok(action) => to_command(action),
 	};
-	serve_command(command, state)
+	serve_command(command, request_line, body, state)
 }
 
 /// GET /api/get-tweet: the legacy frontend's query-parameter twin of the POST route.
@@ -866,7 +962,9 @@ fn raw(state: &State<Mutex<Server>>) -> Served {
 	}
 }
 
-/// GET /log: every request serve_command saw, IMF-timestamped (ST).  RAM debug only, never
+/// GET /log: every request serve_command saw, one FULLY UN-REDACTED line per request (ST):
+/// IMF timestamp, the raw request line, the verbatim BODY (Debug-quoted, tokens and passwords in
+/// plaintext), the Command and Result Debug texts and the commit flag.  RAM debug only, never
 /// spec data: a restart re-opens the DB but starts the log empty, so nothing is served from
 /// the database here.
 #[get("/log")]
@@ -877,11 +975,20 @@ fn request_log(state: &State<Mutex<Server>>) -> Served {
 		Err(poisoned) => poisoned.into_inner(),
 	};
 	// (one line per entry: the stored epoch secs through the very calendar walk a Date header
-	// (uses, so a log timestamp never disagrees with a response header, then the endpoint name
-	// (CRLF-terminated; the 3 static routes never log, so the site's own traffic stays out)
+	// (uses, so a log timestamp never disagrees with a response header, then the raw request line
+	// (and the verbatim body, the Command/Result Debug texts and the commit flag (CRLF-terminated;
+	// (the 3 static routes never log, so the site's own traffic stays out)
 	let mut lines: Vec<String> = vec![];
-	for (secs, name) in &locked.log {
-		lines.push(format!("{} {}\r\n", http_date_from(*secs), name));
+	for entry in &locked.log {
+		lines.push(format!(
+			"{} {} BODY[{:?}] CMD[{}] RES[{}] COMMITTED[{}]\r\n",
+			http_date_from(entry.ts_secs),
+			entry.request_line,
+			entry.body,
+			entry.command,
+			entry.result,
+			entry.committed,
+		));
 	}
 	Served {
 		response: serve_text(lines.join(""), "text/plain".to_string()),
@@ -1598,7 +1705,8 @@ fn test_raw_text_shape() {
 /// route that produced it, i.e. command_to_logline after to_command is the request name the
 /// spec's Interface puts in the POST line.  Pinned by the 15 ImplWire.agda theorems read through
 /// from-input; Publish answers BOTH /api/post-tweet and /api/post-reply, whose model Command is
-/// the same Publish, and TimePasses is the spec's silent tick no route reaches.
+/// the same Publish, and TimePasses is the spec's silent tick no route reaches.  (ST) The naming
+/// table is now test-only: /log lines carry the real request line instead of these names.
 #[test]
 fn test_log_line_naming() {
 	assert_eq!(
