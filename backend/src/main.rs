@@ -41,6 +41,7 @@ use rocket::response::Responder;
 use rocket::routes;
 use std::io::Cursor;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Two-digit decimal, zero-padded (as the IMF-date needs dd, HH, mm, ss).
@@ -214,7 +215,7 @@ pub fn frontend_dir_name(raw: &str) -> String {
 	let dots: bool = raw.contains("..") || raw.starts_with(".");
 	if raw.is_empty() || sep || dots {
 		// refused outright: the shipped site answers instead, nothing resolved, nothing read.
-		return "frontend".to_string();
+		return LOG_FRONTEND_DEFAULT.to_string();
 	}
 	// the kept name passes through verbatim; env hands us a String, so one copy answers.
 	raw.to_string()
@@ -288,6 +289,16 @@ pub fn read_frontend(name: &str) -> Option<String> {
 /// (ST) how many /log lines the RAM debug log keeps: older lines are evicted from the front,
 /// so the log's footprint never grows with the request count.
 pub const LOG_CAP: usize = 1_000;
+/// (ST) byte-exact pieces feeding the /log request lines and fields (pins in the smoke tests
+/// and test_log_entry_capture read these very values through the served lines).
+pub const LOG_POST_PREFIX: &str = "POST ";
+pub const LOG_HTTP_SUFFIX: &str = " HTTP/1.1";
+pub const LOG_PARSE_FAILURE: &str = "parse-failure";
+pub const LOG_ACCESS_DENIED: &str = "access_denied";
+pub const LOG_DB_DEFAULT: &str = "twitter.db";
+pub const LOG_FRONTEND_DEFAULT: &str = "frontend";
+/// (ST) the CRLF line ending alias_body folds between the token and value lines.
+pub const ALIAS_LINE_END: &str = "\r\n";
 
 /// (ST) one /log entry, fully un-redacted per user instruction: the raw request line, the
 /// verbatim request body (session tokens and passwords stay plaintext inside the Debug quotes
@@ -311,6 +322,33 @@ pub fn push_log(log: &mut Vec<LogEntry>, entry: LogEntry) {
 	if log.len() > LOG_CAP {
 		log.remove(0);
 	}
+}
+
+/// (ST) the one poison-tolerant lock every handler shares: the Err carries a PoisonError
+/// whose guard we recover, and the guarded region keeps its invariants, so a poisoned
+/// mutex still hands back a valid Server.
+pub fn lock_server(state: &Mutex<Server>) -> MutexGuard<'_, Server> {
+	match state.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	}
+}
+
+/// (ST) the parse-failure log line shared by serve and serve_alias: byte-identical on
+/// both transports — lock, then one un-redacted entry, committed stays false.
+pub fn log_parse_failure(state: &Mutex<Server>, request_line: String, body: String) {
+	let mut locked = lock_server(state);
+	push_log(
+		&mut locked.log,
+		LogEntry {
+			ts_secs: now_secs(),
+			request_line,
+			body,
+			command: LOG_PARSE_FAILURE.to_string(),
+			result: LOG_ACCESS_DENIED.to_string(),
+			committed: false,
+		},
+	);
 }
 
 pub struct Server {
@@ -419,42 +457,18 @@ impl<'r> Responder<'r, 'static> for Served {
 }
 
 /// The one handler behind all 13 POST routes: parse, then hand the command to the
-/// shared serve_command core.
-/// Enforces the AGENTS.md database rules (DB2 audit V1/V2/V3/V5/V7): the database is
-/// the source of truth, not RAM.  The world cache advances ONLY after apply reports the
-/// BEGIN/COMMIT transaction committed; a failed reopen or a rolled-back apply (PK clashes
-/// on RAM-sampled ids included) serves NO data and answers the 403 access_denied shape,
-/// so nothing can be served that is not committed in the DB.  After every commit exactly
-/// ONE cache section is thrown out and re-queried from the same connection, rotating
-/// follows -> sessions -> accounts -> posts by tick: RAM is refreshed periodically, never
-/// all at once, and load_world runs only at launch.  The lock is poison-tolerant: the
-/// guarded region keeps its invariants (clone + step + recoverable DB errors), so a
-/// poisoned guard still holds a valid Server.
+/// shared serve_command core.  The database discipline it enforces (DB2 audit V1/V2/V3/V5/V7:
+/// DB is the source of truth, the cache advances only after COMMIT, one rotating section
+/// re-queried per commit, poison-tolerant lock) is documented ONCE on serve_command.
 pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Served {
 	// (ST) the request line, built ONCE here so every /log exit below names the request verbatim.
-	let request_line: String = "POST ".to_string() + &path + " HTTP/1.1";
+	let request_line: String = LOG_POST_PREFIX.to_string() + &path + LOG_HTTP_SUFFIX;
 	// Parse first so malformed bodies never touch the world.
 	let command: Command = match parse_action(path.as_str(), body.value.as_bytes()) {
 		Err(e) => {
 			// (ST) a parse failure is logged too (un-redacted, committed stays false): the request
 			// never reaches the world, so the DB stays untouched.
-			{
-				let mut locked = match state.lock() {
-					Ok(guard) => guard,
-					Err(poisoned) => poisoned.into_inner(),
-				};
-				push_log(
-					&mut locked.log,
-					LogEntry {
-						ts_secs: now_secs(),
-						request_line,
-						body: body.value,
-						command: "parse-failure".to_string(),
-						result: "access_denied".to_string(),
-						committed: false,
-					},
-				);
-			}
+			log_parse_failure(state, request_line, body.value);
 			return Served {
 				response: to_http(wire_error(e)),
 			};
@@ -469,6 +483,7 @@ pub fn serve(path: String, body: Capped<String>, state: &Mutex<Server>) -> Serve
 /// and /api/post-reply, whose model Command is the same Publish, so both land under post-tweet;
 /// TimePasses is not wire-reachable and is named for completeness.  (ST) Since the LOG1 change
 /// this naming table is test-only: /log lines carry the real request line instead.
+#[cfg(test)]
 pub fn command_to_logline(c: &Command) -> String {
 	match c {
 		// both /api/post-tweet and /api/post-reply share the model's Publish
@@ -523,10 +538,7 @@ pub fn serve_command(
 	state: &Mutex<Server>,
 ) -> Served {
 	// Poison-tolerant lock: the Err carries a PoisonError whose guard we recover.
-	let mut locked = match state.lock() {
-		Ok(guard) => guard,
-		Err(poisoned) => poisoned.into_inner(),
-	};
+	let mut locked = lock_server(state);
 	// (ST) one epoch stamp per request: every request is logged at BOTH exits below, and the
 	// committed flag distinguishes the rollbacks from the committed answers.
 	let ts: u64 = now_secs();
@@ -551,6 +563,8 @@ pub fn serve_command(
 	let stepped: (Result, Delta) = step_d(&before, &locked.index, command, fresh_pid, fresh_sid);
 	let result: Result = stepped.0;
 	let delta: Delta = stepped.1;
+	// (ST) the Result's Debug text, computed ONCE and shared by both /log exits below.
+	let result_txt: String = format!("{:?}", result);
 	// (F1b) the new-post count is delta-derived: Publish is the only branch that INSERTs one row.
 	let new_posts: u64 = match delta {
 		Delta::Publish(..) => 1,
@@ -649,40 +663,29 @@ pub fn serve_command(
 			}
 		}
 	};
+	// (ST) exactly one LogEntry per request, built once: the committed flag from the apply arm
+	// above already distinguishes the rollback below from the committed answer.
+	push_log(
+		&mut locked.log,
+		LogEntry {
+			ts_secs: ts,
+			request_line,
+			body,
+			command: command_txt,
+			result: result_txt,
+			committed,
+		},
+	);
 	if !committed {
 		// Nothing was committed, so no data may be served: the same 403 access_denied shape
 		// as a parse failure (wire_error discards its argument).
-		push_log(
-			&mut locked.log,
-			LogEntry {
-				ts_secs: ts,
-				request_line,
-				body,
-				command: command_txt,
-				result: format!("{:?}", result),
-				committed: false,
-			},
-		);
 		return Served {
 			response: to_http(wire_error(WireError::UnknownEndpoint)),
 		};
 	}
 	// Only reachable after a successful commit, so every served byte is DB-backed.
-	{
-		push_log(
-			&mut locked.log,
-			LogEntry {
-				ts_secs: ts,
-				request_line,
-				body,
-				command: command_txt,
-				result: format!("{:?}", result),
-				committed: true,
-			},
-		);
-		Served {
-			response: to_http(respond(to_output(result), http_date())),
-		}
+	Served {
+		response: to_http(respond(to_output(result), http_date())),
 	}
 }
 
@@ -773,7 +776,7 @@ pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
 		None => "".to_string(),
 		Some(mut text) => {
 			// text + "\r\n" -> push_str onto the moved token text
-			text.push_str("\r\n");
+			text.push_str(ALIAS_LINE_END);
 			text
 		}
 	};
@@ -783,24 +786,24 @@ pub fn alias_body(token: Option<String>, value: Option<String>) -> String {
 	};
 	// head + tail + "\r\n" -> push into head, same bytes
 	(head).push_str(&tail);
-	(head).push_str("\r\n");
+	head.push_str(ALIAS_LINE_END);
 	head
 }
 
 /// The raw value of one query parameter on the GET aliases: absent, bare (no '=') or
 /// empty all mean None (the legacy app.js always sends token=, empty when anonymous); the
 /// first pair with the name wins and later duplicates are ignored.
-pub fn query_param(query: &str, name: String) -> Option<String> {
+pub fn query_param(query: &str, name: &str) -> Option<String> {
 	// find_map stops at the first pair whose name matches, so no Vec of all hits is
 	// built; the verdicts stay the same: a later duplicate never decides the answer
 	let hit: Option<String> = (query.split('&')).find_map(|pair| match pair.find("=") {
 		// a bare pair matching the name still counts as a hit, with empty value
-		None => match *pair == (*name.as_str()) {
+		None => match *pair == (*name) {
 			true => Some("".to_string()),
 			false => None,
 		},
 		// the name is the prefix before the first '=', even when '=' is in the value
-		Some(at) => match (*pair)[..at] == *name.as_str() {
+		Some(at) => match (*pair)[..at] == *name {
 			true => Some(pair[(at + 1)..].to_string()),
 			false => None,
 		},
@@ -809,7 +812,8 @@ pub fn query_param(query: &str, name: String) -> Option<String> {
 		None => None,
 		Some(value) => match value.is_empty() {
 			true => None,
-			false => Some(value.to_string()),
+			// value is already a fresh String: move it, no second copy.
+			false => Some(value),
 		},
 	}
 }
@@ -819,8 +823,8 @@ pub fn query_param(query: &str, name: String) -> Option<String> {
 pub fn serve_alias(
 	origin: &Origin<'_>,
 	state: &Mutex<Server>,
-	path: String,
-	value_name: String,
+	path: &str,
+	value_name: &str,
 ) -> Served {
 	// no copy of the query: a &str view of the Origin's query part
 	let query: &str = match origin.query() {
@@ -828,17 +832,14 @@ pub fn serve_alias(
 		// (same bytes; the view borrows from the Origin, which lives past here)
 		Some(part) => part.as_str(),
 	};
-	let body: String = alias_body(
-		query_param(query, "token".to_string()),
-		query_param(query, value_name),
-	);
+	let body: String = alias_body(query_param(query, "token"), query_param(query, value_name));
 	// (ST) the request line as it arrived: the query part only when the Origin carried one.
 	let query_part: String = match query.is_empty() {
 		true => "".to_string(),
 		false => "?".to_string() + query,
 	};
-	let request_line: String = "GET ".to_string() + &path + &query_part + " HTTP/1.1";
-	let command: Command = match parse_action(path.as_str(), body.as_bytes()) {
+	let request_line: String = "GET ".to_string() + path + &query_part + LOG_HTTP_SUFFIX;
+	let command: Command = match parse_action(path, body.as_bytes()) {
 		Err(e) => {
 			// Malformed or missing numbers render as the same 403 access_denied shape
 			// the POST twins answer (wire_error discards e; no new error codes).
@@ -846,23 +847,7 @@ pub fn serve_alias(
 			// (identical bytes to a POST parse failure, header for header)
 			// (404 and 422 can never surface for an alias request)
 			// (ST) logged un-redacted with the raw body, before the early return
-			{
-				let mut locked = match state.lock() {
-					Ok(guard) => guard,
-					Err(poisoned) => poisoned.into_inner(),
-				};
-				push_log(
-					&mut locked.log,
-					LogEntry {
-						ts_secs: now_secs(),
-						request_line,
-						body,
-						command: "parse-failure".to_string(),
-						result: "access_denied".to_string(),
-						committed: false,
-					},
-				);
-			}
+			log_parse_failure(state, request_line, body);
 			return Served {
 				// (the answer is rendered by the very same to_http every POST route uses)
 				response: to_http(wire_error(e)),
@@ -876,34 +861,19 @@ pub fn serve_alias(
 /// GET /api/get-tweet: the legacy frontend's query-parameter twin of the POST route.
 #[get("/api/get-tweet")]
 fn get_tweet_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
-	serve_alias(
-		origin,
-		state,
-		"/api/get-tweet".to_string(),
-		"id".to_string(),
-	)
+	serve_alias(origin, state, "/api/get-tweet", "id")
 }
 
 /// GET /api/global-timeline.
 #[get("/api/global-timeline")]
 fn global_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
-	serve_alias(
-		origin,
-		state,
-		"/api/global-timeline".to_string(),
-		"len".to_string(),
-	)
+	serve_alias(origin, state, "/api/global-timeline", "len")
 }
 
 /// GET /api/private-timeline.
 #[get("/api/private-timeline")]
 fn private_timeline_alias(state: &State<Mutex<Server>>, origin: &Origin<'_>) -> Served {
-	serve_alias(
-		origin,
-		state,
-		"/api/private-timeline".to_string(),
-		"len".to_string(),
-	)
+	serve_alias(origin, state, "/api/private-timeline", "len")
 }
 
 /// Static frontend serving, in the very Response shape to_http builds: headers folded onto an
@@ -915,20 +885,10 @@ pub fn serve_static(name: String, mime: String) -> Response<'static> {
 	match read_frontend(name.as_str()) {
 		// refused or absent: empty 404, so a stale frontend degrades instead of inventing bytes
 		// (the traversal names read_frontend refused land here too, nothing was opened on disk)
-		None => {
-			let mut missing = Response::build();
-			missing.status(Status::NotFound);
-			missing.finalize()
-		}
+		None => build_response(Status::NotFound, None, None),
 		// the hit: 200 plus the Content-Type the route picked, body as a fixed cursor
 		// (header name lowercase, the very casing the wire responses already send)
-		Some(site) => {
-			let mut hit = Response::build();
-			hit.header(Header::new("content-type", mime));
-			hit.status(Status::Ok);
-			hit.sized_body(site.len(), Cursor::new(site));
-			hit.finalize()
-		}
+		Some(site) => build_response(Status::Ok, Some(mime), Some(site)),
 	}
 }
 
@@ -961,11 +921,32 @@ fn app_js() -> Served {
 pub fn serve_text(body: String, mime: String) -> Response<'static> {
 	// (the same header/status/cursor fold serve_static uses, so /raw and /log never invent
 	// (a different wire shape than the static site already sends)
-	let mut hit = Response::build();
-	hit.header(Header::new("content-type", mime));
-	hit.status(Status::Ok);
-	hit.sized_body(body.len(), Cursor::new(body));
-	hit.finalize()
+	build_response(Status::Ok, Some(mime), Some(body))
+}
+
+/// (ST) the one Response fold behind serve_static and serve_text: headers, Status and a
+/// sized_body cursor in the very shape to_http fixes.  A missing mime or body adds no
+/// header and no bytes, so the empty 404 stays empty.
+pub fn build_response(
+	status: Status,
+	mime: Option<String>,
+	body: Option<String>,
+) -> Response<'static> {
+	let mut built = Response::build();
+	match mime {
+		None => {}
+		Some(mime_text) => {
+			built.header(Header::new("content-type", mime_text));
+		}
+	};
+	built.status(status);
+	match body {
+		None => {}
+		Some(text) => {
+			built.sized_body(text.len(), Cursor::new(text));
+		}
+	};
+	built.finalize()
 }
 
 /// GET /raw: the whole RAM cache as raw plaintext Debug, pretty-printed (ST) - a debug view only:
@@ -974,10 +955,7 @@ pub fn serve_text(body: String, mime: String) -> Response<'static> {
 fn raw(state: &State<Mutex<Server>>) -> Served {
 	// The same poison-tolerant lock serve_command takes: the guarded region keeps its invariants,
 	// so a poisoned guard still answers with its cache.
-	let locked = match state.lock() {
-		Ok(guard) => guard,
-		Err(poisoned) => poisoned.into_inner(),
-	};
+	let locked = lock_server(state);
 	Served {
 		response: serve_text(raw_text(&locked.world), "text/plain".to_string()),
 	}
@@ -991,10 +969,7 @@ fn raw(state: &State<Mutex<Server>>) -> Served {
 #[get("/log")]
 fn request_log(state: &State<Mutex<Server>>) -> Served {
 	// The same poison-tolerant lock serve_command takes.
-	let locked = match state.lock() {
-		Ok(guard) => guard,
-		Err(poisoned) => poisoned.into_inner(),
-	};
+	let locked = lock_server(state);
 	// (one line per entry: the stored epoch secs through the very calendar walk a Date header
 	// (uses, so a log timestamp never disagrees with a response header, then the raw request line
 	// (and the verbatim body, the Command/Result Debug texts and the commit flag (CRLF-terminated;
@@ -1024,7 +999,7 @@ fn request_log(state: &State<Mutex<Server>>) -> Served {
 fn rocket() -> _ {
 	// The DB path comes from the environment so restarts resume the same world.
 	let path: String = match std::env::var("FT_DB") {
-		Err(_) => "twitter.db".to_string(),
+		Err(_) => LOG_DB_DEFAULT.to_string(),
 		Ok(p) => p,
 	};
 	// Startup reopen must not panic; on failure the empty world still serves.
@@ -1494,26 +1469,26 @@ fn test_alias_timeline_parses() {
 #[test]
 fn test_alias_query_param_parses() {
 	// exactly the app.js shape: token first, then the value parameter.
-	assert!(query_param("token=7&id=42", "token".to_string()) == Some("7".to_string()));
-	assert!(query_param("token=7&id=42", "id".to_string()) == Some("42".to_string()));
+	assert!(query_param("token=7&id=42", "token") == Some("7".to_string()));
+	assert!(query_param("token=7&id=42", "id") == Some("42".to_string()));
 	// empty token= means anonymous, same as an absent token.
-	assert!(query_param("token=&id=42", "token".to_string()).is_none());
-	assert!(query_param("id=42", "token".to_string()).is_none());
+	assert!(query_param("token=&id=42", "token").is_none());
+	assert!(query_param("id=42", "token").is_none());
 	// a bare pair has the empty value; a duplicate keeps the first.
-	assert!(query_param("id", "id".to_string()).is_none());
-	assert!(query_param("id=1&id=2", "id".to_string()) == Some("1".to_string()));
+	assert!(query_param("id", "id").is_none());
+	assert!(query_param("id=1&id=2", "id") == Some("1".to_string()));
 	// end to end: the alias body is the POST twin's body, byte for byte.
 	// (the anonymous case reuses the token-less POST shape)
 	assert!(
 		alias_body(
-			query_param("token=7&id=42", "token".to_string()),
-			query_param("token=7&id=42", "id".to_string())
+			query_param("token=7&id=42", "token"),
+			query_param("token=7&id=42", "id")
 		) == "7\r\n42\r\n"
 	);
 	assert!(
 		alias_body(
-			query_param("token=&id=42", "token".to_string()),
-			query_param("token=&id=42", "id".to_string())
+			query_param("token=&id=42", "token"),
+			query_param("token=&id=42", "id")
 		) == "42\r\n"
 	);
 }
@@ -1825,10 +1800,7 @@ fn test_log_entry_capture() {
 		&srv,
 	);
 	// Read back through the same poison-tolerant lock serve_command takes.
-	let g: MutexGuard<Server> = match srv.lock() {
-		Ok(guard) => guard,
-		Err(poisoned) => poisoned.into_inner(),
-	};
+	let g: MutexGuard<Server> = lock_server(&srv);
 	// One entry per call, oldest first: two calls, two LogEntry rows, nothing evicted.
 	// (the naming table stays out of the line: request_line is the built POST line verbatim.)
 	assert!(g.log.len() == 2);
