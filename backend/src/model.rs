@@ -1312,6 +1312,22 @@ mod qc {
 		}
 	}
 
+	/// (RV5-4) unlike/unfollow destructors, plain matches like every other as_* destructor.
+	fn as_unlike(cmd: Command) -> Option<(u64, u64)> {
+		match cmd {
+			Command::Unlike(sid, pid) => Some((sid, pid)),
+			_ => None,
+		}
+	}
+
+	fn as_unfollow(cmd: Command) -> Option<(u64, String)> {
+		match cmd {
+			// (sid, followee)
+			Command::Unfollow(sid, followee) => Some((sid, followee.clone())),
+			_ => None,
+		}
+	}
+
 	fn as_delete(cmd: Command) -> Option<(u64, u64)> {
 		match cmd {
 			Command::Delete(sid, pid) => Some((sid, pid)),
@@ -2019,12 +2035,237 @@ mod qc {
 		{
 			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
 			let liked: bool = match post_at(&nw, pid) {
-				Some(p) => member(&p.likes, u),
+				Some(p) => member(&p.likes, u.clone()),
 				None => false,
 			};
 			return res == Result::Success && liked;
 		}
 		true
+	}
+
+	/// QC of unlike-ok (spec unlike-post, Twitter.agda:621): a VALID session that can READ a post
+	/// whose likes ALREADY carry the session user removes EXACTLY that liker.  Pinned to the ACTUAL
+	/// transform of step's Unlike arm (model.rs:948-961): after the can_read guard it runs
+	/// likes.retain(|x| *x != user) over every post cell keyed by pid, so the survivor ORDER is
+	/// preserved and ONLY pid's post is touched -- author/text/visibility/status/replies/parent and
+	/// every other section carried untouched, hence nw == want outright.  (The spec's unlike-post
+	/// premise states the same thing set-wise: user ∉ likes after, and for every OTHER user'
+	/// membership agrees both ways.)  Hypotheses mirror the Rust guards: can_read already forces
+	/// live + readable, and the likes-contain-user premise makes the removal non-trivial.
+	#[quickcheck]
+	fn prop_unlike_ok(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, pid)) = as_unlike(cmd.clone())
+			&& let Some(u) = active_user(&w, sid)
+			&& can_read(&w, sid, pid)
+			&& (match post_at_ref(&w, pid) {
+				Some(p) => member(&p.likes, u.clone()),
+				None => false,
+			}) {
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			// want = w with the session user filtered OUT of pid's post likes only (retain keeps
+			// the order of the survivors, and no other cell is rebuilt)
+			let mut want: World = w.clone();
+			for e in &mut want.posts {
+				if e.0 == pid {
+					(e.1.likes).retain(|x| *x != u);
+				}
+			}
+			return res == Result::Success && nw == want;
+		}
+		true
+	}
+
+	/// QC of unlike-denied (spec failed-unlike-post, Twitter.agda:652): a VALID session that
+	/// cannot READ the post is denied and the world is untouched -- the same shape as prop_like_denied
+	/// (the can_read guard at model.rs:949 returns early with w.clone(), so nw == w outright).
+	#[quickcheck]
+	fn prop_unlike_denied(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, pid)) = as_unlike(cmd.clone())
+			&& valid_session(&w, sid)
+			&& !can_read(&w, sid, pid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			return res == Result::Denied && nw == w;
+		}
+		true
+	}
+
+	/// QC of unfollow (spec unfollow-user, Twitter.agda:669): any VALID session drops the exact
+	/// (session-user, followee) pair from World.follows -- Rust's representation is the pair LIST,
+	/// and step's Unfollow arm (model.rs:923-929) retains everything but that pair, so the
+	/// operation is IDEMPOTENT: re-running it on an already-absent pair leaves nw == w outright.
+	/// Mirrors prop_follow's guards plus th-prop-revoke-rest's POINTWISE puts: newest-first and
+	/// both used-id lists equal outright, accounts/session-at/post-at answered pointwise over the
+	/// pools, and every OTHER follows pair unchanged pointwise (th-prop-unfollow in ImplProofs).
+	#[quickcheck]
+	fn prop_unfollow(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, followee)) = as_unfollow(cmd.clone())
+			&& let Some(u) = active_user(&w, sid)
+		{
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			// the pair the arm targets: present or absent both keep the result Success
+			let was: bool = follows(&w, &u, &followee);
+			// want = w with ONLY that pair dropped from follows (Rust's retain, no rebuild)
+			let mut want: World = w.clone();
+			want.follows.retain(|(f, g)| *f != u || *g != followee);
+			// pointwise puts: the sections the spec's unfollow-user keeps (account-at /
+			// session-at / post-at answered over the generator pools, the rest outright)
+			let mut pts: bool = w.newest_first == nw.newest_first
+				&& w.used_post_ids == nw.used_post_ids
+				&& w.used_session_ids == nw.used_session_ids;
+			for us in users_pool() {
+				pts = pts && account_at(&w, &us) == account_at(&nw, &us);
+				pts = pts && session_at(&w, sid) == session_at(&nw, sid);
+				for (pid, _) in &w.posts {
+					pts = pts && post_at(&w, *pid) == post_at(&nw, *pid);
+				}
+			}
+			// every follows pair EXCEPT the dropped one agrees pointwise (set-difference semantics)
+			for f in users_pool() {
+				for g in users_pool() {
+					pts = pts && (f == u && g == followee)
+						|| follows(&w, &f, &g) == follows(&nw, &f, &g);
+				}
+			}
+			// idempotence: an already-absent pair changes nothing at all
+			let mut idem: bool = true;
+			if !was {
+				idem = nw == w;
+			}
+
+			return res == Result::Success
+				&& !follows(&nw, &u, &followee)
+				&& nw == want
+				&& idem && pts;
+		}
+		true
+	}
+
+	/// QC of follow-gates-timeline: a session whose followee IS the author of a live
+	/// FOLLOWERS-ONLY post clears the gate.  (a) can_read is true, so step's Like arm (model.rs:930)
+	/// takes its success path -- the Rust result is Success (the spec's like-post, unlike publish's
+	/// created-post) and the session user lands in the post's likes.  (b) the SAME post then sits in
+	/// the personal timeline: for any n >= the length of newest_first, the ref timeline
+	/// (personal_timeline_ref, model.rs:472) contains pid, i.e. the follow adds pid to the feed
+	/// rather than merely leaving it out.  Hypotheses: valid sid, follows(user, author) already true,
+	/// post live + followers-only, and pid present in newest_first (else no timeline scans it).
+	#[quickcheck]
+	fn prop_follow_gates_timeline(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		if let Some((sid, pid)) = as_like(cmd.clone())
+			&& let Some(u) = active_user(&w, sid)
+			&& (match post_at_ref(&w, pid) {
+				Some(p) => {
+					p.status == PostStatus::Other
+						&& p.visibility == Visibility::FollowersOnly
+						&& follows(&w, &u, &p.author)
+				}
+				None => false,
+			}) && member(&w.newest_first, pid)
+		{
+			// (a) the gate opens, so Like succeeds and the liker is recorded
+			let (nw, res) = step(&w, cmd, ids.pid, ids.sid);
+			let liked: bool = match post_at_ref(&nw, pid) {
+				Some(p) => member(&p.likes, u.clone()),
+				None => false,
+			};
+			// (b) membership in the personal timeline once n covers newest_first
+			let big: u64 = len_u64(&w.newest_first);
+			let mut tl_ok: bool = true;
+			for nn in &[big, big + 1, 1000] {
+				tl_ok = tl_ok && member(&personal_timeline_ref(&w, sid, *nn), pid);
+			}
+			// want = step's Like arm: the user appended once to pid's post, everything else carried
+			let mut want: World = w.clone();
+			for e in &mut want.posts {
+				if e.0 == pid && !(e.1.likes).contains(&u) {
+					(e.1.likes).push(u.clone());
+				}
+			}
+			return can_read(&w, sid, pid)
+				&& res == Result::Success
+				&& liked && tl_ok
+				&& nw == want;
+		}
+		true
+	}
+
+	/// QC of timeline-excludes-deleted (STRENGTHENS prop_timeline_valid, which is left untouched):
+	/// every id a timeline returns must sit at a LIVE, READABLE post, be a member of newest_first,
+	/// and the returned list must be a PREFIX -- exactly take n of the filtered newest-first -- of
+	/// length <= n.  Personal branch: readable = can_read for that session AND the author followed
+	/// (the spec's filterᵇ ∘ filter, Twitter.agda:557).  Anon global branch: readable = is_post_public
+	/// (live + everyone, Twitter.agda:578).  Both worlds are carried untouched.
+	#[quickcheck]
+	fn prop_timeline_excludes_deleted(w: World, cmd: Command, ids: StepArgs) -> bool {
+		if !well_formed(&w) {
+			return true;
+		}
+		let (nw, res) = step(&w, cmd.clone(), ids.pid, ids.sid);
+		match cmd {
+			Command::ReadPersonalTimeline(sid, n) => {
+				if let Some(u) = active_user(&w, sid) {
+					match res {
+						Result::ReturnedTimeline(ts) => {
+							// the spec's filter chain, spelled with the model's own predicates
+							let filt: Vec<u64> = w
+								.newest_first
+								.iter()
+								.filter(|pid| {
+									can_read(&w, sid, **pid) && follows_author(&w, &u, **pid)
+								})
+								.copied()
+								.collect();
+							let live_ok: bool = ts.iter().all(|pid| match post_at_ref(&w, *pid) {
+								Some(p) => p.status == PostStatus::Other,
+								None => false,
+							});
+							ts == take_n(filt, n)
+								&& live_ok && ts
+								.iter()
+								.all(|pid| can_read(&w, sid, *pid) && follows_author(&w, &u, *pid))
+								&& ts.iter().all(|pid| member(&w.newest_first, *pid))
+								&& len_u64(&ts) <= n && nw == w
+						}
+						_ => false,
+					}
+				} else {
+					res == Result::Expired && nw == w
+				}
+			}
+			Command::ReadGlobalTimeline(None, n) => match res {
+				Result::ReturnedTimeline(ts) => {
+					let filt: Vec<u64> = w
+						.newest_first
+						.iter()
+						.filter(|pid| is_post_public(&w, **pid))
+						.copied()
+						.collect();
+					let live_ok: bool = ts.iter().all(|pid| match post_at_ref(&w, *pid) {
+						Some(p) => p.status == PostStatus::Other,
+						None => false,
+					});
+					ts == take_n(filt, n)
+						&& live_ok && ts.iter().all(|pid| is_post_public(&w, *pid))
+						&& ts.iter().all(|pid| member(&w.newest_first, *pid))
+						&& len_u64(&ts) <= n
+						&& nw == w
+				}
+				_ => false,
+			},
+			_ => true,
+		}
 	}
 
 	/// QC of delete-author: an author may delete their post, and doing so twice leaves it deleted.

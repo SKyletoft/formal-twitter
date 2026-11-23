@@ -1,7 +1,7 @@
 open import Agda.Builtin.Bool
 open import Agda.Builtin.Maybe                        using (Maybe; just; nothing)
 open import Agda.Builtin.Sigma
-open import Data.Empty                                using (⊥-elim)
+open import Data.Empty                                using (⊥-elim; ⊥)
 open import Data.List                                 using (List; []; _∷_; length; take; filter; filterᵇ)
 open import Data.Nat                                  using (ℕ; zero; suc; _≤_; z≤n; s≤s)
 open import Data.Product                              using (∃-syntax)
@@ -1003,3 +1003,376 @@ th-prop-reply-denied :
   Step before (publish sid txt (just ppid)) after denied →
   (after ≡ before) × (¬ CanReadPost before sid ppid)
 th-prop-reply-denied (failed-reply _ ncrp) = refl , ncrp
+
+--------------------------------------------------------------------------------
+-- (RV8) unlike / unfollow / follow-gate / timeline-excludes quintet: model.rs's
+-- prop_unlike_ok (2051) / prop_unlike_denied (2080) / prop_unfollow (2102) /
+-- prop_follow_gates_timeline (2157) / prop_timeline_excludes_deleted (2206), read
+-- off step's Unfollow arm (model.rs:923) and Unlike arm (model.rs:948) through the
+-- PLAIN as_unlike / as_unfollow destructors (model.rs:1316 / 1323 -- no derive-magic
+-- accessors, no new dependency).  Spec rules: unlike-post (Twitter.agda:621),
+-- failed-unlike-post (649), unfollow-user (666), the POSITIVE CanReadPost.post-is-private
+-- (173), get-personal-timeline (557) and get-public-global-timeline (583).
+-- Every lemma below is a real definition: this block introduces NO postulate.
+--------------------------------------------------------------------------------
+
+-- Membership transports through equal element + equal list, also for ABSENCE.
+∉-cong : ∀ {u u′ : String} {ls ls′ : List String} →
+         u ≡ u′ → ls ≡ ls′ → u ∉ ls → u′ ∉ ls′
+∉-cong refl refl neq = neq
+
+-- remove-follower is the pair-difference of the follow relation (Rust's follows.retain): the
+-- targeted pair becomes false, every OTHER pair survives pointwise, and an already-absent pair
+-- leaves the relation unchanged pointwise, which is prop_unfollow's idempotence half.
+remove-follower-self :
+  (f : String → String → Bool) (follower followee : String) →
+  remove-follower f follower followee follower followee ≡ false
+remove-follower-self f follower followee with follower ≟ follower | followee ≟ followee
+... | yes _ | yes _ = refl
+... | yes p | no ¬q = ⊥-elim (¬q refl)
+... | no ¬p | q = ⊥-elim (¬p refl)
+
+remove-follower-other :
+  (f : String → String → Bool) (follower followee x y : String) →
+  x ≢ follower ⊎ y ≢ followee →
+  remove-follower f follower followee x y ≡ f x y
+remove-follower-other f follower followee x y (inj₁ neq) with follower ≟ x | followee ≟ y
+... | yes p | q = ⊥-elim (neq (sym p))
+... | no ¬p | q = refl
+remove-follower-other f follower followee x y (inj₂ neq) with follower ≟ x | followee ≟ y
+... | yes p | yes q = ⊥-elim (neq (sym q))
+... | yes p | no ¬q = refl
+... | no ¬p | q = refl
+
+remove-follower-idem :
+  (f : String → String → Bool) (follower followee : String) →
+  f follower followee ≡ false →
+  (x y : String) → remove-follower f follower followee x y ≡ f x y
+remove-follower-idem f follower followee absent x y with follower ≟ x | followee ≟ y
+... | yes p | yes q =
+  trans (sym absent) (trans (cong (f follower) q) (cong (λ z → f z y) p))
+... | yes p | no ¬q = refl
+... | no ¬p | q = refl
+
+-- The timeline's follows-layer (follows-post-author, Twitter.agda:366) answers TRUE on a post
+-- whose author the session user follows: the positive half of get-personal-timeline's filterᵇ.
+follows-post-author-true :
+  ∀ {w : World} {user : String} {pid : PostId} {post} →
+  World.post-at w pid ≡ just post →
+  World.follows w user (Post.author post) ≡ true →
+  follows-post-author w user pid ≡ true
+follows-post-author-true {w} {user} {pid} pa h rewrite pa = h
+
+-- Membership in a filtered list carries the decision's YES-proof (the with-abstraction pins
+-- filter's own scrutinee, so here's element is rigid and hands the proof over).
+∈-filter-crp-yes :
+  ∀ {w : World} {sid : SessionId} {xs : List PostId} {pid : PostId} →
+  pid ∈ filter (can-read-post w sid) xs → CanReadPost w sid pid
+∈-filter-crp-yes {w} {sid} {[]} {pid} ()
+∈-filter-crp-yes {w} {sid} {x ∷ xs} {pid} m with can-read-post w sid x | m
+... | yes cr | here = cr
+... | yes _ | there m′ = ∈-filter-crp-yes {w} {sid} {xs} m′
+... | no ¬cr | m′ = ∈-filter-crp-yes {w} {sid} {xs} m′
+
+∈-filterᵇ-yes :
+  ∀ {f : PostId → Bool} {xs : List PostId} {pid : PostId} →
+  pid ∈ filterᵇ f xs → f pid ≡ true
+∈-filterᵇ-yes {f} {[]} {pid} ()
+∈-filterᵇ-yes {f} {x ∷ xs} {pid} m with f x in fx | m
+... | true | here rewrite sym fx = refl
+... | true | there m′ = ∈-filterᵇ-yes {f} {xs} m′
+... | false | m′ = ∈-filterᵇ-yes {f} {xs} m′
+
+∈-filter-puc-yes :
+  ∀ {w : World} {xs : List PostId} {pid : PostId} →
+  pid ∈ filter (is-post-public w) xs →
+  ∃[ post ] World.post-at w pid ≡ just post
+            ∧ Post.visibility post ≡ everyone
+            ∧ Post.status post     ≡ live
+∈-filter-puc-yes {w} {[]} {pid} ()
+∈-filter-puc-yes {w} {x ∷ xs} {pid} m with is-post-public w x | m
+... | yes pr | here = pr
+... | yes _ | there m′ = ∈-filter-puc-yes {w} {xs} m′
+... | no ¬pr | m′ = ∈-filter-puc-yes {w} {xs} m′
+
+-- Contradiction on a Bool proved both ways, phrased with the Bool generalized so both index
+-- pairs are constructor pairs (absurd patterns on stuck equalities are rejected).
+contra-Bool : (b : Bool) → b ≡ true → b ≡ false → ⊥
+contra-Bool true h ()
+contra-Bool false () fx
+
+-- Forward direction: a readable id that is in newest-first survives both filters, and an n that
+-- covers the filtered list keeps every id (the take-prefix claim of prop_follow_gates_timeline).
+∈-filterᵇ-keep :
+  ∀ {f : PostId → Bool} {xs : List PostId} {pid : PostId} →
+  f pid ≡ true → pid ∈ xs → pid ∈ filterᵇ f xs
+∈-filterᵇ-keep {f} {[]} {pid} h ()
+∈-filterᵇ-keep {f} {x ∷ xs} {pid} h m with m | f x in fx
+... | here | true = here
+... | here | false = ⊥-elim (contra-Bool (f x) h fx)
+... | there m′ | true = there (∈-filterᵇ-keep {f} {xs} h m′)
+... | there m′ | false = ∈-filterᵇ-keep {f} {xs} h m′
+
+∈-filter-crp-keep :
+  ∀ {w : World} {sid : SessionId} {xs : List PostId} {pid : PostId}
+    {cr : CanReadPost w sid pid} →
+  can-read-post w sid pid ≡ yes cr →
+  pid ∈ xs →
+  pid ∈ filter (can-read-post w sid) xs
+∈-filter-crp-keep {w} {sid} {[]} {pid} {cr} eq ()
+∈-filter-crp-keep {w} {sid} {x ∷ xs} {pid} {cr} eq m with m | can-read-post w sid x
+... | here | yes _ = here
+... | here | no ¬cr′ = ⊥-elim (¬cr′ cr)
+... | there m′ | yes _ = there (∈-filter-crp-keep {w} {sid} {xs} eq m′)
+... | there m′ | no _ = ∈-filter-crp-keep {w} {sid} {xs} eq m′
+
+∈-take-lem :
+  ∀ {xs : List PostId} {pid : PostId} (n : ℕ) →
+  length xs ≤ n → pid ∈ xs → pid ∈ take n xs
+∈-take-lem {[]} {pid} n le ()
+∈-take-lem {x ∷ xs} {pid} zero () m
+∈-take-lem {x ∷ xs} {pid} (suc n) (s≤s le) here = here
+∈-take-lem {x ∷ xs} {pid} (suc n) (s≤s le) (there m) =
+  there (∈-take-lem {xs} {pid} n le m)
+
+-- A readable post is LIVE at the id it is readable at, on either CanReadPost constructor.
+crp-live :
+  ∀ {w : World} {sid : SessionId} {pid : PostId} →
+  (cr : CanReadPost w sid pid) →
+  ∃[ post ] World.post-at w pid ≡ just post × Post.status post ≡ live
+crp-live {w} {sid} {pid} (post-is-private {post = pst} vs pa _ st _) = pst , (pa , st)
+crp-live {w} {sid} {pid} (post-is-public {post = pst} vs pa _ st) = pst , (pa , st)
+
+--------------------------------------------------------------------------------
+-- (RV8a) prop_unlike_ok (spec unlike-post, Twitter.agda:621): a VALID session that can READ pid's
+-- post, whose likes ALREADY carry the session user, answers success (the Step's result index pins it)
+-- and the after-world differs from the before-world in ONE cell: pid's post drops EXACTLY the session
+-- user from Post.likes and keeps author/text/visibility/status/replies/parent, and every OTHER post,
+-- the accounts, the sessions, the follow relation and newest-first are carried outright -- the field-
+-- wise reading of Rust's nw == want (step's Unlike arm retainS over pid's cell only, model.rs:948-961).
+th-prop-unlike-ok :
+  ∀ {before after sid pid acc user} →
+  ValidSession before sid acc user →
+  CanReadPost before sid pid →
+  Step before (unlike sid pid) after success →
+  ∃[ bp ] ∃[ ap ]
+    World.post-at before pid ≡ just bp
+    × World.post-at after pid ≡ just ap
+    × (user ∈ Post.likes bp → user ∉ Post.likes ap)
+    × (∀ {user′} → user ≢ user′ →
+         (user′ ∈ Post.likes ap → user′ ∈ Post.likes bp)
+         ∧ (user′ ∉ Post.likes ap → user′ ∉ Post.likes bp))
+    × Post.author bp ≡ Post.author ap
+    × Post.text bp ≡ Post.text ap
+    × Post.visibility bp ≡ Post.visibility ap
+    × Post.status bp ≡ Post.status ap
+    × Post.replies bp ≡ Post.replies ap
+    × Post.parent bp ≡ Post.parent ap
+    × (∀ {other} → pid ≢ other →
+         World.post-at before other ≡ World.post-at after other
+         ∧ World.account-at before ≡ World.account-at after
+         ∧ World.session-at before ≡ World.session-at after
+         ∧ World.follows before ≡ World.follows after
+         ∧ World.newest-first before ≡ World.newest-first after)
+th-prop-unlike-ok {before} {after} {sid} {pid} {acc} {user} vs crp
+  (unlike-post {post = ap} {post' = bp}
+   vs₁ cr₁ pb′ pa′ ∉₁ a t v s r p oth rest) =
+  bp , (ap , (pb′ , (pa′ , ((λ _ → ∉-cong eu refl ∉₁) ,
+    ((λ { neq → oth (λ eq → neq (trans (sym eu) eq)) }) ,
+     (a , (t , (v , (s , (r , (p , rest)))))))))))
+  where
+    eu = sym (active-injective
+               (trans (sym (ValidSession.session-unchanged vs))
+                      (ValidSession.session-unchanged vs₁)))
+
+--------------------------------------------------------------------------------
+-- (RV8b) prop_unlike_denied (spec failed-unlike-post, Twitter.agda:649): a VALID session that
+-- cannot READ the post is DENIED and the world is carried outright (Rust's res == Denied && nw == w:
+-- step's can_read guard at model.rs:949 returns (w.clone(), Denied) before any rebuild).
+th-prop-unlike-denied :
+  ∀ {before sid pid acc user} →
+  ValidSession before sid acc user →
+  ¬ CanReadPost before sid pid →
+  Step before (unlike sid pid) before denied
+th-prop-unlike-denied = failed-unlike-post
+
+--------------------------------------------------------------------------------
+-- (RV8c) prop_unfollow (spec unfollow-user, Twitter.agda:669 + the set semantics of remove-follower):
+-- ANY valid session drops the exact (session-user, followee) pair; the after-world is BUILT here as
+-- before with that one relation replaced by remove-follower, so -- like Rust's follows.retain -- the
+-- step is idempotent, every other pair agrees pointwise, and every other section (accounts, sessions,
+-- posts, newest-first, both used-id lists) is carried outright.
+th-prop-unfollow :
+  ∀ {before sid acc follower followee} →
+  ValidSession before sid acc follower →
+  ∃[ after ] ∃[ result ]
+    Step before (unfollow sid followee) after result
+  × result ≡ success
+  × World.follows after follower followee ≡ false
+  × World.follows after ≡ remove-follower (World.follows before) follower followee
+  × World.account-at before ≡ World.account-at after
+  × World.session-at before ≡ World.session-at after
+  × World.post-at before ≡ World.post-at after
+  × World.newest-first before ≡ World.newest-first after
+  × World.used-post-ids before ≡ World.used-post-ids after
+  × World.used-session-ids before ≡ World.used-session-ids after
+  × (∀ {f g : String} → f ≢ follower ⊎ g ≢ followee →
+       World.follows before f g ≡ World.follows after f g)
+  × (World.follows before follower followee ≡ false →
+       ∀ {f g : String} → World.follows after f g ≡ World.follows before f g)
+th-prop-unfollow
+  {before = before@(world account-at session-at post-at follows newest-first
+            used-post-ids used-session-ids only-used-pids only-used-sids
+            only-valid-sessions only-valid-posts only-valid-replies
+            no-duplicate-replies no-duplicate-likes no-duplicate-posts)}
+  {sid} {acc} {follower} {followee} vs =
+  after , (success ,
+    (unfollow-user vs refl refl refl refl refl , (refl , (remove-follower-self follows follower followee ,
+      (refl , (refl , (refl , (refl , (refl , (refl , (refl , (other , idem))))))))))))
+  where
+    after : World
+    after = world account-at
+                  session-at
+                  post-at
+                  (remove-follower follows follower followee)
+                  newest-first
+                  used-post-ids
+                  used-session-ids
+                  only-used-pids
+                  only-used-sids
+                  only-valid-sessions
+                  only-valid-posts
+                  only-valid-replies
+                  no-duplicate-replies
+                  no-duplicate-likes
+                  no-duplicate-posts
+    other : ∀ {f g : String} → f ≢ follower ⊎ g ≢ followee →
+            World.follows before f g ≡ World.follows after f g
+    other {f} {g} h = sym (remove-follower-other follows follower followee f g h)
+    idem : World.follows before follower followee ≡ false →
+           ∀ {f g : String} → World.follows after f g ≡ World.follows before f g
+    idem absent {f} {g} = remove-follower-idem follows follower followee absent f g
+
+--------------------------------------------------------------------------------
+-- (RV8d) prop_follow_gates_timeline: a session that already follows the AUTHOR of a live FOLLOWERS-
+-- ONLY post clears the gate.  (1) CanReadPost holds POSITIVELY through CanReadPost.post-is-private
+-- (Twitter.agda:173), the visibility/status/follows premises being exactly the constructor's premises;
+-- (2) the post is in the personal timeline (get-personal-timeline, Twitter.agda:557): its id survives
+-- BOTH filters (the can-read layer through the spec's own can-read-post decision, which is the Dec the
+-- Rust can_read answers yes?/no? of -- the same Dec-vs-Dec relation th-ix-predicates pins) and an n
+-- covering the filtered list keeps it in the take-prefix; (3) Like takes its success path so the
+-- session user lands in the post's likes (th-prop-like-ok's inversion) and NO like-derivation with a
+-- readable post is denied; (4) the timeline command carries the world outright (Rust's nw == w).
+th-prop-follow-gate :
+  ∀ {before after n sid pid acc user post} →
+  ValidSession before sid acc user →
+  World.post-at before pid ≡ just post →
+  Post.visibility post ≡ followers-only →
+  Post.status post ≡ live →
+  World.follows before user (Post.author post) ≡ true →
+  pid ∈ World.newest-first before →
+  (∃[ cr ] can-read-post before sid pid ≡ yes cr) →
+  length (filterᵇ (follows-post-author before user)
+                  (filter (can-read-post before sid) (World.newest-first before))) ≤ n →
+  CanReadPost before sid pid
+  × pid ∈ take n (filterᵇ (follows-post-author before user)
+                        (filter (can-read-post before sid) (World.newest-first before)))
+  × (∀ {ap} → World.post-at after pid ≡ just ap →
+       Step before (like sid pid) after success → user ∈ Post.likes ap)
+  × (∀ {after′} → Step before (like sid pid) after′ denied → ¬ CanReadPost before sid pid)
+  × (∀ {tl} → Step before (read-personal-timeline sid n) before (returned-timeline tl) →
+       tl ≡ take n (filterᵇ (follows-post-author before user)
+                      (filter (can-read-post before sid) (World.newest-first before))))
+  × (∀ {after′ tl} → Step before (read-personal-timeline sid n) after′ (returned-timeline tl) →
+       after′ ≡ before)
+th-prop-follow-gate
+  {before} {after} {n} {sid} {pid} {acc} {user} {post = pst}
+  vs pa vis st fu mem (cr , eq) len =
+  (post-is-private vs pa vis st fu) ,
+  ((∈-take-lem {filterᵇ (follows-post-author before user)
+                  (filter (can-read-post before sid) (World.newest-first before))}
+                {pid} n len
+      (∈-filterᵇ-keep {f = follows-post-author before user}
+        (follows-post-author-true {before} {user} {pid} {pst} pa fu)
+        (∈-filter-crp-keep {before} {sid} {World.newest-first before} {pid} {cr} eq mem))) ,
+   (((λ { pa′ step → th-prop-like-ok vs pa pa′ step }) ,
+     ((λ { (failed-like-post _ ncr) → ncr }) ,
+      (((λ { (get-personal-timeline {user = u} vs′) →
+    cong (λ h → take n (filterᵇ h (filter (can-read-post before sid) (World.newest-first before))))
+         (cong (follows-post-author before)
+               (sym (active-injective
+                      (trans (sym (ValidSession.session-unchanged vs))
+                             (ValidSession.session-unchanged vs′))))) }) ,
+        λ { (get-personal-timeline vs′) → refl }))))))
+
+--------------------------------------------------------------------------------
+-- (RV8e) prop_timeline_excludes_deleted, PERSONAL branch (get-personal-timeline, Twitter.agda:557):
+-- every id the timeline returns sits at a LIVE, READABLE post, is a member of newest-first (newest-
+-- first ORDER), and the result is a PREFIX -- take n of the filtered newest-first -- of length <= n;
+-- the world is carried outright.  Membership is read through the two filter layers (∈-take / ∈-filterᵇ
+-- / ∈-filter-crp) and reflected back through their YES-proofs.
+th-prop-timeline-excludes :
+  ∀ {before n sid acc user pid} →
+  ValidSession before sid acc user →
+  pid ∈ take n (filterᵇ (follows-post-author before user)
+                        (filter (can-read-post before sid) (World.newest-first before))) →
+  CanReadPost before sid pid
+  × follows-post-author before user pid ≡ true
+  × pid ∈ World.newest-first before
+  × (∃[ post ] (World.post-at before pid ≡ just post × Post.status post ≡ live))
+  × length (take n (filterᵇ (follows-post-author before user)
+                        (filter (can-read-post before sid) (World.newest-first before)))) ≤ n
+  × (∀ {tl} → Step before (read-personal-timeline sid n) before (returned-timeline tl) →
+       tl ≡ take n (filterᵇ (follows-post-author before user)
+                      (filter (can-read-post before sid) (World.newest-first before))))
+  × (∀ {after′ tl} → Step before (read-personal-timeline sid n) after′ (returned-timeline tl) →
+       after′ ≡ before)
+th-prop-timeline-excludes {before} {n} {sid} {acc} {user} {pid} vs m =
+  (∈-filter-crp-yes {w = before} {sid} {xs = World.newest-first before} {pid = pid}
+    (∈-filterᵇ {f = follows-post-author before user} {xs = filter (can-read-post before sid) (World.newest-first before)} {pid = pid} (∈-take {xs = filterᵇ (follows-post-author before user) (filter (can-read-post before sid) (World.newest-first before))} {pid = pid} n m))) ,
+  ((∈-filterᵇ-yes {f = follows-post-author before user} {xs = filter (can-read-post before sid) (World.newest-first before)} {pid = pid} (∈-take {xs = filterᵇ (follows-post-author before user) (filter (can-read-post before sid) (World.newest-first before))} {pid = pid} n m)) ,
+   ((∈-filter-crp {w = before} {sid} {xs = World.newest-first before} {pid = pid}
+     (∈-filterᵇ {f = follows-post-author before user} {xs = filter (can-read-post before sid) (World.newest-first before)} {pid = pid} (∈-take {xs = filterᵇ (follows-post-author before user) (filter (can-read-post before sid) (World.newest-first before))} {pid = pid} n m))) ,
+    (tl-exists ,
+    (take-len
+       {xs = filterᵇ (follows-post-author before user) (filter (can-read-post before sid) (World.newest-first before))} n ,
+     (((λ { (get-personal-timeline {user = u} vs′) →
+    cong (λ h → take n (filterᵇ h (filter (can-read-post before sid) (World.newest-first before))))
+        (cong (follows-post-author before)
+              (sym (active-injective
+                     (trans (sym (ValidSession.session-unchanged vs))
+                            (ValidSession.session-unchanged vs′))))) }) ,
+       λ { (get-personal-timeline vs′) → refl }))))))
+  where
+  tl-exists : (∃[ post ] (World.post-at before pid ≡ just post × Post.status post ≡ live))
+  tl-exists =
+    crp-live {w = before} {sid} {pid = pid} (∈-filter-crp-yes {w = before} {sid} {xs = World.newest-first before} {pid = pid}
+              (∈-filterᵇ {f = follows-post-author before user} {xs = filter (can-read-post before sid) (World.newest-first before)} {pid = pid} (∈-take {xs = filterᵇ (follows-post-author before user) (filter (can-read-post before sid) (World.newest-first before))} {pid = pid} n m)))
+
+--------------------------------------------------------------------------------
+-- (RV8f) prop_timeline_excludes_deleted, ANON-GLOBAL branch (get-public-global-timeline, Twitter.agda
+-- 583): the ids returned anonymously sit at publicly-readable (live, everyone) posts, are newest-first
+-- members, and the list is a take-prefix of length <= n.
+th-prop-timeline-excludes-anon :
+  ∀ {before n pid} →
+  pid ∈ take n (filter (is-post-public before) (World.newest-first before)) →
+  (∃[ post ] (World.post-at before pid ≡ just post
+            ∧ Post.visibility post ≡ everyone
+            ∧ Post.status post     ≡ live))
+  × pid ∈ World.newest-first before
+  × length (take n (filter (is-post-public before) (World.newest-first before))) ≤ n
+  × (∀ {tl} → Step before (read-global-timeline nothing n) before (returned-timeline tl) →
+       tl ≡ take n (filter (is-post-public before) (World.newest-first before)))
+  × (∀ {after′ tl} → Step before (read-global-timeline nothing n) after′ (returned-timeline tl) →
+       after′ ≡ before)
+th-prop-timeline-excludes-anon {before} {n} {pid} m =
+  (pp-exists ,
+   ((∈-filter-puc {w = before} {xs = World.newest-first before} {pid = pid} (∈-take {xs = filter (is-post-public before) (World.newest-first before)} {pid = pid} n m)) ,
+    (take-len {xs = filter (is-post-public before) (World.newest-first before)} n ,
+     (((λ { (get-public-global-timeline) → refl }) ,
+       λ { (get-public-global-timeline) → refl })))))
+  where
+  pp-exists : (∃[ post ] (World.post-at before pid ≡ just post
+                ∧ Post.visibility post ≡ everyone
+                ∧ Post.status post     ≡ live))
+  pp-exists = ∈-filter-puc-yes {w = before} {xs = World.newest-first before} {pid = pid} (∈-take {xs = filter (is-post-public before) (World.newest-first before)} {pid = pid} n m)
