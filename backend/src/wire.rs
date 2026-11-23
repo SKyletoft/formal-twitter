@@ -6,6 +6,11 @@
 //! Content-Length itself. Everything else (order, spelling, body bytes) is exact.
 use crate::model::Command;
 
+/// Hex nibbles for the \\u00XY escapes in escape_json.
+const HEX: [char; 16] = [
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+];
+
 /// Parse errors: unknown path, wrong line count, non-numeric line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WireError {
@@ -57,23 +62,17 @@ pub struct WireResponse {
 
 /// Parse a line as u64: ASCII digits only, no sign, no space, no overflow.
 fn parse_u64(s: &str) -> Option<u64> {
-	if s.is_empty() {
+	// an empty string already fails parse::<u64>, so no explicit emptiness check
+	if !s.bytes().all(|b| b.is_ascii_digit()) {
 		return None;
-	}
-	for b in s.bytes() {
-		if !(48..=57).contains(&b) {
-			return None;
-		}
 	}
 	s.parse::<u64>().ok()
 }
 
 /// Decode one line of the body; empty string when the bytes are not UTF-8.
 fn line_text(bytes: Vec<u8>) -> String {
-	match String::from_utf8(bytes) {
-		Ok(text) => text,
-		Err(_) => "".to_string(),
-	}
+	// non-UTF-8 bytes decode to the empty string
+	String::from_utf8(bytes).unwrap_or_default()
 }
 
 /// Split a body on CRLF, LF or bare CR; drop exactly one trailing empty line.
@@ -101,7 +100,8 @@ fn split_lines(body: &[u8]) -> Vec<String> {
 		}
 	}
 	lines.push(line_text(current));
-	if lines[lines.len() - 1].is_empty() {
+	// drop exactly one trailing empty line; the vec always has one here, guard anyway
+	if lines.last().map(|l| l.is_empty()).unwrap_or(false) {
 		lines.pop();
 	}
 	lines
@@ -226,13 +226,10 @@ pub fn to_command(a: WireAction) -> Command {
 }
 
 /// The escape postulate of spec/Interface.agda, made concrete: JSON escaping.
-pub fn escape_json(s: String) -> String {
-	let hex: [char; 16] = [
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-	];
-	// preallocate: escapes grow the string, so reserve for at least the input
+fn escape_json(s: String) -> String {
 	let mut out: String = String::new();
-	out.reserve(s.len() + 8);
+	// preallocate: sane lower bound; escape-heavy input grows to 6 chars per char (\u00XY)
+	out.reserve(s.len() + 16);
 	for c in s.chars() {
 		if c == '"' {
 			out.push('\\');
@@ -255,8 +252,8 @@ pub fn escape_json(s: String) -> String {
 			out.push('u');
 			out.push('0');
 			out.push('0');
-			out.push(hex[(code / 16) as usize]);
-			out.push(hex[(code % 16) as usize]);
+			out.push(HEX[(code / 16) as usize]);
+			out.push(HEX[(code % 16) as usize]);
 		} else {
 			out.push(c);
 		}
