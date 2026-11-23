@@ -860,6 +860,23 @@ fn test_raw_and_log() {
 		lines[1].contains("login"),
 		"the second line does not name login",
 	);
+	ensure(
+		// (ST) the raw request line, not just the naming table's signup word.
+		// (the line names the very POST path serve_command was handed.)
+		// (the naming-table pin above stays; this one pins the endpoint itself.)
+		// (the request_line field reached the line byte-exact through /log.)
+		// (the same line still carries the BODY segment, pinned next.)
+		lines[0].contains("/api/signup"),
+		"the first line does not name the signup request line",
+	);
+	// (ST) the body is Debug-quoted: the CRLF join shows as literal \r\n escapes, so the
+	// (needle carries the backslash spelling the /log render emits, plaintext password and all.)
+	ensure(
+		// (BODY["erin\r\npw"] on the wire is BODY[\"erin\\r\\npw\"] in this source string.)
+		// (the verbatim-body pin: no redaction between request and log.)
+		lines[0].contains("BODY[\"erin\\r\\npw\"]"),
+		"the first line does not carry the raw body verbatim",
+	);
 	// the dump route: 200 text/plain pretty plaintext Debug of the whole cache
 	let dumped = get(8026, "/raw".to_string());
 	expect_status(&dumped, "HTTP/1.1 200 OK");

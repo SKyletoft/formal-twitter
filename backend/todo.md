@@ -4,15 +4,14 @@ Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
 
 ## Next
-- [ ] LOG1a (impl) main.rs: plumbing — LogEntry{ts,request_line,body,command,result,committed} + push_log + Server.log:Vec<LogEntry> + serve_command(+request_line,body) pushes at BOTH exits (committed flag) + serve()/serve_alias() build request_line & move body + parse-failure branch logs + /log rendering un-redacted one-liner (http_date + request_line + BODY[..] CMD[..] RES[..] COMMITTED[..]) + all unit-test serve_command call sites arity-fixed. command_to_logline KEPT test-only. Gates per-edit cargo build; final fmt/clippy/test green.
-- [ ] LOG1b (impl) tests: retarget test_log_line_naming coexisting with NEW test_log_entry_capture (verbatim body/tokens/command-Debug/committed pins) + smoke test_raw_and_log body-plaintext pins. Gates.
+- [ ] LOG1b (impl) tests: NEW bin test test_log_entry_capture — local Mutex<Server> over fresh /tmp DB, two serve_command calls (reopen arm committed=false, then committed=true), pins: request_line byte-exact, body verbatim incl token plaintext, command_txt contains Register, RESULT text; + smoke test_raw_and_log pins BODY["erin\r\npw"] + request line. Gates.
 - [ ] CLN research wave: 4 research agents one per rust file (model.rs, wire.rs, db.rs, main.rs) — report-only findings.
 - [ ] CLN impl wave: per-file small impl tasks applying accepted findings.
 - [ ] BENCH (research): design realistic perf benchmarks — NO new deps.
 - [ ] OPT (impl): benchmark-guided hot-path optimisation.
 
 ## Done (history, condensed; details in git log)
-- [x] LOG1 attempt 1 REJECTED: subagent died mid-run emitting pseudo-tool-call; left partial main.rs (build RC 101) — coordinator reverted via edit-tool (git checkout DENIED by sandbox). Lesson: subagents MUST run cargo build after EVERY edit; split impl tasks <=40 diff lines each.
+- [x] LOG1a (9a80c63): un-redacted LogEntry/push_log plumbing + request_line/body through serve()/serve_alias()/serve_command + parse-failure logging + /log one-line rendering w/ BODY[..] CMD[..] RES[..] COMMITTED[..]; naming table demoted test-only; smoke green UNCHANGED (IMF date front, names inside request line). Gates 69+19+9.
 - [x] RAW1 (069a045): /raw raw plaintext {:#?} — <pre> wrap dropped, pretty-print pins re-targeted (lib test_raw_text_shape + smoke test_raw_and_log); ImplProofs ST2 prose comment-only. Gates 69+19+9, clippy/agda/fmt 0.
 
 ## Done (history, condensed; details in git log)

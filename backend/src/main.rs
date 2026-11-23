@@ -1756,3 +1756,82 @@ fn test_log_line_naming() {
 	assert_eq!(command_to_logline(&Command::Unlike(1, 2)), "unlike-tweet");
 	assert_eq!(command_to_logline(&Command::TimePasses), "time-passes");
 }
+
+/// doc: "(LOG1b) the un-redacted capture: one serve_command call appends exactly one LogEntry — the built POST/GET request line byte-exact, the body VERBATIM (session tokens and passwords stay plaintext), the parsed Command Debug text and the committed flag from the arm that ran."
+#[test]
+fn test_log_entry_capture() {
+	use std::sync::MutexGuard;
+	// Scoped imports so the non-test build keeps zero unused names:
+	// (std::fs::remove_file: a fresh DB file, so both commit flags are deterministic)
+	// (std::sync::MutexGuard: the poison-tolerant read-back, same idiom as serve_command)
+	// formal_twitter::db::{init_or_open, reopen} and the model handles are main.rs's own
+	// (top-level imports: init_or_open is main.rs:17, reopen serves_command's :573 uses too.)
+	// (the DB path: /tmp keeps the smoke tests' DB files distinct from this one.)
+	let db: String = "/tmp/ft-logentry.sqlite".to_string();
+	// Fresh DB file: delete any leftover so re-runs pin the SAME committed flags.
+	_ = std::fs::remove_file(&db);
+	// Create the DB: init_or_open establishes plus CREATEs; the connection is DROPPED, so
+	// (the first serve_command call below must take the reopen arm (which reports committed
+	// (false and stores the fresh connection) and only THEN the held-connection commit arm.
+	_ = init_or_open(db.clone());
+	// The Server the routes manage: empty cache, NO held connection (conn: None), the log
+	// (starts empty - the very construction launch runs at main.rs:1025 with Mutex::new.
+	let srv: Mutex<Server> = Mutex::new(Server {
+		world: empty_world(),
+		db_path: db,
+		tick: 0,
+		max_seq: 0,
+		conn: None,
+		index: build_index(&empty_world()),
+		log: vec![],
+	});
+	// Call 1: the reopen arm re-syncs and stores a connection but commits NOTHING, so one
+	// (un-redacted entry with committed==false lands even on the 403 answer.
+	// (the body carries the plaintext password; the request line is the built POST line.)
+	_ = serve_command(
+		Command::Register("erin".to_string(), "pw".to_string()),
+		"POST /api/signup HTTP/1.1".to_string(),
+		"erin\r\npw".to_string(),
+		&srv,
+	);
+	// Call 2: conn is Some now, so apply_delta COMMITs the register INSERT over the re-synced
+	// (empty DB (a DENIED register would commit its zero-statement no-op delta instead, so the
+	// (flag stays true either way: Register ignores the RAM-sampled ids, hence deterministic).
+	_ = serve_command(
+		Command::Register("erin".to_string(), "pw".to_string()),
+		"POST /api/signup HTTP/1.1".to_string(),
+		"erin\r\npw".to_string(),
+		&srv,
+	);
+	// Read back through the same poison-tolerant lock serve_command takes.
+	let g: MutexGuard<Server> = match srv.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	};
+	// One entry per call, oldest first: two calls, two LogEntry rows, nothing evicted.
+	// (the naming table stays out of the line: request_line is the built POST line verbatim.)
+	assert!(g.log.len() == 2);
+	assert_eq!(
+		g.log[0].request_line,
+		"POST /api/signup HTTP/1.1".to_string()
+	);
+	assert_eq!(
+		g.log[1].request_line,
+		"POST /api/signup HTTP/1.1".to_string()
+	);
+	// Body VERBATIM: plaintext password, CRLF join kept as one string, no redaction.
+	// (the /log rendering re-quotes it via {:?}, but the stored String stays raw.)
+	assert_eq!(g.log[0].body, "erin\r\npw".to_string());
+	assert_eq!(g.log[1].body, "erin\r\npw".to_string());
+	// The Command arm: the Debug text of the parsed Command, taken before it moves into step_d.
+	// (register is the /api/signup route's constructor, so its name is in there.)
+	assert!(g.log[0].command.contains("Register"));
+	// The Result Debug text is never empty at either exit (403 arm included).
+	assert!(!g.log[0].result.is_empty());
+	assert!(!g.log[1].result.is_empty());
+	// The committed flag distinguishes the arms: reopen false, held-connection apply true.
+	// (A second signup of a name the DB already carries commits its no-op delta: the flag
+	// (below stays true either way, so it needs no random-id luck.)
+	assert!(!g.log[0].committed);
+	assert!(g.log[1].committed);
+}
