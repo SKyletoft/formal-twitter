@@ -56,17 +56,26 @@ table!(follows (follower, followee) {
 
 // ---- Encodings ----
 
+/// Wire codes for the Integer columns, shared by every enc_*/dec_* pair below.
+const VIS_EVERYONE_CODE: i32 = 0;
+const VIS_FOLLOWERS_ONLY_CODE: i32 = 1;
+const STATUS_LIVE_CODE: i32 = 0;
+const STATUS_DELETED_CODE: i32 = 1;
+const SESS_UNUSED_CODE: i32 = 0;
+const SESS_ACTIVE_CODE: i32 = 1;
+const SESS_REVOKED_CODE: i32 = 2;
+
 /// enc-vis: Everyone = 0, FollowersOnly = 1.
 pub fn enc_vis(vis: Visibility) -> i32 {
 	match vis {
-		Visibility::Everyone => 0,
-		Visibility::FollowersOnly => 1,
+		Visibility::Everyone => VIS_EVERYONE_CODE,
+		Visibility::FollowersOnly => VIS_FOLLOWERS_ONLY_CODE,
 	}
 }
 
 /// dec-vis: 1 = FollowersOnly, anything else = Everyone (corruption-tolerant).
 pub fn dec_vis(code: i32) -> Visibility {
-	if code == 1 {
+	if code == VIS_FOLLOWERS_ONLY_CODE {
 		Visibility::FollowersOnly
 	} else {
 		Visibility::Everyone
@@ -76,14 +85,14 @@ pub fn dec_vis(code: i32) -> Visibility {
 /// enc-status: live (PostStatus::Other) = 0, Deleted = 1.
 pub fn enc_status(status: PostStatus) -> i32 {
 	match status {
-		PostStatus::Other => 0,
-		PostStatus::Deleted => 1,
+		PostStatus::Other => STATUS_LIVE_CODE,
+		PostStatus::Deleted => STATUS_DELETED_CODE,
 	}
 }
 
 /// dec-status: 1 = Deleted, anything else = live.
 pub fn dec_status(code: i32) -> PostStatus {
-	if code == 1 {
+	if code == STATUS_DELETED_CODE {
 		PostStatus::Deleted
 	} else {
 		PostStatus::Other
@@ -91,21 +100,13 @@ pub fn dec_status(code: i32) -> PostStatus {
 }
 
 /// Session row encoding: (1, user) = Active, (2, NULL) = Revoked, (0, NULL) = Unused.
-pub fn enc_sess_row(st: SessionStatus) -> (i32, Option<String>) {
+/// The status arrives by reference, so apply()'s borrowed views never copy it; only the
+/// Active username is copied, where this runs.
+pub fn enc_sess_row(st: &SessionStatus) -> (i32, Option<String>) {
 	match st {
-		SessionStatus::Active(username) => (1, Some(username)),
-		SessionStatus::Revoked => (2, None),
-		SessionStatus::Unused => (0, None),
-	}
-}
-
-/// Borrowed sibling of enc_sess_row (task TB): the status arrives by reference, so apply()'s
-/// borrowed views never copy it; only the Active username is copied, where this runs.
-pub fn enc_sess_row_ref(st: &SessionStatus) -> (i32, Option<String>) {
-	match st {
-		SessionStatus::Active(username) => (1, Some(username.clone())),
-		SessionStatus::Revoked => (2, None),
-		SessionStatus::Unused => (0, None),
+		SessionStatus::Active(username) => (SESS_ACTIVE_CODE, Some(username.clone())),
+		SessionStatus::Revoked => (SESS_REVOKED_CODE, None),
+		SessionStatus::Unused => (SESS_UNUSED_CODE, None),
 	}
 }
 
@@ -113,9 +114,9 @@ pub fn enc_sess_row_ref(st: &SessionStatus) -> (i32, Option<String>) {
 /// (0, nothing) -> Unused; malformed rows decode to Unused.
 pub fn dec_sess_row(code: i32, user: Option<String>) -> SessionStatus {
 	match (code, user) {
-		(1, Some(username)) => SessionStatus::Active(username),
-		(2, None) => SessionStatus::Revoked,
-		(0, None) => SessionStatus::Unused,
+		(SESS_ACTIVE_CODE, Some(username)) => SessionStatus::Active(username),
+		(SESS_REVOKED_CODE, None) => SessionStatus::Revoked,
+		(SESS_UNUSED_CODE, None) => SessionStatus::Unused,
 		_ => SessionStatus::Unused,
 	}
 }
@@ -128,6 +129,11 @@ CREATE TABLE posts (pid INTEGER PRIMARY KEY, author TEXT, text TEXT, visibility 
 CREATE TABLE likes (post_pid INTEGER, user TEXT);
 CREATE TABLE replies (post_pid INTEGER, reply_pid INTEGER);
 CREATE TABLE follows (follower TEXT, followee TEXT);";
+
+/// One sqlite transaction per batch: BEGIN opens it, COMMIT closes it, ROLLBACK undoes it.
+const BEGIN_SQL: &str = "BEGIN TRANSACTION;";
+const COMMIT_SQL: &str = "COMMIT TRANSACTION;";
+const ROLLBACK_SQL: &str = "ROLLBACK TRANSACTION;";
 
 /// Open (or create) the SQLite database at path. The CREATEs are attempted on
 /// every startup: on an existing DB they all fail atomically (batch_execute is
@@ -225,13 +231,14 @@ pub fn load_world(conn: &mut SqliteConnection) -> World {
 					// (F5) O(1) bucket lookup replaces the full-row-list filter;
 					likes: like_map
 						.get(&(pid as u64))
-						.unwrap_or(&vec![])
-						.iter()
-						.map(|user| user.to_string())
-						.collect(),
+						.map(|users| users.iter().map(|user| user.clone()).collect())
+						.unwrap_or_default(),
 					// (F5) same for the reply buckets (u64 ids are copied).
 					// (F5) deref gives the u64 id.
-					replies: reply_map.get(&(pid as u64)).unwrap_or(&vec![]).to_vec(),
+					replies: reply_map
+						.get(&(pid as u64))
+						.map(|v| v.clone())
+						.unwrap_or_default(),
 					parent: parent.map(|p| p as u64),
 				},
 			)
@@ -463,14 +470,15 @@ pub fn reload_posts(conn: &mut SqliteConnection, w: World) -> World {
 					// (F5) None (no likes) falls back to an empty list.
 					likes: like_map
 						.get(&(pid as u64))
-						.unwrap_or(&vec![])
-						.iter()
-						.map(|user| user.to_string())
-						.collect(),
+						.map(|users| users.iter().map(|user| user.clone()).collect())
+						.unwrap_or_default(),
 					// (F5) same for the reply buckets (u64 ids are copied).
 					// (F5) deref gives the u64 id.
 					// (F5) None means the post has no replies.
-					replies: reply_map.get(&(pid as u64)).unwrap_or(&vec![]).to_vec(),
+					replies: reply_map
+						.get(&(pid as u64))
+						.map(|v| v.clone())
+						.unwrap_or_default(),
 					parent: parent.map(|p| p as u64),
 				},
 			)
@@ -517,7 +525,7 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 		.sessions
 		.into_iter()
 		.map(|(sid, st)| {
-			let (code, user) = enc_sess_row(st);
+			let (code, user) = enc_sess_row(&st);
 			(
 				sessions::dsl::sid.eq(sid as i64),
 				sessions::dsl::status.eq(code),
@@ -536,7 +544,7 @@ pub fn save_world(conn: &mut SqliteConnection, w: World) {
 			posts::dsl::visibility.eq(enc_vis(post.visibility)),
 			posts::dsl::status.eq(enc_status(post.status)),
 			posts::dsl::parent.eq(post.parent.map(|p| p as i64)),
-			posts::dsl::seq.eq(*seq_of.get(&pid).unwrap_or(&0)),
+			posts::dsl::seq.eq(seq_of.get(&pid).copied().unwrap_or(0)),
 		));
 		for user in post.likes.into_iter() {
 			like_rows.push((
@@ -609,15 +617,14 @@ pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
 		.select(posts::dsl::seq)
 		.load::<i64>(conn)
 		.unwrap_or_default();
-	let mut best: u64 = 0;
-	for s in seqs.into_iter() {
-		// (F3) Guard before the signed-to-unsigned cast, so save_world's lossy seq = 0
-		// (F3) rows and any negative stamp never raise the hint.
-		if s > 0 && (s as u64) > best {
-			best = s as u64;
-		}
-	}
-	best
+	// (F3) Guard before the signed-to-unsigned cast, so save_world's lossy seq = 0
+	// (F3) rows and any negative stamp never raise the hint: non-positive stamps are
+	// (F3) filtered out before the cast; an all-filtered/empty DB defaults to 0.
+	seqs.into_iter()
+		.filter(|s| *s > 0)
+		.map(|s| s as u64)
+		.max()
+		.unwrap_or_default()
 }
 
 /// test-only reference: Bounded write-through: the DB must already mirror `before`; we mutate only
@@ -642,7 +649,7 @@ pub fn db_max_seq(conn: &mut SqliteConnection) -> u64 {
 pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hint: u64) -> bool {
 	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
 	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
-	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
+	let mut ok = conn.batch_execute(BEGIN_SQL).is_ok();
 	let prev_users: HashSet<&String> = before
 		.accounts
 		.iter()
@@ -682,7 +689,7 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 	for (sid, status) in after.sessions.iter() {
 		match prev_sessions.get(sid) {
 			None => {
-				let (code, user) = enc_sess_row_ref(status);
+				let (code, user) = enc_sess_row(status);
 				ok &= insert_into(sessions::dsl::sessions)
 					.values((
 						sessions::dsl::sid.eq(*sid as i64),
@@ -694,7 +701,7 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 			}
 			Some(old) => {
 				if **old != *status {
-					let (code, user) = enc_sess_row_ref(status);
+					let (code, user) = enc_sess_row(status);
 					ok &= update(sessions::dsl::sessions)
 						.filter(sessions::dsl::sid.eq(*sid as i64))
 						.set((sessions::dsl::status.eq(code), sessions::dsl::user.eq(user)))
@@ -885,10 +892,10 @@ pub fn apply(conn: &mut SqliteConnection, before: &World, after: &World, max_hin
 		}
 	}
 	if !ok {
-		let _ = conn.batch_execute("ROLLBACK TRANSACTION;");
+		let _ = conn.batch_execute(ROLLBACK_SQL);
 		return false;
 	}
-	conn.batch_execute("COMMIT TRANSACTION;").is_ok()
+	conn.batch_execute(COMMIT_SQL).is_ok()
 }
 
 // ---- Delta-driven write-through (task F2) ----
@@ -910,7 +917,7 @@ pub fn apply_delta(
 ) -> bool {
 	// Transactional write-through: BEGIN first; every statement's recoverable QueryResult
 	// is ANDed into ok, and the batch COMMITs only if all of them (plus BEGIN) succeeded.
-	let mut ok = conn.batch_execute("BEGIN TRANSACTION;").is_ok();
+	let mut ok = conn.batch_execute(BEGIN_SQL).is_ok();
 	// (F2) one branch per Delta constructor: the payload moves in, so its strings and
 	// (F2) accounts are never copied.
 	match delta {
@@ -975,7 +982,7 @@ pub fn apply_delta(
 			// (F2) login issues a FRESH sid, so this is apply's new-session INSERT: the
 			// (F2) (1, just user) Active row. A sid that is already stored clashes the
 			// (F2) PRIMARY KEY and rolls the whole batch back.
-			let (code, row_user) = enc_sess_row(SessionStatus::Active(user));
+			let (code, row_user) = enc_sess_row(&SessionStatus::Active(user));
 			ok &= insert_into(sessions::dsl::sessions)
 				.values((
 					sessions::dsl::sid.eq(sid as i64),
@@ -988,7 +995,7 @@ pub fn apply_delta(
 		Delta::RevokeToken(sid) => {
 			// (F2) logout: apply's existing-sid session UPDATE, both columns of its set-pair
 			// (F2) (status AND user) moving together.
-			let (code, row_user) = enc_sess_row(SessionStatus::Revoked);
+			let (code, row_user) = enc_sess_row(&SessionStatus::Revoked);
 			ok &= update(sessions::dsl::sessions)
 				.filter(sessions::dsl::sid.eq(sid as i64))
 				.set((
@@ -1061,7 +1068,7 @@ pub fn apply_delta(
 			// (F2) apply's UPDATE for every session whose status changed: ONE write per
 			// (F2) sid, same set-pair as the RevokeToken branch.
 			for sid in sids.into_iter() {
-				let (code, row_user) = enc_sess_row(SessionStatus::Revoked);
+				let (code, row_user) = enc_sess_row(&SessionStatus::Revoked);
 				ok &= update(sessions::dsl::sessions)
 					.filter(sessions::dsl::sid.eq(sid as i64))
 					.set((
@@ -1074,10 +1081,10 @@ pub fn apply_delta(
 		}
 	}
 	if !ok {
-		let _ = conn.batch_execute("ROLLBACK TRANSACTION;");
+		let _ = conn.batch_execute(ROLLBACK_SQL);
 		return false;
 	}
-	conn.batch_execute("COMMIT TRANSACTION;").is_ok()
+	conn.batch_execute(COMMIT_SQL).is_ok()
 }
 
 #[cfg(test)]
