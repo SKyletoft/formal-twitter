@@ -15,6 +15,7 @@ use diesel::connection::SimpleConnection;
 use diesel::delete;
 use diesel::insert_into;
 use diesel::prelude::*;
+use diesel::sql_query;
 use diesel::update;
 
 table!(accounts (username) {
@@ -137,12 +138,79 @@ const BEGIN_SQL: &str = "BEGIN TRANSACTION;";
 const COMMIT_SQL: &str = "COMMIT TRANSACTION;";
 const ROLLBACK_SQL: &str = "ROLLBACK TRANSACTION;";
 
+/// (d3) Does every CREATE_SQL table answer a bare SELECT? diesel's sql_query
+/// errors exactly when sqlite cannot resolve the table, so all Ok means the
+/// schema is complete: a failed CREATE batch was then the reentrant collision,
+/// not a genuine fault. Bare `SELECT 1 FROM t LIMIT 1` costs one indexed probe
+/// per table and runs only at launch. Index lines are NOT probed: pre-OPT-3
+/// DBs legitimately lack them and must still init Ok (collision tolerated).
+fn tables_present(conn: &mut SqliteConnection) -> bool {
+	sql_query("SELECT 1 FROM accounts LIMIT 1")
+		.execute(conn)
+		.is_ok()
+		&& sql_query("SELECT 1 FROM sessions LIMIT 1")
+			.execute(conn)
+			.is_ok()
+		&& sql_query("SELECT 1 FROM posts LIMIT 1")
+			.execute(conn)
+			.is_ok()
+		&& sql_query("SELECT 1 FROM likes LIMIT 1")
+			.execute(conn)
+			.is_ok()
+		&& sql_query("SELECT 1 FROM replies LIMIT 1")
+			.execute(conn)
+			.is_ok()
+		&& sql_query("SELECT 1 FROM follows LIMIT 1")
+			.execute(conn)
+			.is_ok()
+}
+
 /// Open (or create) the SQLite database at path. The CREATEs are attempted on
 /// every startup: on an existing DB they all fail atomically (batch_execute is
 /// one transaction), and we ignore that error, which makes startup reentrant.
+/// (d3) The swallowed CREATE error is now PROBED, not blindly ignored: after a
+/// failed batch every expected table must answer a SELECT, or the failure was
+/// a genuine sqlite fault (e.g. a CREATE_SQL syntax error) and it propagates,
+/// so startup never runs against a half-created schema. Launch-only: zero
+/// steady-state cost; index lines stay unprobed, older DBs still init Ok.
 pub fn init_or_open(path: String) -> ConnectionResult<SqliteConnection> {
 	let mut conn = SqliteConnection::establish(&path)?;
-	let _created = conn.batch_execute(CREATE_SQL);
+	// (d3) keep attempting the CREATEs; classify (not discard) a batch failure.
+	let created = conn.batch_execute(CREATE_SQL);
+	// (d3) failed batch -> probe every expected table (ST: && short-circuits, so
+	// the SELECT probes run only on a failed batch, once at launch). All present
+	// -> the reentrant CREATE collision, ignored exactly as before; a fresh DB
+	// took the Ok batch path (no probe, zero steady-state cost). Missing table
+	// -> genuine sqlite fault (e.g. CREATE_SQL syntax): startup must not serve
+	// a half-created schema, so propagate. The error type is pinned to
+	// ConnectionError (ST: no From from a query Error); BadConnection ("the
+	// database returned an error", ST) carries the sqlite DatabaseError message
+	// verbatim via the payload trait message(); other shapes get a static tag.
+	if let Err(error) = created {
+		// (d3) collision or fault? Tables present -> collision, done (and
+		// (ST) pre-OPT-3 DBs without the index lines still pass: only tables
+		// are probed, so their batch error stays tolerated).
+		if !tables_present(&mut conn) {
+			// (d3) genuine CREATE fault: propagate it. sqlite text kept when
+			// the error is a DatabaseError (ST: Box payload trait message();
+			// static tag otherwise). No unwrap: the match moves the captured
+			// error out; the Ok arm is unreachable (if-let saw Err above).
+			// (ST) BadConnection(String) = "the database returned an error".
+			// (d3) any shape ends startup with Err: a half-created DB never
+			// (d3) gets served, and the failed atomic batch rolled its CREATEs
+			// (d3) back, so the DB file is untouched by this probe pass.
+			return Err(match error {
+				// (d3) sqlite message verbatim (ST: kind unused).
+				diesel::result::Error::DatabaseError(_kind, info) => {
+					ConnectionError::BadConnection(info.message().to_string())
+				}
+				// (d3) static tag, still a real Err (ST: other Error variants).
+				_ => ConnectionError::BadConnection(
+					"CREATE_SQL batch failed and an expected table is missing".to_string(),
+				),
+			});
+		}
+	}
 	Ok(conn)
 }
 
@@ -1052,6 +1120,7 @@ mod db_tests {
 	use crate::model::empty_world;
 	// (F2) the Delta sum-type and patch_world pin what apply_delta must reproduce.
 	use crate::model::{Delta, patch_world};
+	use diesel::connection::SimpleConnection;
 	use diesel::prelude::*;
 
 	/// Canonical well-formed World for the save/load tests; rows are pre-sorted in the
@@ -1124,6 +1193,30 @@ mod db_tests {
 			used_post_ids: vec![1, 2, 3],
 			used_session_ids: vec![100, 200],
 		}
+	}
+
+	// ---- (d3) init_or_open fault-vs-collision probe tests ----
+
+	/// (d3) Fixture: an existing DB where CREATE_SQL collides for every table except `posts`,
+	/// i.e. a valid sqlite DB missing one expected table.
+	// (ST) The 5 CREATE lines are verbatim CREATE_SQL minus the posts line; collisions on re-runs
+	// (ST) are ignored here on purpose: the fixture only grows, never gains `posts`.
+	fn craft_db_missing_posts(path: String) {
+		let mut conn: SqliteConnection = SqliteConnection::establish(&path).unwrap();
+		let _fixture = conn.batch_execute("CREATE TABLE accounts (username TEXT PRIMARY KEY, password TEXT, visibility INTEGER); CREATE TABLE sessions (sid INTEGER PRIMARY KEY, status INTEGER, user TEXT); CREATE TABLE likes (post_pid INTEGER, user TEXT); CREATE TABLE replies (post_pid INTEGER, reply_pid INTEGER); CREATE TABLE follows (follower TEXT, followee TEXT);");
+	}
+
+	/// (d3) NEW discrimination: valid sqlite DB missing the posts table -> init_or_open returns
+	/// Err (the probe finds the table missing). Existing COMPLETE db -> Ok (collision tolerated);
+	/// fresh db -> Ok, covered by test_db_empty and test_db_roundtrip above.
+	#[test]
+	/// (d3) gate: missing-table DB is now an Err, not a swallowed collision.
+	// (d3) A genuine CREATE fault on a fresh DB hits the same branch and propagates too.
+	fn test_init_or_open_missing_table_errs() {
+		craft_db_missing_posts("/tmp/ft-db-test-missing-table.sqlite".to_string());
+		let missing: ConnectionResult<SqliteConnection> =
+			init_or_open("/tmp/ft-db-test-missing-table.sqlite".to_string());
+		assert!(missing.is_err());
 	}
 
 	/// init_or_open creates the DB file; load_world on a fresh DB gives the empty World.
