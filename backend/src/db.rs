@@ -895,24 +895,24 @@ pub fn apply_delta(
 			}
 		}
 		Delta::Delete(pid) => {
-			// (F2) visibility is not part of the effect, yet apply's posts UPDATE writes that
-			// (F2) exact column pair (status AND visibility), so the row's current visibility
-			// (F2) comes from the caller's before-cache. pids are unique: first hit wins.
-			let cur_vis: Visibility = match before.posts.iter().find(|(row_pid, _)| *row_pid == pid)
-			{
-				Some((_, post)) => post.visibility.clone(),
-				// (F2) the cache lost the row: load's decode default, and the delta only ever
-				// (F2) comes for a stored post, so the UPDATE stays total.
-				None => Visibility::Everyone,
-			};
+			// (OPT-4) no RAM scan for the row: the old O(P) before.posts find existed ONLY to
+			// (OPT-4) re-write the visibility column this UPDATE already keys by pid, and pids are
+			// (OPT-4) unique, so the stored visibility is already the DB's - Publish is the only
+			// (OPT-4) delta that writes a post's visibility, so dropping that column from the
+			// (OPT-4) set-pair is semantics-preserving (the DB, not RAM, is the source of truth)
+			// (OPT-4) and stops a stale cache from re-stamping a default over the stored value.
+			// (ST) posts' pid is the PRIMARY KEY, so the UPDATE scans O(1) rows, never O(P).
 			// (F2) UPDATE, never DELETE: tombstones persist (the spec's reap is commented
-			// (F2) out), so likes, replies and the parent column all stay put.
+			// (F2) out), so likes, replies, visibility and the parent column all stay put.
+			// (F2) apply's column pair (status AND visibility) collapses to status alone: the
+			// (F2) visibility write was an identity write of the row's own stored value.
+			// (OPT-4) `before` keeps its pinned place in the signature (callers pass the RAM
+			// (OPT-4) cache) but this branch reads only the DB.
+			// (OPT-4) the cache is a pinned parameter, never a source of served data here.
+			let _ = before;
 			ok &= update(posts::dsl::posts)
 				.filter(posts::dsl::pid.eq(pid as i64))
-				.set((
-					posts::dsl::status.eq(enc_status(PostStatus::Deleted)),
-					posts::dsl::visibility.eq(enc_vis(cur_vis)),
-				))
+				.set(posts::dsl::status.eq(enc_status(PostStatus::Deleted)))
 				.execute(conn)
 				.is_ok();
 		}
@@ -1710,9 +1710,9 @@ mod db_tests {
 	}
 
 	#[test]
-	/// F2 gate: Delete emits ONE posts UPDATE over apply's exact column pair (status AND
-	/// visibility), never a row DELETE: the tombstone keeps its likes, replies, parent and
-	/// seq, and a second Delete of the same pid is idempotent.
+	/// F2 gate (OPT-4): Delete emits ONE posts UPDATE, status only, never a row DELETE: the
+	/// tombstone keeps its stored visibility, likes, replies, parent and seq, and a second
+	/// Delete of the same pid is idempotent.
 	fn test_apply_delta_delete() {
 		let path = "/tmp/ft-delta-delete.sqlite";
 		let mut conn = init_or_open(path.to_string()).unwrap();
@@ -1724,7 +1724,7 @@ mod db_tests {
 		// (F2) patch_world flips the status to Deleted and touches nothing else.
 		let gone: Delta = Delta::Delete(1);
 		let after: World = patch_world(before.clone(), gone.clone());
-		// (F2) one UPDATE: the row's visibility comes from the before-cache.
+		// (OPT-4) one UPDATE, status only: the row's visibility stays whatever the DB stores.
 		assert!(apply_delta(&mut conn, &before, gone.clone(), 3));
 		// (F2) load agrees with patch: status flips, likes/replies/parent stay put.
 		assert!(load_world(&mut conn) == after);
@@ -1735,7 +1735,7 @@ mod db_tests {
 		// (F2) the like row and the reply row still hang off the deleted post.
 		assert!(loaded.posts[0].1.likes == vec!["bob".to_string()]);
 		assert!(loaded.posts[0].1.replies == vec![2]);
-		// (F2) visibility survived the UPDATE: apply writes that exact column pair.
+		// (F2) visibility survived: the UPDATE leaves the stored column alone (identity write).
 		assert!(loaded.posts[0].1.visibility == Visibility::Everyone);
 		// (F2) no stamp moved: an UPDATE never re-writes seq.
 		assert!(seq_pairs(&mut again) == vec![(1, 1), (2, 2), (3, 3)]);
