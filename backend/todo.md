@@ -21,8 +21,8 @@ POLICY (user 2026-11-24): NO parallel cargo agents in the shared tree — benchm
 - [x] CLN-w2 ACCEPTED+COMMITTED (17d6d83): line_text &[u8], split_lines split(13) rework, format!("\\u{:04x}"), respond const statics; ImplWire wi-resp-* refl pins MUST stay green (revert-on-red).
 - [x] OPT-4 ACCEPTED+COMMITTED (11e80a2): apply_delta Delete branch O(P) RAM find dropped (UPDATE keyed by pid PK; visibility was identity write, Publish sole writer; DB-over-cache fix). let _ = before keeps pinned sig; delete scenario-pin re-verified.
 - [x] CLN-m2 ACCEPTED+COMMITTED (faa9f79): log_parse_failure extract, lock_server guard fn, single LogEntry+committed local, result_txt hoist, build_response fold, #[cfg(test)] command_to_logline, doc-once, LOG_CAP consts (byte-exact), query_param/alias_body alloc trims. CHECK items (m3) skipped.
-- [ ] CLN-m3a (impl main.rs): define_post!/alias macro family — the 13 POST + 3 GET-alias route prologues. RUNNING solo (serial policy).
-- [ ] CLN-m3b (impl main.rs, low-value remainder): deny_response vs phantom _e, CACHE_SECTIONS=4 reload table, cache frontend_root at launch, smoke -s KILL note — queued after m3a.
+- [x] CLN-m3a (impl main.rs): define_post!/alias macro family — REVERTED (user 2026-11-24: macro too ugly; hand-written prologues kept). fmt/build/clippy/tests green; file clean at HEAD 1f45031.
+- [ ] CLN-m3b (impl main.rs, low-value remainder): deny_response vs phantom _e, CACHE_SECTIONS=4 reload table, cache frontend_root at launch, smoke -s KILL note — queued after m3a; user 2026-11-24 chose Stop and wait (not started).
 - [ ] CLN-m1b (low value): unique O(n^2) kept — HashSet body impossible under pinned PartialEq sig; revisit only bound-preserving.
 - [x] CLN-s1 (smoke.rs SAFE batch) — PARTIAL ACCEPT (wrap-up forced): landed 11 PORT_* consts :13-23 + 103 literal sites byte-exact; gates all green (69+20+1+9 smoke). Remaining items handed to CLN-s1b.
 - [x] CLN-s1b ACCEPTED+COMMITTED (044a0da): send_and_read fold (req/get), want hoist, dead World assert, 4096 const, numbers_in->number_after, windows(2).any — ALL landed; gates green.
