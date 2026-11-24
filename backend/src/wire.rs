@@ -128,56 +128,55 @@ fn count_err(lines: &[String], want: usize) -> WireError {
 	WireError::UnexpectedLine
 }
 
+/// (w3) Arity scaffold shared by fixed-arity parsers: Ok only when the body has exactly
+/// want lines, otherwise the same count error the old per-parser guards returned.
+fn arity(lines: &[String], want: usize) -> Result<&[String], WireError> {
+	if lines.len() != want {
+		return Err(count_err(lines, want));
+	}
+	Ok(lines)
+}
+
 /// Body of exactly two numeric lines.
 fn two_nums(lines: &[String]) -> Result<(u64, u64), WireError> {
-	if lines.len() != 2 {
-		return Err(count_err(lines, 2));
-	}
-	match (parse_u64(&lines[0]), parse_u64(&lines[1])) {
+	// (w3) the old parse is verbatim, now behind the shared arity scaffold
+	arity(lines, 2).and_then(|ls| match (parse_u64(&ls[0]), parse_u64(&ls[1])) {
 		(Some(a), Some(b)) => Ok((a, b)),
 		(_, _) => Err(WireError::BadNumber),
-	}
+	})
 }
 
 /// Body of a token followed by free text.
 fn token_text(lines: &[String]) -> Result<(u64, String), WireError> {
-	if lines.len() != 2 {
-		return Err(count_err(lines, 2));
-	}
-	match parse_u64(&lines[0]) {
-		Some(tk) => Ok((tk, lines[1].clone())),
+	// (w3) the old parse is verbatim, now behind the shared arity scaffold
+	arity(lines, 2).and_then(|ls| match parse_u64(&ls[0]) {
+		Some(tk) => Ok((tk, ls[1].clone())),
 		None => Err(WireError::BadNumber),
-	}
+	})
 }
 
 /// Body of two free-text lines (login and signup).
 fn two_texts(lines: &[String]) -> Result<(String, String), WireError> {
-	if lines.len() != 2 {
-		return Err(count_err(lines, 2));
-	}
-	Ok((lines[0].clone(), lines[1].clone()))
+	// (w3) the old parse is verbatim, now behind the shared arity scaffold
+	arity(lines, 2).map(|ls| (ls[0].clone(), ls[1].clone()))
 }
 
 /// Body of exactly one numeric line.
 fn one_num(lines: &[String]) -> Result<u64, WireError> {
-	if lines.len() != 1 {
-		return Err(count_err(lines, 1));
-	}
-	match parse_u64(&lines[0]) {
+	// (w3) the old parse is verbatim, now behind the shared arity scaffold
+	arity(lines, 1).and_then(|ls| match parse_u64(&ls[0]) {
 		Some(n) => Ok(n),
 		None => Err(WireError::BadNumber),
-	}
+	})
 }
 
 /// Body <token> <text> <tweet-id> of to-request post-reply.
 fn reply(lines: &[String]) -> Result<(u64, String, u64), WireError> {
-	if lines.len() != 3 {
-		return Err(count_err(lines, 3));
-	}
-	match (parse_u64(&lines[0]), parse_u64(&lines[2])) {
-		(Some(tk), Some(twt)) => Ok((tk, lines[1].clone(), twt)),
+	// (w3) the old parse is verbatim, now behind the shared arity scaffold
+	arity(lines, 3).and_then(|ls| match (parse_u64(&ls[0]), parse_u64(&ls[2])) {
+		(Some(tk), Some(twt)) => Ok((tk, ls[1].clone(), twt)),
 		(_, _) => Err(WireError::BadNumber),
-	}
+	})
 }
 
 /// A single numeric line is anonymous; two numeric lines carry a token.
@@ -194,29 +193,79 @@ fn opt_num(lines: &[String]) -> Result<(Option<u64>, u64), WireError> {
 	}
 }
 
-/// Parse a request body for one of the 13 endpoints.
+/// (w3) Endpoint table replacing the old 13-arm match: each entry is (path, parser∘ctor).
+/// The audit's (path, parser, ctor) triples collapse to (path, parser∘ctor) because the
+/// ctor argument types differ per endpoint and Rust cannot erase them in a const table.
+/// (w3) Element type of ENDPOINT_TABLE: path and the endpoint's parse-and-construct fn.
+type EndpointFn = fn(&[String]) -> Result<WireAction, WireError>;
+const ENDPOINT_TABLE: &[(&str, EndpointFn)] = &[
+	(
+		"/api/post-tweet",
+		(|ls| token_text(ls).map(|(tk, txt)| WireAction::PostTweet(tk, txt))) as EndpointFn,
+	),
+	(
+		"/api/post-reply",
+		(|ls| reply(ls).map(|(tk, txt, twt)| WireAction::PostReply(tk, txt, twt))) as EndpointFn,
+	),
+	(
+		"/api/delete-tweet",
+		(|ls| two_nums(ls).map(|(tk, twt)| WireAction::DeleteTweet(tk, twt))) as EndpointFn,
+	),
+	(
+		"/api/like-tweet",
+		(|ls| two_nums(ls).map(|(tk, twt)| WireAction::Like(tk, twt))) as EndpointFn,
+	),
+	(
+		"/api/unlike-tweet",
+		(|ls| two_nums(ls).map(|(tk, twt)| WireAction::Unlike(tk, twt))) as EndpointFn,
+	),
+	(
+		"/api/follow-user",
+		(|ls| token_text(ls).map(|(tk, u)| WireAction::Follow(tk, u))) as EndpointFn,
+	),
+	(
+		"/api/unfollow-user",
+		(|ls| token_text(ls).map(|(tk, u)| WireAction::Unfollow(tk, u))) as EndpointFn,
+	),
+	(
+		"/api/get-tweet",
+		(|ls| opt_num(ls).map(|(tk, twt)| WireAction::GetTweet(tk, twt))) as EndpointFn,
+	),
+	(
+		"/api/global-timeline",
+		(|ls| opt_num(ls).map(|(tl, n)| WireAction::GlobalTimeline(tl, n))) as EndpointFn,
+	),
+	(
+		"/api/private-timeline",
+		(|ls| two_nums(ls).map(|(tk, n)| WireAction::PrivateTimeline(tk, n))) as EndpointFn,
+	),
+	(
+		"/api/logout",
+		(|ls| one_num(ls).map(WireAction::Logout)) as EndpointFn,
+	),
+	(
+		"/api/login",
+		(|ls| two_texts(ls).map(|(u, p)| WireAction::Login(u, p))) as EndpointFn,
+	),
+	(
+		"/api/signup",
+		(|ls| two_texts(ls).map(|(u, p)| WireAction::Signup(u, p))) as EndpointFn,
+	),
+];
+
+/// Parse a request body for one of the 13 endpoints. (w3) Table-driven dispatch: same
+/// accepted endpoint set, same refusals and token-first arities as the old match; the
+/// table order mirrors the old arm order and paths are unique, so the verdict is fixed.
 pub fn parse_action(path: &str, body: &[u8]) -> Result<WireAction, WireError> {
 	let lines = split_lines(body);
-	match path {
-		"/api/post-tweet" => token_text(&lines).map(|(tk, txt)| WireAction::PostTweet(tk, txt)),
-		"/api/post-reply" => {
-			reply(&lines).map(|(tk, txt, twt)| WireAction::PostReply(tk, txt, twt))
+	// (w3) was a match on path: now a first-hit scan of ENDPOINT_TABLE
+	// paths unique -> scan order cannot change the verdict; unknown paths fall through
+	for (ep, ep_fn) in ENDPOINT_TABLE {
+		if *ep == path {
+			return ep_fn(&lines);
 		}
-		"/api/delete-tweet" => two_nums(&lines).map(|(tk, twt)| WireAction::DeleteTweet(tk, twt)),
-		"/api/like-tweet" => two_nums(&lines).map(|(tk, twt)| WireAction::Like(tk, twt)),
-		"/api/unlike-tweet" => two_nums(&lines).map(|(tk, twt)| WireAction::Unlike(tk, twt)),
-		"/api/follow-user" => token_text(&lines).map(|(tk, u)| WireAction::Follow(tk, u)),
-		"/api/unfollow-user" => token_text(&lines).map(|(tk, u)| WireAction::Unfollow(tk, u)),
-		"/api/get-tweet" => opt_num(&lines).map(|(tk, twt)| WireAction::GetTweet(tk, twt)),
-		"/api/global-timeline" => opt_num(&lines).map(|(tl, n)| WireAction::GlobalTimeline(tl, n)),
-		"/api/private-timeline" => {
-			two_nums(&lines).map(|(tk, n)| WireAction::PrivateTimeline(tk, n))
-		}
-		"/api/logout" => one_num(&lines).map(WireAction::Logout),
-		"/api/login" => two_texts(&lines).map(|(u, p)| WireAction::Login(u, p)),
-		"/api/signup" => two_texts(&lines).map(|(u, p)| WireAction::Signup(u, p)),
-		_ => Err(WireError::UnknownEndpoint),
 	}
+	Err(WireError::UnknownEndpoint)
 }
 
 /// from-input of spec/Interface.agda.
@@ -344,7 +393,8 @@ pub fn respond(r: ApiResponse, date: String) -> WireResponse {
 #[cfg(test)]
 mod wire_tests {
 	use super::{
-		ApiResponse, WireAction, WireError, escape_json, parse_action, respond, to_command,
+		ApiResponse, WireAction, WireError, count_err, escape_json, one_num, opt_num, parse_action,
+		parse_u64, reply, respond, to_command, token_text, two_nums, two_texts,
 	};
 	use crate::model::Command;
 	use quickcheck_macros::quickcheck;
@@ -666,5 +716,99 @@ mod wire_tests {
 		}
 		let body = format!("{}\r\n{}\r\n", tk, txt);
 		parse_action("/api/post-tweet", body.as_bytes()) == Ok(WireAction::PostTweet(tk, txt))
+	}
+
+	/// (w3) Audit copies of the pre-w3 parsers, verbatim, each keeping its own inline
+	/// len != N Err(count_err) scaffolding so the shared arity combinator is diffed honestly.
+	fn ref_two_nums(lines: &[String]) -> Result<(u64, u64), WireError> {
+		if lines.len() != 2 {
+			return Err(count_err(lines, 2));
+		}
+		match (parse_u64(&lines[0]), parse_u64(&lines[1])) {
+			(Some(a), Some(b)) => Ok((a, b)),
+			(_, _) => Err(WireError::BadNumber),
+		}
+	}
+
+	fn ref_token_text(lines: &[String]) -> Result<(u64, String), WireError> {
+		if lines.len() != 2 {
+			return Err(count_err(lines, 2));
+		}
+		match parse_u64(&lines[0]) {
+			Some(tk) => Ok((tk, lines[1].clone())),
+			None => Err(WireError::BadNumber),
+		}
+	}
+
+	fn ref_two_texts(lines: &[String]) -> Result<(String, String), WireError> {
+		if lines.len() != 2 {
+			return Err(count_err(lines, 2));
+		}
+		Ok((lines[0].clone(), lines[1].clone()))
+	}
+
+	fn ref_one_num(lines: &[String]) -> Result<u64, WireError> {
+		if lines.len() != 1 {
+			return Err(count_err(lines, 1));
+		}
+		match parse_u64(&lines[0]) {
+			Some(n) => Ok(n),
+			None => Err(WireError::BadNumber),
+		}
+	}
+
+	fn ref_reply(lines: &[String]) -> Result<(u64, String, u64), WireError> {
+		if lines.len() != 3 {
+			return Err(count_err(lines, 3));
+		}
+		match (parse_u64(&lines[0]), parse_u64(&lines[2])) {
+			(Some(tk), Some(twt)) => Ok((tk, lines[1].clone(), twt)),
+			(_, _) => Err(WireError::BadNumber),
+		}
+	}
+
+	fn ref_opt_num(lines: &[String]) -> Result<(Option<u64>, u64), WireError> {
+		if lines.len() == 1 {
+			match parse_u64(&lines[0]) {
+				Some(n) => Ok((None, n)),
+				None => Err(WireError::BadNumber),
+			}
+		} else if lines.len() == 2 {
+			ref_two_nums(lines).map(|(tk, n)| (Some(tk), n))
+		} else {
+			Err(count_err(lines, 2))
+		}
+	}
+
+	/// (w3) Oracles: each scaffolded production parser equals its pre-w3 audit copy
+	/// above on every body, so the arity scaffold and the map rewrite changed nothing.
+	#[quickcheck]
+	fn prop_two_nums_eq_ref(lines: Vec<String>) -> bool {
+		two_nums(&lines) == ref_two_nums(&lines)
+	}
+
+	#[quickcheck]
+	fn prop_token_text_eq_ref(lines: Vec<String>) -> bool {
+		token_text(&lines) == ref_token_text(&lines)
+	}
+
+	#[quickcheck]
+	fn prop_two_texts_eq_ref(lines: Vec<String>) -> bool {
+		two_texts(&lines) == ref_two_texts(&lines)
+	}
+
+	#[quickcheck]
+	fn prop_one_num_eq_ref(lines: Vec<String>) -> bool {
+		one_num(&lines) == ref_one_num(&lines)
+	}
+
+	#[quickcheck]
+	fn prop_reply_eq_ref(lines: Vec<String>) -> bool {
+		reply(&lines) == ref_reply(&lines)
+	}
+
+	#[quickcheck]
+	fn prop_opt_num_eq_ref(lines: Vec<String>) -> bool {
+		opt_num(&lines) == ref_opt_num(&lines)
 	}
 }
