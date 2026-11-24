@@ -26,6 +26,7 @@ POLICY (user 2026-11-24): NO parallel cargo agents in the shared tree — benchm
 - [x] CLN-s1 (smoke.rs SAFE batch) — PARTIAL ACCEPT (wrap-up forced): landed 11 PORT_* consts :13-23 + 103 literal sites byte-exact; gates all green (69+20+1+9 smoke). Remaining items handed to CLN-s1b.
 - [x] CLN-s1b ACCEPTED+COMMITTED (044a0da): send_and_read fold (req/get), want hoist, dead World assert, 4096 const, numbers_in->number_after, windows(2).any — ALL landed; gates green.
 - [x] TST (user req, no flakey tests): RESOLVED — root cause (wait_gone budget == spawn timeout) fixed in CLN-s2; smoke 9/9 x7 consecutive runs; lib/bin deterministic. Revisit if anything ever flakes.
+- [x] FINAL VERIFY (coordinator, this commit): fmt 0 / build 0w / clippy --all-targets -D warnings silent / cargo test 69 lib + 20 bin + 9 smoke + 1 bench-skip + 1 doc-empty suite / agda ImplProofs + ImplWire RC 0 / nix flake check + nix build RC 0 (unit tests in check phase) / timeout 3 nix run RC 124 launch+graceful shutdown. Optional waves CLN-d3/w3/m3 SKIPPED (serial-policy, low value). Bench run-mode (FT_BENCH=run) verified by inspection only — sandbox denies env prefixes/os.system; enable locally: cargo build --release && FT_BENCH=run cargo test --test bench.
 
 ## Done (history, condensed; details in git log)
 - [x] CLN-w2 (17d6d83) + CLN-s1b (044a0da) + CLN-m2 (faa9f79) + OPT-3 (45a15a5) ACCEPTED+COMMITTED; full gates green at every commit (fmt/build 0w/clippy all-targets/69+20+9+1bench/agda x2). bench.rs stub stays untracked.
