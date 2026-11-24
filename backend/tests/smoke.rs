@@ -25,38 +25,67 @@ const PORT_ACTIONS: u16 = 8027;
 /// Octet cap on one header-block read: the headers rocket sends never reach this.
 const HEADER_READ_CAP: usize = 4096;
 
+/// Milliseconds one wait-round sleeps; every budget below is a multiple of this.
+const POLL_MS: u32 = 100;
+
+/// Polling rounds in one second: the seconds-to-rounds conversion.
+const ROUNDS_PER_SEC: u32 = 1000 / POLL_MS;
+
+/// (ST) Seconds wait_ready tolerates before the server must answer.
+const READY_SECS: u32 = 5;
+
+/// (F*) Slack past the wrapper's spawn timeout before wait_gone gives up: without it
+/// the wait budget can equal the kill time and lose by the miss window alone.
+const GONE_GRACE_SECS: u32 = 10;
+
+/// Consecutive missed connects that prove the port stopped answering.
+const MISS_STREAK: u32 = 5;
+
 /// Waits until something answers on the port; false when the server never starts.
+/// (the budget is READY_SECS of POLL_MS rounds, not a bare round count)
 fn wait_ready(port: u16) -> bool {
 	let mut tries = 0;
-	while tries < 50 {
+	while tries < READY_SECS * ROUNDS_PER_SEC {
 		if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
 			return true;
 		}
-		std::thread::sleep(std::time::Duration::from_millis(100));
+		std::thread::sleep(std::time::Duration::from_millis(POLL_MS.into()));
 		tries += 1;
 	}
 	false
 }
 
 /// Waits until the port stops answering, i.e. the wrapper killed the server.
-fn wait_gone(port: u16) -> bool {
+/// (F*) The round cap derives from the wrapper's own timeout: secs + GONE_GRACE_SECS
+/// seconds of POLL_MS rounds, so the kill always lands inside the budget.
+fn wait_gone(port: u16, secs: u32) -> bool {
 	let mut misses = 0;
 	let mut rounds = 0;
-	while rounds < 200 && misses < 5 {
+	// (never a fixed 200: that equals a 20s spawn timeout and races it)
+	let rounds_max: u32 = (secs + GONE_GRACE_SECS) * ROUNDS_PER_SEC;
+	while rounds < rounds_max && misses < MISS_STREAK {
 		if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
 			misses = 0;
 		} else {
 			misses += 1;
 		}
 		rounds += 1;
-		std::thread::sleep(std::time::Duration::from_millis(100));
+		std::thread::sleep(std::time::Duration::from_millis(POLL_MS.into()));
 	}
-	misses >= 5
+	misses >= MISS_STREAK
 }
 
 /// Deletes a DB file from an earlier run so the server starts from an empty world.
 fn fresh_db(db: &str) {
 	_ = std::fs::remove_file(db);
+}
+
+/// (ST) One fresh lifecycle: wipe the DB, spawn the wrapper, wait for the port.
+/// True once something answers; the caller keeps its own never-started message.
+fn boot(port: u16, db: &str, secs: u32) -> bool {
+	fresh_db(db);
+	spawn_server(port, db, secs);
+	wait_ready(port)
 }
 
 /// Fails a test with a message when a condition is false.
@@ -276,6 +305,18 @@ fn expect(raw: &str, line: &str, want: &str) {
 	ensure(body_of(raw) == want, "unexpected body");
 }
 
+/// (ST) Asserts two answers agree exactly: same status line, same body, byte for byte.
+fn expect_same(left: &str, right: &str, what: &str) {
+	ensure(
+		status_line(left) == status_line(right),
+		&(what.to_owned() + " status differs"),
+	);
+	ensure(
+		body_of(left) == body_of(right),
+		&(what.to_owned() + " body differs"),
+	);
+}
+
 /// Asserts the 200 answer with an empty body: the Ok response shape.
 fn expect_ok(raw: &str) {
 	expect(raw, "HTTP/1.1 200 OK", "");
@@ -327,9 +368,7 @@ fn bytes_find(xs: &[u8], needle: &[u8]) -> bool {
 #[test]
 fn test_signup_login() {
 	let db = "/tmp/ft-smoke-signup.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_SIGNUP, &db, 60);
-	ensure(wait_ready(PORT_SIGNUP), "the server never started");
+	ensure(boot(PORT_SIGNUP, &db, 60), "the server never started");
 	let signed = req(
 		PORT_SIGNUP,
 		"/api/signup".to_string(),
@@ -380,9 +419,7 @@ fn test_signup_login() {
 #[test]
 fn test_post_tweet() {
 	let db = "/tmp/ft-smoke-post.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_POST, &db, 60);
-	ensure(wait_ready(PORT_POST), "the server never started");
+	ensure(boot(PORT_POST, &db, 60), "the server never started");
 	let signed = req(
 		PORT_POST,
 		"/api/signup".to_string(),
@@ -432,9 +469,7 @@ fn test_post_tweet() {
 #[test]
 fn test_errors() {
 	let db = "/tmp/ft-smoke-errors.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_ERRORS, &db, 60);
-	ensure(wait_ready(PORT_ERRORS), "the server never started");
+	ensure(boot(PORT_ERRORS, &db, 60), "the server never started");
 	let signed = req(
 		PORT_ERRORS,
 		"/api/signup".to_string(),
@@ -517,9 +552,7 @@ fn test_errors() {
 #[test]
 fn test_http_framing() {
 	let db = "/tmp/ft-smoke-framing.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_FRAMING, &db, 60);
-	ensure(wait_ready(PORT_FRAMING), "the server never started");
+	ensure(boot(PORT_FRAMING, &db, 60), "the server never started");
 	let signed = req(
 		PORT_FRAMING,
 		"/api/signup".to_string(),
@@ -575,10 +608,8 @@ fn test_http_framing() {
 #[test]
 fn test_reentrant_three_lifecycles() {
 	let db = "/tmp/ft-smoke-T5.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_LIFECYCLE_1, &db, 10);
 	ensure(
-		wait_ready(PORT_LIFECYCLE_1),
+		boot(PORT_LIFECYCLE_1, &db, 10),
 		"the first server never started",
 	);
 	let signed = req(
@@ -613,7 +644,12 @@ fn test_reentrant_three_lifecycles() {
 		ids_of(&seen).contains(&one),
 		"the first post is not in the timeline",
 	);
-	ensure(wait_gone(PORT_LIFECYCLE_1), "the first server never exited");
+	ensure(
+		wait_gone(PORT_LIFECYCLE_1, 10),
+		"the first server never exited",
+	);
+	// (no boot for lifecycles 2 and 3: boot wipes the DB, and this test's whole point
+	// is that the saved DB survives the restart as the source of truth)
 	spawn_server(PORT_LIFECYCLE_2, &db, 10);
 	ensure(
 		wait_ready(PORT_LIFECYCLE_2),
@@ -657,7 +693,7 @@ fn test_reentrant_three_lifecycles() {
 		"the restarted server lost the old post",
 	);
 	ensure(
-		wait_gone(PORT_LIFECYCLE_2),
+		wait_gone(PORT_LIFECYCLE_2, 10),
 		"the second server never exited",
 	);
 	spawn_server(PORT_LIFECYCLE_3, &db, 10);
@@ -708,7 +744,10 @@ fn test_reentrant_three_lifecycles() {
 		all.contains(&one) && all.contains(&two) && all.contains(&three),
 		"the last timeline is incomplete",
 	);
-	ensure(wait_gone(PORT_LIFECYCLE_3), "the third server never exited");
+	ensure(
+		wait_gone(PORT_LIFECYCLE_3, 10),
+		"the third server never exited",
+	);
 }
 
 /// The GET aliases the legacy frontend speaks answer with the very bytes their POST twins
@@ -716,9 +755,7 @@ fn test_reentrant_three_lifecycles() {
 #[test]
 fn test_get_alias_roundtrip() {
 	let db = "/tmp/ft-smoke-T6-alias.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_ALIAS, &db, 10);
-	ensure(wait_ready(PORT_ALIAS), "the alias server never started");
+	ensure(boot(PORT_ALIAS, &db, 10), "the alias server never started");
 	let signed = req(
 		PORT_ALIAS,
 		"/api/signup".to_string(),
@@ -750,14 +787,7 @@ fn test_get_alias_roundtrip() {
 		"5".to_string(),
 	);
 	let global_get = get(PORT_ALIAS, "/api/global-timeline?len=5".to_string());
-	ensure(
-		status_line(&global_get) == status_line(&global_post),
-		"the GET global timeline status differs",
-	);
-	ensure(
-		body_of(&global_get) == body_of(&global_post),
-		"the GET global timeline body differs",
-	);
+	expect_same(&global_get, &global_post, "the GET global timeline");
 	// one post by id with a session: the token-bearing POST shape.
 	let one_post = req(
 		PORT_ALIAS,
@@ -768,14 +798,7 @@ fn test_get_alias_roundtrip() {
 		PORT_ALIAS,
 		"/api/get-tweet?token=".to_owned() + &token.to_string() + "&id=" + &tweet.to_string(),
 	);
-	ensure(
-		status_line(&one_get) == status_line(&one_post),
-		"the GET get-tweet status differs",
-	);
-	ensure(
-		body_of(&one_get) == body_of(&one_post),
-		"the GET get-tweet body differs",
-	);
+	expect_same(&one_get, &one_post, "the GET get-tweet");
 	// anonymous get-tweet: the single-line POST shape, the empty value dropped.
 	// (token= with nothing after it is the same None the POST twin sends)
 	let anon_post = req(PORT_ALIAS, "/api/get-tweet".to_string(), tweet.to_string());
@@ -783,14 +806,7 @@ fn test_get_alias_roundtrip() {
 		PORT_ALIAS,
 		"/api/get-tweet?token=&id=".to_owned() + &tweet.to_string(),
 	);
-	ensure(
-		status_line(&anon_get) == status_line(&anon_post),
-		"the anonymous GET get-tweet status differs",
-	);
-	ensure(
-		body_of(&anon_get) == body_of(&anon_post),
-		"the anonymous GET get-tweet body differs",
-	);
+	expect_same(&anon_get, &anon_post, "the anonymous GET get-tweet");
 	// private timeline with the session: the two-line POST shape.
 	let priv_post = req(
 		PORT_ALIAS,
@@ -802,14 +818,7 @@ fn test_get_alias_roundtrip() {
 		PORT_ALIAS,
 		"/api/private-timeline?token=".to_owned() + &token.to_string() + "&len=3",
 	);
-	ensure(
-		status_line(&priv_get) == status_line(&priv_post),
-		"the GET private timeline status differs",
-	);
-	ensure(
-		body_of(&priv_get) == body_of(&priv_post),
-		"the GET private timeline body differs",
-	);
+	expect_same(&priv_get, &priv_post, "the GET private timeline");
 	// token-less private read: the same refusal over either transport.
 	// (one line short of the arity, so MissingLine, so the one 403 shape)
 	// (never a silent anonymous private timeline)
@@ -819,17 +828,10 @@ fn test_get_alias_roundtrip() {
 		"3".to_string(),
 	);
 	let denied_get = get(PORT_ALIAS, "/api/private-timeline?len=3".to_string());
-	ensure(
-		status_line(&denied_get) == status_line(&denied_post),
-		"the token-less private GET status differs",
-	);
-	ensure(
-		body_of(&denied_get) == body_of(&denied_post),
-		"the token-less private GET body differs",
-	);
+	expect_same(&denied_get, &denied_post, "the token-less private GET");
 	// (the LF-only and trailing-newline query bodies the codec already tolerates)
 	// (are the very bytes alias_body builds, pinned in the unit tests)
-	ensure(wait_gone(PORT_ALIAS), "the alias server never exited");
+	ensure(wait_gone(PORT_ALIAS, 10), "the alias server never exited");
 }
 
 /// The static frontend answers over the wire: 200s typed per file, the site's own shapes,
@@ -837,9 +839,10 @@ fn test_get_alias_roundtrip() {
 #[test]
 fn test_static_serving() {
 	let db = "/tmp/ft-smoke-T7-static.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_STATIC, &db, 10);
-	ensure(wait_ready(PORT_STATIC), "the static server never started");
+	ensure(
+		boot(PORT_STATIC, &db, 10),
+		"the static server never started",
+	);
 	// (the site is public: an anonymous GET is all a browser sends, no session at all)
 	let page = get(PORT_STATIC, "/".to_string());
 	// (no signup was needed to serve the index, so the DB stays empty here)
@@ -921,7 +924,7 @@ fn test_static_serving() {
 		body_of(&lost) != body_of(&page),
 		"an unknown path returns the index",
 	);
-	ensure(wait_gone(PORT_STATIC), "the static server never exited");
+	ensure(wait_gone(PORT_STATIC, 10), "the static server never exited");
 }
 /// (ST) the debug routes answer over the wire: /log holds one IMF-timestamped line per
 /// request serve_command served, /raw dumps the live cache as pretty plaintext Debug.
@@ -929,9 +932,10 @@ fn test_static_serving() {
 fn test_raw_and_log() {
 	// (a fresh DB, so the log lines come from exactly the two requests below)
 	let db = "/tmp/ft-smoke-raw-log.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_RAW_LOG, &db, 10);
-	ensure(wait_ready(PORT_RAW_LOG), "the raw/log server never started");
+	ensure(
+		boot(PORT_RAW_LOG, &db, 10),
+		"the raw/log server never started",
+	);
 	// (signup then login: the shortest run that yields two serve_command calls)
 	let signed = req(
 		PORT_RAW_LOG,
@@ -1013,7 +1017,10 @@ fn test_raw_and_log() {
 		dump.contains("Account {"),
 		"the dump holds no Account record",
 	);
-	ensure(wait_gone(PORT_RAW_LOG), "the raw/log server never exited");
+	ensure(
+		wait_gone(PORT_RAW_LOG, 10),
+		"the raw/log server never exited",
+	);
 }
 
 /// The six actions the codec frames exactly as the frontend's wireBody emits: the token
@@ -1024,9 +1031,10 @@ fn test_raw_and_log() {
 #[test]
 fn test_new_actions_roundtrip() {
 	let db = "/tmp/ft-smoke-T11-actions.sqlite".to_string();
-	fresh_db(&db);
-	spawn_server(PORT_ACTIONS, &db, 20);
-	ensure(wait_ready(PORT_ACTIONS), "the actions server never started");
+	ensure(
+		boot(PORT_ACTIONS, &db, 20),
+		"the actions server never started",
+	);
 	// signup: the empty ok, in the trailing-newline form the frontend sends
 	let signed = req(
 		PORT_ACTIONS,
@@ -1210,5 +1218,8 @@ fn test_new_actions_roundtrip() {
 		"the refusal is not access_denied",
 	);
 	// every request ran over the wire and the wrapper ended the lifecycle
-	ensure(wait_gone(PORT_ACTIONS), "the actions server never exited");
+	ensure(
+		wait_gone(PORT_ACTIONS, 20),
+		"the actions server never exited",
+	);
 }
