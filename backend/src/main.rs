@@ -314,13 +314,24 @@ pub struct LogEntry {
 	pub committed: bool,
 }
 
-/// (ST) append one /log entry and keep the log flat: push, then evict the oldest front entry
-/// while over cap, so the footprint never grows with the request count.
-pub fn push_log(log: &mut Vec<LogEntry>, entry: LogEntry) {
-	log.push(entry);
+/// (ST) append one /log entry as a ring over a Vec held at LOG_CAP: under cap it pushes, once
+/// full it OVERWRITES the oldest slot, so no per-request memmove of the whole buffer survives.
+/// log_start indexes the OLDEST entry (0 while under cap, which request_log rotates around); the
+/// new cursor is returned so the caller stores it back into Server.log_start, keeping log's
+/// borrow single.  Cap semantics (the newest LOG_CAP entries) are unchanged.
+pub fn push_log(log: &mut Vec<LogEntry>, log_start: usize, entry: LogEntry) -> usize {
 	// RAM debug only, not spec data: keep the newest LOG_CAP entries, evicting the front.
-	if log.len() > LOG_CAP {
-		log.remove(0);
+	let len: usize = log.len();
+	if len < LOG_CAP {
+		log.push(entry);
+		// (ST) under cap the oldest entry is still slot 0, so the cursor stays put.
+		log_start
+	} else {
+		// Full ring: the write slot ((log_start + len) % LOG_CAP) == log_start, because
+		// (log.len() == LOG_CAP and log_start < LOG_CAP; the overwrite drops the oldest entry,
+		// (then % LOG_CAP wraps the cursor, so it keeps indexing the next oldest entry.
+		log[(log_start + len) % LOG_CAP] = entry;
+		(log_start + 1) % LOG_CAP
 	}
 }
 
@@ -338,8 +349,12 @@ pub fn lock_server(state: &Mutex<Server>) -> MutexGuard<'_, Server> {
 /// both transports — lock, then one un-redacted entry, committed stays false.
 pub fn log_parse_failure(state: &Mutex<Server>, request_line: String, body: String) {
 	let mut locked = lock_server(state);
-	push_log(
+	// (OPT-2) the ring cursor is read before log takes its only mutable borrow.
+	let ring_start: usize = locked.log_start;
+	// (ST) push_log hands back the new oldest-index cursor, written back into the Server.
+	locked.log_start = push_log(
 		&mut locked.log,
+		ring_start,
 		LogEntry {
 			ts_secs: now_secs(),
 			request_line,
@@ -367,8 +382,13 @@ pub struct Server {
 	/// request line, the raw body verbatim - tokens and passwords in plaintext - the Command and
 	/// Result Debug texts, and the commit flag), oldest first.  RAM debug only, NOT spec data:
 	/// nothing is served from it, no DB row mirrors it and a restart starts it empty, so it never
-	/// feeds the model.  Capped at LOG_CAP by evicting the front.
+	/// feeds the model.  Held as a ring of at most LOG_CAP slots (log_start indexes the oldest).
 	pub log: Vec<LogEntry>,
+	/// (OPT-2) ring cursor into log: the index of the OLDEST entry once log is full at LOG_CAP,
+	/// 0 while under cap.  push_log overwrites log[log_start] and advances it (mod LOG_CAP) instead
+	/// of remove(0), so eviction costs O(1) rather than a memmove per request; request_log rotates
+	/// around it, keeping /log byte-identical to the front-eviction log.
+	pub log_start: usize,
 }
 
 /// Parse failures answer with the spec's 403 access_denied shape: the Interface
@@ -665,8 +685,12 @@ pub fn serve_command(
 	};
 	// (ST) exactly one LogEntry per request, built once: the committed flag from the apply arm
 	// above already distinguishes the rollback below from the committed answer.
-	push_log(
+	// (OPT-2) the ring cursor is read before log takes its only mutable borrow.
+	let ring_start: usize = locked.log_start;
+	// (ST) push_log hands back the new oldest-index cursor, written back into the Server.
+	locked.log_start = push_log(
 		&mut locked.log,
+		ring_start,
 		LogEntry {
 			ts_secs: ts,
 			request_line,
@@ -974,8 +998,16 @@ fn request_log(state: &State<Mutex<Server>>) -> Served {
 	// (uses, so a log timestamp never disagrees with a response header, then the raw request line
 	// (and the verbatim body, the Command/Result Debug texts and the commit flag (CRLF-terminated;
 	// (the 3 static routes never log, so the site's own traffic stays out)
+	// (OPT-2) ring read: log holds at most LOG_CAP slots whose OLDEST entry sits at log_start once
+	// (full (0 while under cap), so (start + ix) % len walks start..len then 0..start - the same
+	// (entries in the same chronological order the old remove(0) Vec served, hence byte-identical.
 	let mut lines: Vec<String> = vec![];
-	for entry in &locked.log {
+	let len: usize = locked.log.len();
+	// (ST) clamp keeps the rotation a plain 0..len read while the ring has not wrapped.
+	let start: usize = if len < LOG_CAP { 0 } else { locked.log_start };
+	for ix in 0..len {
+		// (ST) the rotation: ix indexes the ix-th oldest entry, wrapping past the ring's tail.
+		let entry: &LogEntry = &locked.log[(start + ix) % len];
 		lines.push(format!(
 			"{} {} BODY[{:?}] CMD[{}] RES[{}] COMMITTED[{}]\r\n",
 			http_date_from(entry.ts_secs),
@@ -1030,6 +1062,8 @@ fn rocket() -> _ {
 			conn,
 			// (ST) the /log RAM debug log starts empty: a restart re-opens the DB but not the log.
 			log: vec![],
+			// (OPT-2) ring cursor starts at 0: nothing wrapped yet, oldest == first slot.
+			log_start: 0,
 		}))
 		.mount(
 			"/",
@@ -1780,6 +1814,7 @@ fn test_log_entry_capture() {
 		conn: None,
 		index: build_index(&empty_world()),
 		log: vec![],
+		log_start: 0,
 	});
 	// Call 1: the reopen arm re-syncs and stores a connection but commits NOTHING, so one
 	// (un-redacted entry with committed==false lands even on the 403 answer.
