@@ -2,6 +2,7 @@
 
 Coordinator plan. Mirror of todo-tool state; update statuses as work lands.
 Tasks are performed by subagents; accepted tasks are committed, rejected ones reverted.
+POLICY (user 2026-11-24): NO parallel cargo agents in the shared tree — benchmark/opt waves SERIAL unless in git worktrees; never run sequential version-numbered waves concurrently.
 
 ## Next
 - [x] CLN research wave — ALL RECVED: wire.rs, db.rs, smoke.rs, model.rs + main.rs (call_f10ef086.., saved to memory cln-main-audit.md) + BENCH design. ACCEPTED.
@@ -12,19 +13,19 @@ Tasks are performed by subagents; accepted tasks are committed, rejected ones re
 - [x] CLN-d2 ACCEPTED+COMMITTED (273d15c incl. coordinator map_clone lint fix users.to_vec()/v.to_vec() on d1 style): shared section loaders (accounts/sessions+used-ids/follows/posts ~90-line lifted verbatim) + group_key_runs<T>; load_world 110->14, reload_posts 10. Agent gates per-target only (bench.rs broke all-targets then).
 - [ ] CLN-d3 (impl db.rs optional): init_or_open post-ignore table-exists probe (CREATE fault vs reentrant collision).
 - [ ] CLN-s1 (impl smoke.rs SAFE): send_and_read fold (req/get), hoist want out of read loops (O(n^2) fix), drop dead World assert, 4096 header-cap const, ports consts, numbers_in->number_after fold, bytes_find windows().any. — RUNNING PARTIAL (maki@qwen3.8-flash-next-coder): ports-consts landed (11 consts, 103 literal sites→consts, values byte-exact, fmt/clippy/test green). Remaining items (fold/hoist/assert-drop/4096const/scanner-fold/windows) NOT yet applied — restart shot queued.
-- [ ] CLN-s2 (impl smoke.rs MERGE+ROBUST) — LAUNCHING: boot() prologue 11x + wait_gone epilogue 7x + expect_same 5x merges; FLAKE FIX: wait_gone round cap derived from secs ((secs+10)*10); consts for sleeps/tries/rounds/misses.
-- [ ] BENCH-impl attempt 4 LAUNCHING (tests/bench.rs full harness replacing untracked stub bench_harness_pending_skips, 1 test). Attempts 1 (call_fca5 stopped) + 2 (call_eb57 dead 109-line WIP) + 3 (call_ea3c dead 72-line broken) REVERTED to stub. Release binary: target/release/formal-twitter built in-harness.
+- [x] CLN-s2 ACCEPTED+COMMITTED (274d859): boot() folds 9 prologues (reentrant lifecycles kept as witness), expect_same 5 pairs, FLAKE FIX timing consts + wait_gone (secs+10)*10 cap; smoke 9/9 x7 consecutive coordinator runs (old flake ~1/3). TST requirement met for smoke.
+- [ ] BENCH-impl attempt 4 RUNNING (tests/bench.rs harness replacing untracked stub, 1 test). Attempts 1-3 REVERTED to stub. Binary target/release/formal-twitter prebuilt by coordinator (test NEVER calls cargo; lock deadlock hazard). Env-gate: FT_BENCH unset -> skip-print; =1 tierB then tierA; =tierB only B; =tierA only A. Subagent in progress.
 - [x] OPT-1 ACCEPTED+COMMITTED (bd5b89d): World deep-copies/request 2->0 — empty_world() placeholder + std::mem::swap; patch_world(before, delta) inside committed arm; 4 restore exits verified by coordinator diff-audit (reopen-Err swap-back / reopen-Ok reload move / committed patch move / rollback reload move); Delta copy kept (2 owners).
-- [ ] OPT-2 (impl main.rs) — LAUNCHING: push_log ring (fixed Vec + start index + rotated read in request_log); bench index-rebuild measurement precedes touching rebuild sites.
+- [x] OPT-2 ACCEPTED+COMMITTED (816435b): push_log ring (log_start cursor, O(1) eviction overwrite, request_log (start+ix)%len rotation byte-identical); cursor-in/out sidesteps E0499 via MutexGuard. Coordinator gates: fmt/build/clippy targeted + 69+20+9 green (bench.rs race excluded).
 - [x] OPT-3 ACCEPTED+COMMITTED (45a15a5): CREATE INDEX lines (likes_by_post_pid + follows pair) inside the atomic CREATE_SQL batch (collision-tolerant reentrancy); db_max_seq SQL aggregate MAX WHERE seq>0 (F3 guard kept, empty->0); scratch crate validated diesel 2.4.0 dsl::max.
 - [x] CLN-w2 ACCEPTED+COMMITTED (17d6d83): line_text &[u8], split_lines split(13) rework, format!("\\u{:04x}"), respond const statics; ImplWire wi-resp-* refl pins MUST stay green (revert-on-red).
-- [ ] OPT-4 (impl db.rs) — LAUNCHING: sample_id used-ids set probe + Delete-branch visibility via side-index (apply_delta :956 O(P) find gone).
+- [x] OPT-4 ACCEPTED+COMMITTED (11e80a2): apply_delta Delete branch O(P) RAM find dropped (UPDATE keyed by pid PK; visibility was identity write, Publish sole writer; DB-over-cache fix). let _ = before keeps pinned sig; delete scenario-pin re-verified.
 - [x] CLN-m2 ACCEPTED+COMMITTED (faa9f79): log_parse_failure extract, lock_server guard fn, single LogEntry+committed local, result_txt hoist, build_response fold, #[cfg(test)] command_to_logline, doc-once, LOG_CAP consts (byte-exact), query_param/alias_body alloc trims. CHECK items (m3) skipped.
 - [ ] CLN-m3 (impl main.rs CHECK, optional): define_post!/alias macro family, deny_response vs phantom _e, CACHE_SECTIONS=4 table, cache frontend_root at launch (join("..")->parent_path), smoke timeout -s KILL note. Only if m2 clean.
 - [ ] CLN-m1b (low value): unique O(n^2) kept — HashSet body impossible under pinned PartialEq sig; revisit only bound-preserving.
 - [x] CLN-s1 (smoke.rs SAFE batch) — PARTIAL ACCEPT (wrap-up forced): landed 11 PORT_* consts :13-23 + 103 literal sites byte-exact; gates all green (69+20+1+9 smoke). Remaining items handed to CLN-s1b.
 - [x] CLN-s1b ACCEPTED+COMMITTED (044a0da): send_and_read fold (req/get), want hoist, dead World assert, 4096 const, numbers_in->number_after, windows(2).any — ALL landed; gates green.
-- [ ] TST (user req): NO flakey tests. ROOT CAUSE RECVED: wait_gone 200x100ms budget vs secs=20 spawn timeout (0.5s slack only); test_new_actions_roundtrip fails ~1/3 parallel runs, retry-once was a workaround. REAL FIX ((secs+10)*10 rounds) lands in CLN-s2.
+- [x] TST (user req, no flakey tests): RESOLVED — root cause (wait_gone budget == spawn timeout) fixed in CLN-s2; smoke 9/9 x7 consecutive runs; lib/bin deterministic. Revisit if anything ever flakes.
 
 ## Done (history, condensed; details in git log)
 - [x] CLN-w2 (17d6d83) + CLN-s1b (044a0da) + CLN-m2 (faa9f79) + OPT-3 (45a15a5) ACCEPTED+COMMITTED; full gates green at every commit (fmt/build 0w/clippy all-targets/69+20+9+1bench/agda x2). bench.rs stub stays untracked.
