@@ -415,7 +415,7 @@ fn follow_unfollow_and_private_visibility() {
 	let (db, private_id) = seed_private_post("bob private");
 	let client = harness_with(db);
 	let alice = account(&client, "alice", "pw");
-	assert_ok(&login(&client, "bob", "pw"));
+	let _bob = session(&login(&client, "bob", "pw"));
 
 	// follow-user has no premise on the followee existing (Twitter.agda:655-664):
 	// following an unknown username is `success`, not a failure.
