@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use diesel::connection::SimpleConnection;
 use diesel::{Connection, SqliteConnection};
@@ -38,8 +38,15 @@ pub fn run_migrations(conn: &mut SqliteConnection) -> Result<(), DbError> {
 		.map_err(|error| DbError(diesel::result::Error::QueryBuilderError(error)))
 }
 
+/// A handle to the sqlite database.
+///
+/// The connection lives behind an `Arc` so the handle is cheap to clone: the
+/// server can hand a copy to a background task (the `time-passes` timer) while
+/// keeping its own. Clones share one connection and therefore one lock, which
+/// keeps every transaction serialised as before.
+#[derive(Clone)]
 pub struct Db {
-	conn: Mutex<SqliteConnection>,
+	conn: Arc<Mutex<SqliteConnection>>,
 }
 
 impl Db {
@@ -53,7 +60,7 @@ impl Db {
 		configure(&mut conn)?;
 		run_migrations(&mut conn)?;
 		Ok(Self {
-			conn: Mutex::new(conn),
+			conn: Arc::new(Mutex::new(conn)),
 		})
 	}
 
