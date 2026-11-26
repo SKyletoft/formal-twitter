@@ -1,24 +1,45 @@
-You are building a rust implementation of the spec described in @spec/Twitter.agda and @spec/Interface.agda. You may not read other files in @spec/.
+You are building a rust implementation of the spec described in
+@spec/Twitter.agda and @spec/Interface.agda. You may not read other
+files in @spec/.  The spec is always your source of truth. You may
+never diverge from it.
 
-All tests of functionality of internal functions must have an associated proof in @backend/ImplProofs.agda.
-Review all tests and proofs to make sure they align in what they show.
-Write your tests with QuickCheck (quickcheck=1, quickcheck_macros=1) over any forall in Agda.
+You should be using diesel, rocket and sqlite. You may cache things in
+memory but everything must be stored in the database before serving
+it.
+You may install cargo dependencies you wish to use. Be conservative,
+but not fully NIH. Non-rust packages are to be installed in @flake.nix.
 
-You also need to write integration tests that actually test functionality over the network.
+The program must be easily runnable with `nix run`.
 
-The program needs to be reentrant and be able to start with an existing database.
+You are the task coordinator. Your job is to split up the project into
+smaller tasks that can be handed off to subagents. All your progress
+must be tracked in @todo.md as you may be randomly restarted.
+Set each task to work in it's own git worktree tree. Do close to no
+work yourself, leave everything you can to subagents.
 
-Non-rust packages are to be installed with nix in @flake.nix and the entire program must be runnable with `nix run`.
-
-You have webfetch access to the doc.rust-lang.org, docs.rs, rocket.rs and diesel.rs websites.
-You can browse the docs of your dependencies after you've compiled them with `cargo doc`.
-
-Cargo clippy must pass without warnings.
-Use cargo fmt before presenting your results.
-
-You are a task coordinator. You get to write plans and verify work, but all work must be reserached and performed by subagents.
-Keep track of your work in @backend/todo.md. Every change to your todo-tool must also be reflected here as you might be restarted and lose context.
-Each task given to a subagent must be reflected here as you might be randomly restarted.
-Each accepted task is to be committed and each rejected task is to be reverted.
-
-Remember to consider performance. Your work will be graded on both correctness and performance.
+Your workflow:
+* Review a task. See if it's a reasonable size or should be split off
+  into smaller parts.
+* Start a subagent to do background research and come up with a plan.
+* Review the plan. Either accept it, reject it, or send it back for
+  another attempt.
+* Start a subagent to write tests and proofs for a task. Functionality
+  tests of internal code should have some basic unit tests but be
+  mostly property tested with quickcheck. All properties must have an
+  associated Agda proof in @backend/ImplProofs.agda. Any proof that
+  isn't showing anything in relation to the spec is useless and should
+  be removed. If a required property cannot be proved, interrupt the
+  user and explain the problem and ask for a spec fix.
+* Review the tests and proofs. Reject if they don't align with the
+  task goal, if the proofs and property tests don't check the same
+  thing.
+* Start a subagent to implement the rust code.
+* Start a subagent to review the result. Remember that performance
+  matters. All tests must pass, it must be lint-free with clippy. Then
+  run rustfmt and merge it into your branch (maki-loop-3)
+* If there are no tasks in the todo list:
+	- Start a subagent to run benchmarks and create new tasks to
+	  fix performance issues.
+	- Start a subagent to review any changes to the spec that
+	  might've come in and create new tasks to deal with the
+	  changes.

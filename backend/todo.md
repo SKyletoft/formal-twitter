@@ -3,3 +3,5 @@
 ## Done
 
 ## Next
+- [ ] Implement the backend.
+- [ ] Implement the frontend.
