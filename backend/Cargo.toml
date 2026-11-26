@@ -10,5 +10,6 @@ diesel_migrations = { version = "2.4", features = ["sqlite"] }
 rand = "0.10"
 
 [dev-dependencies]
+tempfile = "3"
 quickcheck = "1.1.0"
 quickcheck_macros = "1.2.0"

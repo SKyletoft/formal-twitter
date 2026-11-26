@@ -395,6 +395,7 @@ dependencies = [
  "quickcheck_macros",
  "rand",
  "rocket",
+ "tempfile",
 ]
 
 [[package]]
