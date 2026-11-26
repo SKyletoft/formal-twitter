@@ -13,8 +13,7 @@
 //! | `authenticate_absent_user_fails`            | `failed-login-1`        | `login-absent`           |
 //! | `authenticate_wrong_password_fails`         | `failed-login-2`        | `login-wrong-password`   |
 //! | `revoke_active_session_succeeds`            | `logout` 677-689        | `logout-success`         |
-//! | `revoke_inactive_session_expires`           | `failed-access` 464-468 | `logout-expired`, `logout-unused` |
-//! | `failed_access_expires_for_every_session_..`| `failed-access` 464-468 | `failed-access-inactive` |
+//! | `failed_access_expires_for_every_session_..`| `failed-access` 464-468 | `logout-expired`, `logout-unused`, `failed-access-inactive` |
 //!
 //! Harness shape:
 //!
@@ -457,51 +456,9 @@ fn revoke_active_session_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
-// P7: logout on an inactive session -- Agda `logout-expired`,
+// P7/P8: logout on an inactive session and `failed-access` on every
+// session-carrying command (Twitter.agda:464-468) -- Agda `logout-expired`,
 // `logout-unused`, both instances of `failed-access-inactive`.
-// ---------------------------------------------------------------------------
-
-/// `failed-access`: revoking a session that is `revoked` or `unused` answers
-/// `expired` and leaves the world untouched. Both branches are covered on every
-/// case: the unused id is a fresh one, the revoked id comes from the world or
-/// is derived.
-#[test]
-fn revoke_inactive_session_expires() {
-	check(|db: &Db, world: &WorldState, seed: Seed| -> TestResult {
-		// unused: an id no world row holds.
-		let unused = free_session_id(world, seed.0);
-		assert_eq!(world.session_status(unused), SessionStatus::Unused);
-		assert_eq!(
-			revoke_token(db, unused).expect("revoke-token"),
-			EngineResult::Expired
-		);
-		assert_eq!(
-			from_db(db),
-			*world,
-			"an expired request must not touch the world"
-		);
-
-		// revoked: from the world or freshly derived.
-		let (world, sid) = with_revoked_session(world, seed.0);
-		load(db, &world);
-		assert_eq!(world.session_status(sid), SessionStatus::Revoked);
-
-		assert_eq!(
-			revoke_token(db, sid).expect("revoke-token"),
-			EngineResult::Expired
-		);
-		assert_eq!(
-			from_db(db),
-			world,
-			"an expired request must not touch the world"
-		);
-		TestResult::passed()
-	});
-}
-
-// ---------------------------------------------------------------------------
-// P8: failed-access on every session-carrying command (Twitter.agda:464-468)
-// -- Agda `failed-access-inactive`.
 // ---------------------------------------------------------------------------
 
 /// Every authentication command whose `extract-sid` is `just sid`
@@ -511,14 +468,19 @@ type SessionCommand = fn(&Db, SessionId) -> Result<EngineResult, DbError>;
 const SESSION_COMMANDS: &[(&str, SessionCommand)] = &[("revoke-token", revoke_token)];
 
 /// `failed-access`: a command whose session is not active -- `revoked` or
-/// `unused` -- answers `expired` and leaves the world exactly as it was. Unlike
-/// `read-post nothing` none of these can fire vacuously.
+/// `unused` -- answers `expired` and leaves the world exactly as it was. Both
+/// inactive shapes are covered on every case: the unused id is one no row
+/// holds, the revoked id comes from the world or is derived. Unlike
+/// `read-post nothing` none of these can fire vacuously. This is the only test
+/// of `logout-expired` / `logout-unused`, so there is no second copy of the
+/// same property.
 #[test]
 fn failed_access_expires_for_every_session_command() {
 	check(|db: &Db, world: &WorldState, seed: Seed| -> TestResult {
 		let (world, revoked) = with_revoked_session(world, seed.0);
 		load(db, &world);
 		let unused = free_session_id(&world, seed.0);
+		// Not vacuous: both ids really are inactive before the commands run.
 		assert_eq!(world.session_status(revoked), SessionStatus::Revoked);
 		assert_eq!(world.session_status(unused), SessionStatus::Unused);
 

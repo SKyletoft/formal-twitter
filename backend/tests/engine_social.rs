@@ -594,6 +594,7 @@ fn unfollow_succeeds_and_clears_follow() {
 			expected
 				.follows
 				.remove(&(follower.clone(), followee.clone()));
+			expected.validate().expect("the expected world is valid");
 
 			assert_eq!(
 				unfollow(db, sid, &followee).expect("unfollow"),
@@ -837,6 +838,7 @@ fn unlike_liked_post_succeeds() {
 			let mut expected = world.clone();
 			let unliked = without_like(&world.posts[&pid].likes, &user);
 			expected.posts.get_mut(&pid).expect("the target post").likes = unliked;
+			expected.validate().expect("the expected world is valid");
 
 			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Success);
 
@@ -916,9 +918,10 @@ fn unlike_deleted_post_is_denied() {
 			assert!(!readable_by(&world, &user, pid));
 
 			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Denied);
-			assert_eq!(from_db(db), world, "a denied unlike changes nothing");
+			let after = from_db(db);
+			assert_eq!(after, world, "a denied unlike changes nothing");
 			assert!(
-				from_db(db).posts[&pid].likes.contains(&user),
+				after.posts[&pid].likes.contains(&user),
 				"the denied command did not consume the like"
 			);
 			TestResult::passed()
