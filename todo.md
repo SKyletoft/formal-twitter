@@ -26,7 +26,8 @@
   reply denied iff `¬ CanReadPost`; reply visibility = account default unless parent is
   `followers-only` then `followers-only`; delete denied if absent or not author, but deleting an
   already-deleted own post succeeds; read logged-in denied if absent/deleted/private-unfollowed;
-  anonymous read only public+live (otherwise 403, documented deviation, functional test only).
+  anonymous read: public+live -> returned-post; otherwise `expired` (`failed-access` applies
+  vacuously because `extract-sid (read-post nothing _) ≡ nothing`; no spec fix needed).
 - `newest-first` and reply lists include deleted posts; replies newest-first (`seq DESC`).
 - New store helpers: `can_read_post`, `can_read_anonymous`, `post_view` (post+likes+replies),
   `delete_own` (load-check-delete in one transaction).
@@ -48,8 +49,11 @@
 
 ## Decisions log
 - Do NOT edit `spec/`. Implement defined behavior exactly.
-- Token-less commands: implementation never returns `expired` (spec's `failed-access` is vacuously true there, but our choice is a derivable behavior for register/login; for anonymous reads the 403 choice is our documented decision).
-- Anonymous `get-tweet` of absent/private/deleted post -> `403 access_denied` (documented deviation; spec has no constructor). Functional test only, no Agda property.
+- Token-less commands `register`/`login` return their constructor results (signup/login failure),
+  never `expired`. Anonymous `read-post`: `returned-post` when public+live, else `expired` (the only
+  derivable `Result`; `failed-access` is vacuous for `extract-sid = nothing`).
+- Anonymous unreadable `get-tweet` -> `expired` / 401 `session_expired`, NOT 403; proved by
+  `read-anonymous-expired` (`failed-access`).
 - T1 has NO quickcheck properties / Agda proofs: it only stores data; no `Step`/spec transition exists at this layer. Unit tests only. (Adding list lemmas would violate "useless proofs" rule.)
 - Commit trailer on every commit: `Co-authored-by: maki@deepseek-v4.1-flash <maki@deepseek-v4.1-flash>`.
 - T4 hint: `flake.nix` `prePatch` copies `frontend/` to the *parent* of the unpacked backend source, so `include_dir!("$CARGO_MANIFEST_DIR/../frontend")` (or rust-embed) is the intended way to embed static assets for `nix run`; serve them from Rocket without depending on cwd.
@@ -92,8 +96,8 @@
   session-token / tweet = `Cache-Control: no-store`; JSON field order exactly as Interface.agda;
   `Content-Length` = UTF-8 byte length; `Date` added by a response fairing; JSON-escape
   username/text via `serde_json`; ids equal `show` (plain decimals).
-- Documented deviations: anonymous read of absent/private/deleted = 403 `access_denied`;
-  tokenless commands never `expired`; malformed requests = 400 `bad_request` (unspecified).
+- Deviations chosen: malformed requests = 400 `bad_request` (unspecified); unreadable anonymous
+  read = 401 `session_expired` (derivable `expired`, not 403).
 - **AMENDED static serving:** because `frontend/prompt` cannot be deleted, do NOT use a generic
   file route. Serve ONLY `index.html` (`/` and `/index.html`), `/app.js`, `/style.css`; everything
   else 404. Embed with `include_dir!("$CARGO_MANIFEST_DIR/../frontend")`.
@@ -104,6 +108,8 @@
 - Split: T4a (parse+respond+routes+server+main), T4b (assets+flake), T4c (integration tests).
 
 ## Spec gaps / open decisions
-- Anonymous `read-post` of a post that is absent/private/deleted has NO `Step` constructor in Twitter.agda (only `read-post-anonymously` for public+live). Implementation will answer `403 access_denied` (denied) for these undefined cases; needs user confirmation / possible spec fix.
+- Anonymous `read-post` of absent/private/deleted: `failed-access` applies vacuously
+  (`extract-sid (read-post nothing _) ≡ nothing`), so `expired` is derivable and is the chosen
+  answer. `read-post-anonymously` covers public+live. No spec fix needed.
 - `time-passes` / session timeout is not exposed by Interface (no endpoint); sessions only become invalid via logout.
 - Accounts are always created with `default-visibility = everyone`, so `followers-only` is unreachable via API; still implement faithfully.
