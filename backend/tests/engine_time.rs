@@ -24,7 +24,11 @@
 //! * assumption: `newest_first` is a permutation of **all** posts, because
 //!   `store::newest_first` also lists deleted posts (the spec's
 //!   `newest-first` may list only some; `only-valid-posts` is the only
-//!   constraint).
+//!   constraint);
+//! * assumption: `Post.replies` is in `seq` order -- the children sorted by
+//!   ascending rank in `newest_first` -- because the engine serves replies
+//!   from `store::replies_of` (`ORDER BY seq DESC`); `likes` are
+//!   lexicographic and duplicate-free, matching `from_db`.
 
 mod support;
 
@@ -196,18 +200,28 @@ fn time_passes_is_idempotent() {
 // ---------------------------------------------------------------------------
 
 /// A world with no sessions at all is already timed out: `time-passes`
-/// answers `success` and changes nothing. Worlds that do have sessions are
-/// discarded rather than failed -- P1 covers those.
+/// answers `success` and changes nothing.
+///
+/// The property runs on `world.without_sessions()` rather than discarding the
+/// worlds that do have sessions (about 64% of generated worlds), so no case is
+/// wasted; the session-free world is materialised into the shared database and
+/// still has to round-trip. P1/P2 cover the worlds that do have sessions.
 #[test]
 fn time_passes_on_empty_world_changes_nothing() {
 	check(|db: &Db, world: &WorldState, _: ()| -> TestResult {
-		if !world.sessions.is_empty() {
-			return TestResult::discard();
-		}
+		let world = world.without_sessions();
+		assert!(
+			world.active_sessions().is_empty(),
+			"the session-free world has no active session to begin with"
+		);
+		reset(db);
+		materialise(db, &world);
+		assert_eq!(from_db(db), world, "the session-free world round-trips");
+
 		assert_eq!(time_passes(db).expect("time-passes"), EngineResult::Success);
 		assert_eq!(
 			from_db(db),
-			*world,
+			world,
 			"a world with no sessions is already timed out"
 		);
 		assert_eq!(status_in_db(db, ABSENT), SessionStatus::Unused);

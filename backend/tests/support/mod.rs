@@ -13,6 +13,19 @@
 //!   `store::newest_first` lists every row, deleted posts included, so
 //!   `newest_first` here is a permutation of `posts` -- that is the invariant
 //!   `validate` checks and the one the materialiser round-trips.
+//! * `Post.replies` is stored in `seq` order, not id order: the materialiser
+//!   gives index `i` of `newest_first` the seq `len - i`, and the engine
+//!   answers `read-post` with `store::replies_of`, which is
+//!   `ORDER BY seq DESC` (`backend/src/store.rs:388`). A reply list is
+//!   therefore its children sorted by *ascending rank* in `newest_first`
+//!   (rank 0 = newest = highest seq), and `from_db` reads replies the same
+//!   way. `likes` is canonical too: lexicographic by user, duplicate-free
+//!   (`from_db` reads `ORDER BY pid, user`). `validate` requires both orders,
+//!   so a world that names the right children in the wrong order is rejected
+//!   rather than silently round-tripped into a different one.
+//! * `replies` must be *exactly* the set of children whose `parent` names the
+//!   post -- no missing child, no extra entry, no duplicate -- which closes
+//!   the "parent set but child not listed in `replies`" gap.
 //!
 //! A `WorldState` is *constructive*: `Arbitrary::arbitrary` only builds worlds
 //! that pass `validate`, and the `Arbitrary::shrink` method only yields worlds
@@ -52,9 +65,10 @@ pub struct PostState {
 	pub text: String,
 	pub visibility: Visibility,
 	pub status: PostStatus,
-	/// Users who liked the post, sorted, duplicate-free.
+	/// Users who liked the post, sorted lexicographically, duplicate-free.
 	pub likes: Vec<String>,
-	/// Direct replies, ascending by `PostId`, duplicate-free.
+	/// Direct replies in `seq` order (newest first), duplicate-free: exactly
+	/// the children of this post, sorted by ascending rank in `newest_first`.
 	pub replies: Vec<PostId>,
 	pub parent: Option<PostId>,
 }
@@ -106,33 +120,47 @@ impl WorldState {
 				}
 			}
 		}
+		let rank = self.rank_map();
 		for (pid, post) in &self.posts {
-			let mut replies = HashSet::new();
-			for child in &post.replies {
-				if child == pid {
-					return Err(format!("post {pid:?} replies to itself"));
-				}
-				if !replies.insert(*child) {
-					return Err(format!("duplicate reply {child:?} on {pid:?}"));
-				}
-				let Some(reply) = self.posts.get(child) else {
-					return Err(format!("post {pid:?} has missing reply {child:?}"));
-				};
-				if reply.parent != Some(*pid) {
-					return Err(format!(
-						"reply {child:?} of {pid:?} has parent {:?}",
-						reply.parent
-					));
-				}
+			if post.parent == Some(*pid) {
+				return Err(format!("post {pid:?} replies to itself"));
 			}
-			let mut likes = HashSet::new();
-			for user in &post.likes {
-				if !likes.insert(user.as_str()) {
-					return Err(format!("duplicate like by {user:?} on {pid:?}"));
+			// Exactly the children of `pid`, in `seq` order: rank 0 in
+			// `newest_first` gets the highest seq, so sorting by ascending
+			// rank reproduces `store::replies_of`'s `ORDER BY seq DESC`.
+			let mut expected: Vec<PostId> = self
+				.posts
+				.iter()
+				.filter(|(_, child)| child.parent == Some(*pid))
+				.map(|(child, _)| *child)
+				.collect();
+			expected.sort_unstable_by_key(|child| rank[child]);
+			if post.replies != expected {
+				return Err(format!(
+					"post {pid:?} lists replies {:?}, but its children in seq order are {expected:?}",
+					post.replies
+				));
+			}
+			for (index, user) in post.likes.iter().enumerate() {
+				if index > 0 && post.likes[index - 1] >= *user {
+					return Err(format!(
+						"likes of {pid:?} are not strictly lexicographic: {:?}",
+						post.likes
+					));
 				}
 			}
 		}
 		Ok(())
+	}
+
+	/// `PostId ->` its index in `newest_first`, i.e. its `len - seq`. Every
+	/// post has a rank once `newest_first` has passed the permutation check.
+	fn rank_map(&self) -> HashMap<PostId, usize> {
+		self.newest_first
+			.iter()
+			.enumerate()
+			.map(|(rank, pid)| (*pid, rank))
+			.collect()
 	}
 
 	/// The world after `time-passes`: every `active` session becomes
@@ -154,6 +182,15 @@ impl WorldState {
 			.get(&sid)
 			.cloned()
 			.unwrap_or(SessionStatus::Unused)
+	}
+
+	/// `self` with every session dropped and nothing else touched. Already
+	/// timed out (`timed_out`), since a session-free world has no `active`
+	/// session left to revoke.
+	pub fn without_sessions(&self) -> WorldState {
+		let mut next = self.clone();
+		next.sessions.clear();
+		next
 	}
 
 	/// Ids of the sessions that are `active`.
@@ -402,6 +439,18 @@ impl Arbitrary for WorldState {
 			0 => {}
 			1 => newest_first.reverse(),
 			_ => shuffle(g, &mut newest_first),
+		}
+
+		// `replies` is stored in `seq` order, so reorder every reply list to
+		// ascending rank in the `newest_first` just chosen (`validate` requires
+		// that order and `store::replies_of` answers `ORDER BY seq DESC`).
+		let rank: HashMap<PostId, usize> = newest_first
+			.iter()
+			.enumerate()
+			.map(|(rank, pid)| (*pid, rank))
+			.collect();
+		for post in posts.values_mut() {
+			post.replies.sort_unstable_by_key(|child| rank[child]);
 		}
 
 		let mut follows = BTreeSet::new();
@@ -668,9 +717,11 @@ struct ReplyRow {
 /// Read the whole database back as a `WorldState`.
 ///
 /// Replies are derived from the `parent` column (the database has no replies
-/// table), ordered by `id`; likes are ordered by `user`. The generator and the
-/// shrinker keep both orders, so `from_db(materialise(w)) == w` for every
-/// generated world -- asserted by the harness on every case.
+/// table), ordered by `parent, seq DESC` -- the same order the engine serves
+/// through `store::replies_of`; likes are ordered lexicographically by `user`.
+/// The generator and the shrinker keep both orders, so
+/// `from_db(materialise(w)) == w` for every generated world -- asserted by the
+/// harness on every case.
 pub fn from_db(db: &Db) -> WorldState {
 	db.read(|conn| -> Result<WorldState, DbError> {
 		let account_rows: Vec<AccountRow> = diesel::sql_query(
@@ -734,7 +785,7 @@ pub fn from_db(db: &Db) -> WorldState {
 		}
 
 		let reply_rows: Vec<ReplyRow> = diesel::sql_query(
-			"SELECT id, parent FROM posts WHERE parent IS NOT NULL ORDER BY parent, id",
+			"SELECT id, parent FROM posts WHERE parent IS NOT NULL ORDER BY parent, seq DESC",
 		)
 		.load(conn)?;
 		for row in reply_rows {
@@ -856,5 +907,98 @@ where
 		TestResult::error(format!(
 			"property failed; minimal world: {world:?}\nminimal argument: {arg:?}"
 		))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression: reply order.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn post(author: &str, parent: Option<PostId>) -> PostState {
+		PostState {
+			author: author.to_string(),
+			text: "text".to_string(),
+			visibility: Visibility::Everyone,
+			status: PostStatus::Live,
+			likes: Vec::new(),
+			replies: Vec::new(),
+			parent,
+		}
+	}
+
+	/// The Q1a blocker: `Post.replies` is `seq`-descending, *not* id order, so
+	/// a parent with several children whose `newest_first` is not id-sorted
+	/// must list its children in rank order, round-trip through the
+	/// materialiser, and agree with `store::replies_of` (the order the engine
+	/// serves). `validate` must also reject the id-ordered (wrong) list.
+	#[test]
+	fn replies_are_seq_ordered_and_match_the_store() {
+		let mut root = post("ada", None);
+		// newest_first below is [2, 4, 1, 3], so the children of post 1 rank
+		// 2 (seq 2), 3 (seq 1) and 0 (seq 4): seq-desc order is [2, 4, 3].
+		root.replies = vec![PostId(2), PostId(4), PostId(3)];
+		let world = WorldState {
+			accounts: BTreeMap::from([(
+				"ada".to_string(),
+				AccountState {
+					password: "pw".to_string(),
+					visibility: Visibility::Everyone,
+				},
+			)]),
+			sessions: HashMap::new(),
+			posts: std::iter::once((PostId(1), root))
+				.chain(
+					[2, 3, 4]
+						.into_iter()
+						.map(|id| (PostId(id), post("ada", Some(PostId(1))))),
+				)
+				.collect(),
+			follows: BTreeSet::new(),
+			newest_first: vec![PostId(2), PostId(4), PostId(1), PostId(3)],
+		};
+		world.validate().expect("seq-ordered replies are valid");
+
+		let db = Db::in_memory().expect("create the in-memory database");
+		reset(&db);
+		materialise(&db, &world);
+		assert_eq!(from_db(&db), world, "the world round-trips");
+		let replies = db
+			.read(|conn| store::replies_of(conn, PostId(1)))
+			.expect("read the replies");
+		assert_eq!(replies, vec![PostId(2), PostId(4), PostId(3)]);
+		assert_eq!(
+			replies,
+			world.posts[&PostId(1)].replies,
+			"the engine's reply order is the world's reply order"
+		);
+
+		// Id order (or any other order) is not the stored order: `validate`
+		// must say so instead of letting the round-trip paper over it.
+		let mut id_ordered = world.clone();
+		id_ordered
+			.posts
+			.get_mut(&PostId(1))
+			.expect("the root exists")
+			.replies = vec![PostId(2), PostId(3), PostId(4)];
+		assert!(
+			id_ordered.validate().is_err(),
+			"replies out of seq order must be rejected"
+		);
+
+		// And a parent whose child forgot to list it is caught as well.
+		let mut orphan = world.clone();
+		orphan
+			.posts
+			.get_mut(&PostId(1))
+			.expect("the root exists")
+			.replies = vec![PostId(2), PostId(4)];
+		assert!(
+			orphan.validate().is_err(),
+			"a missing reply must be rejected"
+		);
 	}
 }
