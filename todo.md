@@ -14,21 +14,31 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T2a: review REJECTED (4 issues: unclosed delimiter, missing `#[quickcheck]`, missing
-  `ReturnedTimeline` variant, weak `login` property). Fix subagent running in `wt-t2`.
-  After it passes: implement `engine/auth.rs`, review, commit, merge.
-- [ ] T2b plan: ACCEPTED (split T2b-1 store+proof-world scaffolding, T2b-2 tests+proofs, T2b-3 impl, review).
-- [ ] T3 plan: ACCEPTED (split T3a social/`ReturnedTimeline`/`can_read_post`, T3b timelines).
-- [ ] T4 plan: ACCEPTED with amendments (see "T4 plan" section). Blocked on T2+T3 engine.
+- [ ] T2b: post lifecycle (publish/reply/delete/read-post). Tests+proofs subagent running in
+  `/home/u3836/git/formal-twitter.git/wt-t2b` (branch `task/t2b-engine-posts`, from merge 3988336).
+- [ ] T2b plan: ACCEPTED (see "T2b plan" below).
+- [ ] T3 plan: ACCEPTED (split T3a social/`can_read_post`, T3b timelines).
+- [ ] T4 plan: ACCEPTED with amendments (see "T4 plan"). Blocked on T2+T3 engine.
+
+## T2b plan (accepted)
+- Engine API: `engine::posts::{publish(db,sid,text,Option<PostId>), delete(db,sid,pid), read_post(db,Option<SessionId>,pid)}`.
+- Expired first for token commands; publish-no-parent always succeeds after session check;
+  reply denied iff `¬ CanReadPost`; reply visibility = account default unless parent is
+  `followers-only` then `followers-only`; delete denied if absent or not author, but deleting an
+  already-deleted own post succeeds; read logged-in denied if absent/deleted/private-unfollowed;
+  anonymous read only public+live (otherwise 403, documented deviation, functional test only).
+- `newest-first` and reply lists include deleted posts; replies newest-first (`seq DESC`).
+- New store helpers: `can_read_post`, `can_read_anonymous`, `post_view` (post+likes+replies),
+  `delete_own` (load-check-delete in one transaction).
+- Proofs: arbitrary-world builders `posted-world` / `reply-world` via `set-post`; positive
+  `post-is-public`/`post-is-private` witnesses and negative `¬CanReadPost` lemmas for
+  absent/deleted/private-unfollowed.
 
 ## State as of 2026-11-26
-- `maki-loop-3` HEAD 28b5937 (T5 merged; T1 merged).
-- `wt-t2` HEAD 099f531 + uncommitted T2a tests/proofs/skeleton being fixed.
-- `wt-t5` removed after merge (branch `task/t5-frontend` retained).
-- All worktrees live under `/home/u3836/git/formal-twitter.git/`.
-- [x] T5: frontend reviewed and merged (merge 28b5937; branch e62e00c). The tracked
-  `frontend/prompt` task-description file could NOT be deleted or emptied because the sandbox
-  denies `rm`/writes outside the coordinator's own files; T4 must serve an explicit asset allowlist.
+- `maki-loop-3` HEAD 3988336: T5 merged (28b5937), T2a merged (3988336).
+- `wt-t2b` at 3988336, branch `task/t2b-engine-posts` (T2b tests+proofs in progress).
+- `wt-t2` removed after merge (branch `task/t2-engine-auth-posts` retained).
+
 
 ## Done (cont.)
 - [x] T1: DB schema + persistence layer. Merged into `maki-loop-3` (merge 099f531, impl 3c12bd0). Review accepted.
@@ -45,16 +55,16 @@
 - T4 hint: `flake.nix` `prePatch` copies `frontend/` to the *parent* of the unpacked backend source, so `include_dir!("$CARGO_MANIFEST_DIR/../frontend")` (or rust-embed) is the intended way to embed static assets for `nix run`; serve them from Rocket without depending on cwd.
 
 ## Backlog (ordered)
-- [ ] T2a: Engine — auth (register, authenticate, revoke-token) + failed-access. Fix→impl→review→merge.
-- [ ] T2b-1: posts store helpers (`can_read`, `can_read_anonymous`, `post_view`, `delete_own`) + Agda `mk-world-posts` scaffolding.
-- [ ] T2b-2: tests+proofs for publish/reply/delete/read-post (+ expired). Anonymous private/deleted/absent read: functional `403` only, NO Agda property (documented deviation).
-- [ ] T2b-3: implement `engine/posts.rs`; review; merge.
-- [ ] T3a: `EngineResult::ReturnedTimeline` (already added by T2a fix) + `active_user` helper + `store::can_read_post` + `engine/social.rs` (follow/unfollow/like/unlike) + tests/proofs P1-P6,P10.
+- [x] T2a: engine auth. Merged 3988336 (impl a15d5ac, test fixes 451d52f/704327b, proofs+wiring 9780d3e).
+- [ ] T2b: post lifecycle (publish, reply, delete, read-post) with quickcheck tests + Agda proofs. IN PROGRESS.
+- [ ] T3a: social (follow/unfollow/like/unlike) + `store::can_read_post`.
 - [ ] T3b: `engine/timeline.rs` (personal/private-global/anonymous-global) + P7-P9.
 - [ ] T3-impl + review.
-- [ ] T4: HTTP interface + wiring (Rocket routes, text/plain body parsing, exact responses/headers, static frontend mount serving an explicit allowlist, `nix run`, integration tests).
-- [x] T5: merged frontend (28b5937); `frontend/prompt` remains but must never be served.
-- [ ] T6: Benchmarks + performance hardening (create new tasks from results).
+- [ ] T4a: parse+respond+routes+server+main (Rocket).
+- [ ] T4b: embedded assets (3-file allowlist) + flake.
+- [ ] T4c: integration tests.
+- [ ] T5: merged 28b5937.
+- [ ] T6: Benchmarks + performance hardening.
 
 ## Assumptions (recorded)
 - T2 was split into T2a (auth, the current uncommitted work) and T2b (post lifecycle); the
