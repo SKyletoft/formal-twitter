@@ -87,6 +87,37 @@ struct CountRow {
 	count: i64,
 }
 
+#[derive(QueryableByName)]
+struct UsernameRow {
+	#[diesel(sql_type = Text)]
+	username: String,
+}
+
+#[derive(QueryableByName)]
+struct PostViewRow {
+	#[diesel(sql_type = BigInt)]
+	id: i64,
+	#[diesel(sql_type = Text)]
+	author: String,
+	#[diesel(sql_type = Text)]
+	text: String,
+	#[diesel(sql_type = Text)]
+	visibility: String,
+	#[diesel(sql_type = Text)]
+	status: String,
+	#[diesel(sql_type = Nullable<BigInt>)]
+	parent: Option<i64>,
+	#[diesel(sql_type = BigInt)]
+	likes: i64,
+}
+
+/// A post together with its like count, read in a single query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostView {
+	pub post: Post,
+	pub likes: i64,
+}
+
 fn load_ids(c: &mut SqliteConnection, query: String) -> Result<Vec<PostId>, DbError> {
 	let rows: Vec<IdRow> = diesel::sql_query(query).load(c)?;
 	Ok(rows.into_iter().map(|row| PostId(row.id)).collect())
@@ -157,6 +188,21 @@ pub fn get_session(c: &mut SqliteConnection, sid: SessionId) -> Result<SessionSt
 			other => Err(invalid(format!("invalid session status: {other}"))),
 		},
 	}
+}
+
+/// The user behind `sid` iff the session is `active` and its account exists.
+///
+/// `only-valid-sessions` (Twitter.agda) makes the account existence an
+/// invariant; the join keeps the helper total regardless.
+pub fn active_user(c: &mut SqliteConnection, sid: SessionId) -> Result<Option<String>, DbError> {
+	let rows: Vec<UsernameRow> = diesel::sql_query(
+		"SELECT s.username AS username FROM sessions s \
+		JOIN accounts a ON a.username = s.username \
+		WHERE s.id = ? AND s.status = 'active'",
+	)
+	.bind::<BigInt, _>(sid.0)
+	.load(c)?;
+	Ok(rows.into_iter().next().map(|row| row.username))
 }
 
 pub fn revoke_session(c: &mut SqliteConnection, sid: SessionId) -> Result<(), DbError> {
@@ -243,6 +289,81 @@ pub fn soft_delete_post(c: &mut SqliteConnection, id: PostId) -> Result<(), DbEr
 		Err(DbError(diesel::result::Error::NotFound))
 	} else {
 		Ok(())
+	}
+}
+
+/// Spec `CanReadPost` (Twitter.agda:158-179): the post is `live` and either
+/// `everyone`, or `followers-only` and `user` follows its author.
+pub fn can_read_post(c: &mut SqliteConnection, user: &str, id: PostId) -> Result<bool, DbError> {
+	let row: ExistsRow = diesel::sql_query(
+		"SELECT EXISTS(SELECT 1 FROM posts p WHERE p.id = ? AND p.status = 'live' \
+		AND (p.visibility = 'everyone' OR EXISTS(SELECT 1 FROM follows f \
+		WHERE f.follower = ? AND f.followee = p.author))) AS present",
+	)
+	.bind::<BigInt, _>(id.0)
+	.bind::<Text, _>(user)
+	.get_result(c)?;
+	Ok(row.present != 0)
+}
+
+/// Spec `is-post-public` (Twitter.agda:342-357): the post exists, is `live`
+/// and is visible to `everyone`.
+pub fn can_read_anonymous(c: &mut SqliteConnection, id: PostId) -> Result<bool, DbError> {
+	let row: ExistsRow = diesel::sql_query(
+		"SELECT EXISTS(SELECT 1 FROM posts p WHERE p.id = ? AND p.status = 'live' \
+		AND p.visibility = 'everyone') AS present",
+	)
+	.bind::<BigInt, _>(id.0)
+	.get_result(c)?;
+	Ok(row.present != 0)
+}
+
+/// The post `id` (absent if there is none) together with its like count, in
+/// one query.
+pub fn post_view(c: &mut SqliteConnection, id: PostId) -> Result<Option<PostView>, DbError> {
+	let rows: Vec<PostViewRow> = diesel::sql_query(
+		"SELECT p.id AS id, p.author AS author, p.text AS text, \
+		p.visibility AS visibility, p.status AS status, p.parent AS parent, \
+		COUNT(l.pid) AS likes \
+		FROM posts p LEFT JOIN post_likes l ON l.pid = p.id \
+		WHERE p.id = ? \
+		GROUP BY p.id, p.author, p.text, p.visibility, p.status, p.parent",
+	)
+	.bind::<BigInt, _>(id.0)
+	.load(c)?;
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => Ok(Some(PostView {
+			post: Post {
+				id: PostId(row.id),
+				author: row.author,
+				text: row.text,
+				visibility: parse_visibility(&row.visibility)?,
+				status: parse_post_status(&row.status)?,
+				parent: row.parent.map(PostId),
+			},
+			likes: row.likes,
+		})),
+	}
+}
+
+/// Soft-delete `id` iff `author` owns it, returning the pre-image.
+///
+/// `None` covers both "absent" and "not the author": the spec's
+/// `failed-delete-non-existant-post` / `failed-delete-not-author`
+/// (Twitter.agda:451-462) answer the same `denied`. Call inside a write
+/// transaction.
+pub fn delete_own(
+	c: &mut SqliteConnection,
+	id: PostId,
+	author: &str,
+) -> Result<Option<Post>, DbError> {
+	match get_post(c, id)? {
+		Some(post) if post.author == author => {
+			soft_delete_post(c, id)?;
+			Ok(Some(post))
+		}
+		_ => Ok(None),
 	}
 }
 
