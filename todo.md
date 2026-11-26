@@ -14,9 +14,9 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T3b: timelines (personal, private global, anonymous global). Tests+proofs subagent running in
-  `/home/u3836/git/formal-twitter.git/wt-t3b` (branch `task/t3b-engine-timelines`, from merge 6a28a0d).
-- [ ] T3a: DONE/merged 6a28a0d (tests/proofs 7f70c9e, impl 14b043f).
+- [ ] T4: HTTP interface. Integration-test + skeleton stage running in
+  `/home/u3836/git/formal-twitter.git/wt-t4` (branch `task/t4-http`, from merge b00d15e).
+- [ ] T3b: DONE/merged b00d15e (tests/proofs be49628, impl 8427c53).
 - [ ] T4 plan: ACCEPTED with amendments (see "T4 plan"). Blocked on T2+T3 engine.
 
 ## T2b plan (accepted)
@@ -35,9 +35,9 @@
   absent/deleted/private-unfollowed.
 
 ## State as of 2026-11-26
-- `maki-loop-3` HEAD 6a28a0d: T5, T2a, T2b, T3a all merged.
-- `wt-t3b` at 6a28a0d, branch `task/t3b-engine-timelines` (T3b tests+proofs in progress).
-- `wt-t3a` removed after merge (branch `task/t3a-engine-social` retained).
+- `maki-loop-3` HEAD b00d15e: T5, T2a, T2b, T3a, T3b all merged; engine complete.
+- `wt-t4` at b00d15e, branch `task/t4-http` (T4 in progress).
+- `wt-t3b` removed after merge (branch `task/t3b-engine-timelines` retained).
 
 
 ## Done (cont.)
@@ -61,7 +61,8 @@
 - [x] T2a: engine auth. Merged 3988336 (impl a15d5ac, test fixes 451d52f/704327b, proofs+wiring 9780d3e).
 - [x] T2b: post lifecycle. Merged db56bde (tests/proofs 60fa369/6cff937, impl 31578c7).
 - [x] T3a: social. Merged 6a28a0d (tests/proofs 7f70c9e, impl 14b043f).
-- [ ] T3b: timelines (personal/private-global/anonymous-global) + proofs. IN PROGRESS.
+- [x] T3b: timelines. Merged b00d15e (tests/proofs be49628, impl 8427c53).
+- [ ] T4: HTTP interface (routes/parse/respond/server/main, embedded assets, flake, integration tests). IN PROGRESS.
 - [ ] T3b: `engine/timeline.rs` (personal/private-global/anonymous-global) + P7-P9.
 - [ ] T3-impl + review.
 - [ ] T4a: parse+respond+routes+server+main (Rocket).
