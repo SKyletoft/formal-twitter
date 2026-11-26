@@ -8,6 +8,9 @@
 - [ ] T8a: Frontend redesign — layout, two timeline tabs (global/followed), tweet cards,
   tweet detail with replies.
 - [ ] T8b: Frontend actions — like/unlike, follow/unfollow, reply composer; depends on T8a.
+- [ ] Cache commonly read public data.
+- [ ] Redo all quickcheck properties. You may not create a new database within the test. The test should take in a world state and you need to create a valid AND shrinkable world state to pass to quickcheck properties.
+- [ ] Database query batching? Without destroying worst case latency.
 
 ## In progress
 - [ ] T7: plan ACCEPTED. Tests+proofs running in `wt-t7` (branch `task/t7-time-passes`).
