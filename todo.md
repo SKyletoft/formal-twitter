@@ -14,9 +14,11 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T6-perf-db (T6a+T6d+T6g): `PRAGMA synchronous=NORMAL`, fuse `active_user`+`get_account` in
-  `publish`, release `lto="thin"`. Worktree `wt-perf1` (branch `task/t6-perf-db`, from 81ceeba).
-- [ ] T6-perf-timeline (T6c): rewrite personal (and private-global) timeline queries; next after perf-db.
+- [ ] T6-perf-timeline (T6c): rewrite `store::personal_timeline_for` as per-author top-n (window
+  function over `idx_posts_author_seq`), identical list, + sparse-follows regression test.
+  Worktree `wt-perf2` (branch `task/t6-perf-timeline`, from e4cf748).
+- [x] T6-perf-db (T6a+T6d+T6g): DONE/merged e4cf748 (commit 2faa731). Writes 1.8 ms -> 15-55 µs;
+  119 tests; `nix build` green.
 - [x] T6 benchmarks: DONE (harness merged 81ceeba; commit 4468155).
 - [x] Spec-change audit: CLEAN (spec unchanged during implementation; all Commands/Actions/Results/Steps covered).
 - [ ] T4: DONE/merged f4d17b5 (tests 666b348/c8a256b/13ccdf6, impl 2497f7e, hardening f451d17).
@@ -39,9 +41,9 @@
   absent/deleted/private-unfollowed.
 
 ## State as of 2026-11-26
-- `maki-loop-3` HEAD 81ceeba: engine + HTTP complete + benchmark harness (T6).
-- `wt-perf1` at 81ceeba, branch `task/t6-perf-db` (T6a+T6d+T6g).
-- `wt-t6` removed after merge (branch `task/t6-bench` retained).
+- `maki-loop-3` HEAD e4cf748: engine + HTTP + T6a/d/g complete.
+- `wt-perf2` at e4cf748, branch `task/t6-perf-timeline` (T6c).
+- `wt-perf1` removed after merge (branch `task/t6-perf-db` retained).
 
 
 ## Done (cont.)
@@ -71,11 +73,11 @@
   7-26 µs; empty txn 365 ns); reads get-tweet 32 µs, private global 16 µs, anon global 10 µs;
   personal timeline 42.6 µs at 20k but 1.37 ms with sparse follows (100k: 3.51 ms); HTTP
   signup 6.8 µs / post 26 µs / get 40 µs / personal-timeline 103 µs.
-- [ ] T6a (S, 20-50× writes): `PRAGMA synchronous=NORMAL` with WAL. IMPLEMENTING.
+- [x] T6a (S, 20-50× writes): `PRAGMA synchronous=NORMAL` with WAL. DONE e4cf748 (writes -> 15-55 µs).
 - [ ] T6c (M-L, 10-20× personal timeline): per-author top-n via `idx_posts_author_seq` +
-  window function, identical result list. NEXT.
-- [ ] T6d (S): fold `active_user`+`get_account` into one query in `publish`. IMPLEMENTING.
-- [ ] T6g (S): release `lto="thin"`. IMPLEMENTING.
+  window function, identical result list. IN PROGRESS.
+- [x] T6d (S): fold `active_user`+`get_account` into one query in `publish`. DONE e4cf748.
+- [x] T6g (S): release `lto="thin"`. DONE e4cf748.
 - Deferred: T6b read connection pool (r2d2; `:memory:` tests would need shared-cache, medium risk),
   T6e read_post query fusion, T6f body-path allocations, T6h partial index (small gains).
 
