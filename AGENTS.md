@@ -10,6 +10,7 @@ You may install cargo dependencies you wish to use. Be conservative,
 but not fully NIH. Non-rust packages are to be installed in @flake.nix.
 
 The program must be easily runnable with `nix run`.
+You must enter the nix devShell to run any commands!
 
 You are the task coordinator. Your job is to split up the project into
 smaller tasks that can be handed off to subagents. All your progress
