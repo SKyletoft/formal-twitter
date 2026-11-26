@@ -2,17 +2,24 @@
 //!
 //! Spec counterpart: `time-passes` (Twitter.agda:124) with the
 //! `session-timeout` Step (Twitter.agda:691-702): every `active` session
-//! becomes `revoked` and nothing else is touched. The body is filled in by
-//! the implementation task; this skeleton fixes the signature used by
-//! `tests/engine_time.rs`.
+//! becomes `revoked` and nothing else is touched.
 
 use crate::db::Db;
 use crate::engine::result::EngineResult;
 use crate::model::DbError;
+use crate::store;
 
 /// Spec `time-passes` (Twitter.agda:124) with the `session-timeout` Step
 /// (Twitter.agda:691-702): every active session becomes revoked, everything
 /// else is unchanged.
-pub fn time_passes(_db: &Db) -> Result<EngineResult, DbError> {
-	todo!("T7 skeleton: implemented later")
+///
+/// The whole effect is one `UPDATE sessions SET status = 'revoked' WHERE status
+/// = 'active'` inside a single write transaction, so a reader sees either the
+/// world before the timeout or the world after it, never a mix. It is also
+/// idempotent: a second pass finds no `active` row left to move.
+pub fn time_passes(db: &Db) -> Result<EngineResult, DbError> {
+	db.write(|c| {
+		store::revoke_all_sessions(c)?;
+		Ok(EngineResult::Success)
+	})
 }
