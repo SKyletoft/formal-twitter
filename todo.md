@@ -8,7 +8,8 @@
 - [ ] C1: Cache commonly read public data. (C1a public tweet cache merged `c91d9d6`; C1b timeline
   caches pending.)
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
-  valid AND shrinkable generated world state. (Q1a infrastructure + time pilot merged `48514db`.)
+  valid AND shrinkable generated world state. (Q1a infra+time `48514db`; Q1b auth/social `4a9f6af`,
+  posts/timeline `d938c35`; Q1c cleanup pending.)
 - [ ] B1: Database query batching without destroying worst-case latency.
 
 ## In progress
@@ -20,14 +21,17 @@
   shrink/materialiser + `engine_time` pilot; 137 tests; 0 discards.
 - [x] C1a: DONE/merged `c91d9d6` (`4b1b4a9` + strengthened test `e5c2857`). Warm anon get-tweet
   46 ns; render burst 3.4×; dead-cache/invalidation mutations now fail the property.
-- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, like/unlike, bound `LIMIT`) running in
-  `wt-b1` (branch `task/b1-query-fusion`).
-- [ ] Q1b: two migrations running from `0070593`: auth+social (`wt-q1b1`) and posts+timeline
-  (`wt-q1b2`).
+- [x] Q1b: DONE/merged — auth+social `4a9f6af`, posts+timeline `d938c35`. All engine suites now
+  use one `Db` per `#[test]`, reset+materialise a generated valid `WorldState` per case.
+- [ ] Q1-harness: `support::WorldProperty::result` panic containment + real shrinking fix running
+  in `wt-harness` (review found panics escaped quickcheck, so failures never shrank).
+- [ ] B1/T6e: implementation `e8b3caa` (get-tweet 4→3/3→2, reply 5→3, like 3→2, bound LIMIT);
+  review running in `wt-b1`.
 - [ ] C1b: timeline id caches; after B1.
+- [ ] Q1c: cleanup (dead helpers, duplicate tests, docs) after harness+B1 merge.
 
 ## State
-- Branch `maki-loop-3`, HEAD `c91d9d6`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, C1a.
+- Branch `maki-loop-3`, HEAD `d938c35`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, C1a.
 - 155 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
@@ -38,7 +42,7 @@
 - Tests: quickcheck properties with a matching theorem in `backend/ImplProofs.agda`; no
   postulates/holes. T1/store-layer (no spec `Step`) and T4 wire layer (Interface helpers are
   postulates) are unit/integration-tested only.
-- Sandbox: `rm` is denied; never plan a task requiring deletion of tracked files.
+- Sandbox: `rm` is denied unless it involves scratch files; never plan a task requiring deletion of tracked files.
 
 ## Gotchas / decisions
 - Spec is the source of truth; never edit `spec/`.
