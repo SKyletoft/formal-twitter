@@ -8,7 +8,7 @@
 - [ ] C1: Cache commonly read public data (in-memory; total invalidation on every write; DB stays
   the source of truth before serving).
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
-  valid AND shrinkable generated world state.
+  valid AND shrinkable generated world state. (Q1a infrastructure + time pilot merged `48514db`.)
 - [ ] B1: Database query batching without destroying worst-case latency.
 
 ## In progress
@@ -16,16 +16,18 @@
   tests, Agda, lint, `nix build`, HTTP + timer smokes all green.
 - [x] T8b: DONE/merged `eec038b` (`4405ef3` + CSS/UX fix `53c2a6d`). 136 tests, DOM stub 73/73,
   live smoke 44/44.
+- [x] Q1a: DONE/merged `48514db` (`057c42c` + reply-order fix `e57d2ac`). WorldState/Arbitrary/
+  shrink/materialiser + `engine_time` pilot; 137 tests; 0 discards.
 - [ ] C1a: implementation `4b1b4a9` reviewed (cache behaviour correct; warm anon 46 ns, render
   burst 3.4×). Test-strengthening fix (assert real hits/invalidations) running in `wt-c1a`.
-- [ ] Q1a: implementation `057c42c`; reply-order blocker fix (seq-desc alignment) running in `wt-q1a`.
-- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, bound `LIMIT`); after C1a.
+- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, bound `LIMIT`); after C1a merge.
 - [ ] C1b: timeline id caches; after B1.
-- [ ] Q1b: migrate remaining engine suites to `WorldState` (after Q1a; can run parallel with B1).
+- [ ] Q1b: migrate `engine_auth/posts/social/timeline` to `WorldState`; after C1a merge (can run
+  parallel with B1).
 
 ## State
-- Branch `maki-loop-3`, HEAD `eec038b`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b.
-- 136 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
+- Branch `maki-loop-3`, HEAD `48514db`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a.
+- 137 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
