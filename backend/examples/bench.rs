@@ -124,7 +124,9 @@ fn counted<T>(op: impl FnOnce() -> T) -> (T, usize) {
 	(value, STATEMENTS.load(Ordering::SeqCst))
 }
 
-fn print_statements(title: &str, rows: &[(String, usize)]) {
+/// `cells` are pre-formatted so a row can label its count (the anonymous
+/// timeline hit is `0` *because* the cache answers it without the database).
+fn print_statements(title: &str, rows: &[(String, String)]) {
 	println!("\n{title}");
 	println!("{:<36} {:>6}", "scenario", "stmts");
 	for (scenario, statements) in rows {
@@ -838,11 +840,11 @@ fn cache_report(db: &Db, uncached: &Db, seeded: &Seeded) -> Vec<Row> {
 ///
 /// Runs after the timing tables because it writes (`publish`, `like`, `follow`)
 /// and would otherwise disturb them.
-fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, usize)> {
+fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, String)> {
 	let session = seeded.session;
 	let target = seeded.target;
 	let spare = seeded.spare;
-	let mut rows: Vec<(String, usize)> = Vec::new();
+	let mut rows: Vec<(String, String)> = Vec::new();
 
 	// `read-post`, cold and warm, with and without a session. The spare post is
 	// used rather than the target: `engine_report`'s reply scenario can push the
@@ -852,21 +854,21 @@ fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, usize)> {
 	let (_, cold) = counted(|| {
 		expect_returned(posts::read_post(db, Some(session), spare), "stmt-get-tweet");
 	});
-	rows.push(("get-tweet session (cold)".to_owned(), cold));
+	rows.push(("get-tweet session (cold)".to_owned(), cold.to_string()));
 	let (_, warm) = counted(|| {
 		expect_returned(posts::read_post(db, Some(session), spare), "stmt-get-tweet");
 	});
-	rows.push(("get-tweet session (warm)".to_owned(), warm));
+	rows.push(("get-tweet session (warm)".to_owned(), warm.to_string()));
 
 	db.clear_cache_for_tests();
 	let (_, cold) = counted(|| {
 		expect_returned(posts::read_post(db, None, spare), "stmt-get-tweet-anon");
 	});
-	rows.push(("get-tweet anonymous (cold)".to_owned(), cold));
+	rows.push(("get-tweet anonymous (cold)".to_owned(), cold.to_string()));
 	let (_, warm) = counted(|| {
 		expect_returned(posts::read_post(db, None, spare), "stmt-get-tweet-anon");
 	});
-	rows.push(("get-tweet anonymous (warm)".to_owned(), warm));
+	rows.push(("get-tweet anonymous (warm)".to_owned(), warm.to_string()));
 
 	let (_, count) = counted(|| {
 		expect_created(
@@ -874,30 +876,30 @@ fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, usize)> {
 			"stmt-publish",
 		);
 	});
-	rows.push(("publish".to_owned(), count));
+	rows.push(("publish".to_owned(), count.to_string()));
 	let (_, count) = counted(|| {
 		expect_created(
 			posts::publish(db, session, "statement-count reply", Some(target)),
 			"stmt-publish-reply",
 		);
 	});
-	rows.push(("publish reply".to_owned(), count));
+	rows.push(("publish reply".to_owned(), count.to_string()));
 
 	social::unlike(db, session, spare).expect("reset unlike");
 	let (_, count) = counted(|| expect_success(social::like(db, session, spare), "stmt-like"));
-	rows.push(("like".to_owned(), count));
+	rows.push(("like".to_owned(), count.to_string()));
 	let (_, count) = counted(|| expect_success(social::unlike(db, session, spare), "stmt-unlike"));
-	rows.push(("unlike".to_owned(), count));
+	rows.push(("unlike".to_owned(), count.to_string()));
 
 	let followee = username(500);
 	social::unfollow(db, session, &followee).expect("reset unfollow");
 	let (_, count) =
 		counted(|| expect_success(social::follow(db, session, &followee), "stmt-follow"));
-	rows.push(("follow".to_owned(), count));
+	rows.push(("follow".to_owned(), count.to_string()));
 	let (_, count) = counted(|| {
 		expect_success(social::unfollow(db, session, &followee), "stmt-unfollow");
 	});
-	rows.push(("unfollow".to_owned(), count));
+	rows.push(("unfollow".to_owned(), count.to_string()));
 
 	let (_, count) = counted(|| {
 		expect_timeline(
@@ -905,21 +907,33 @@ fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, usize)> {
 			"stmt-personal",
 		);
 	});
-	rows.push(("personal timeline n=20".to_owned(), count));
+	rows.push(("personal timeline n=20".to_owned(), count.to_string()));
 	let (_, count) = counted(|| {
 		expect_timeline(
 			timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
 			"stmt-private-global",
 		);
 	});
-	rows.push(("private global n=20".to_owned(), count));
+	rows.push(("private global n=20".to_owned(), count.to_string()));
 	let (_, count) = counted(|| {
 		expect_timeline(
 			timeline::global_timeline(db, None, TIMELINE_LENGTH),
 			"stmt-anon-global",
 		);
 	});
-	rows.push(("anonymous global n=20".to_owned(), count));
+	rows.push(("anonymous global n=20 (cold)".to_owned(), count.to_string()));
+	let (_, count) = counted(|| {
+		expect_timeline(
+			timeline::global_timeline(db, None, TIMELINE_LENGTH),
+			"stmt-anon-global-warm",
+		);
+	});
+	// The hit takes no database lock at all, so the only honest count is zero:
+	// the label says why, because a bare `0` reads like a counting bug.
+	rows.push((
+		"anonymous global n=20 (warm)".to_owned(),
+		format!("{count} (cache, no db)"),
+	));
 
 	rows
 }
@@ -1192,11 +1206,12 @@ fn print_hotspots() {
 	println!("  3. `insert_post`/`insert_reply` compute `COALESCE(MAX(seq),0)+1` per insert: a");
 	println!("     unique-index seek plus one write per row, so bulk seeding is O(n log n).");
 	println!("  4. `ids::allocate` draws a random i64 and probes `EXISTS` until free: one extra");
-	println!("     query per publish, and per login for the session id.");
-	println!("  5. Timelines filter the whole seq-ordered list until `n` matches survive: the");
-	println!("     personal timeline scans ~users/followed-authors posts per answer through a");
-	println!("     correlated `EXISTS`, so cost tracks match density, not `n`.");
-	println!("  6. `post_view_for`/`post_view_anonymous` LEFT-JOIN `post_likes` and group, so a");
+	println!("  5. Timelines filter the whole seq-ordered list before `take n`, so `n` bounds");
+	println!("     the answer and never the scan. The personal timeline keeps that cheap with");
+	println!("     a per-author `ROW_NUMBER()` window joined through `follows` (index-backed");
+	println!("     on both sides) and an outer `ORDER BY seq DESC LIMIT n`, so it reads at");
+	println!("     most `n * (#followees)` rows; a warm cache hit skips the query entirely,");
+	println!("     and the anonymous form's hit does not even take the database lock.");
 	println!("     cold `read-post` is the fused view (body, likes and `CanReadPost` in one");
 	println!("     row) plus the session probe and `replies_of`; the SQL is a fixed string");
 	println!("     with bound parameters, not `format!`ed. A live `everyone` tweet answers");

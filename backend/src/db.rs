@@ -85,22 +85,54 @@ struct CacheState {
 	timelines: HashMap<TimelineKey, Vec<PostId>>,
 }
 
-/// The process-wide cache of public post bodies.
+/// The process-wide cache: public post bodies and timeline id lists.
+///
+/// Two kinds of entry, both keyed so that adding entries can only ever save
+/// work:
+///
+/// * **post bodies** ([`PostId`] -> [`PublicPost`]): what a `read-post` would
+///   answer, capped at [`CACHE_CAPACITY`] entries; a post with more than
+///   [`CACHE_MAX_REPLIES`] replies is not stored.
+/// * **timeline id lists** ([`TimelineKey`] -> `Vec<PostId>`): the whole
+///   `take n` answer of `read-personal-timeline` / `read-global-timeline`
+///   (Twitter.agda:557-585), capped at [`CACHE_TIMELINE_CAPACITY`] keys; a
+///   list longer than [`CACHE_MAX_TIMELINE_IDS`] ids is not stored.
+///
+/// Both maps are bounded by dropping *everything* when full, never by evicting
+/// a single entry: invalidation is total anyway (below), so a partial policy
+/// would buy nothing and there is no per-entry bookkeeping to get wrong.
+///
+/// Worst-case resident memory is the sum of the two caps:
+///
+/// * timeline id lists: 2,048 keys x 4,096 ids x 8 B ~= 64 MiB;
+/// * post bodies: 10,000 entries x (text + at most 1,024 reply ids ~= 8 KiB)
+///   ~= 80 MiB.
+///
+/// Both are caps on a cache that may be dropped at any moment, so exceeding
+/// them costs one re-read per entry, never correctness.
 ///
 /// It never holds a value the database disagrees with, because every mutating
 /// command -- including `time-passes` (Twitter.agda:691-702) -- reports through
-/// [`Db::write`], which clears the map after its transaction commits.
+/// [`Db::write`], which clears *both* maps after its transaction commits. That
+/// is the whole invalidation policy: no per-key invalidation, no generation
+/// check on reads, just "a write empties the cache". A reader samples the
+/// generation before its database read and only publishes an entry if it is
+/// unchanged afterwards, so a write racing in between cannot install a stale
+/// entry.
 ///
 /// Lock order: the database mutex of [`Db`] may be held while taking the cache
 /// mutex, but the cache mutex is never held across database I/O. Every method
 /// here takes and releases the cache mutex on its own, so there is only ever
 /// one order and no deadlock.
 ///
-/// Correctness rests on the existing `read-post` theorems, not on a new `Step`:
-/// the cache introduces no command and no state of the spec's world. The answer
-/// is still `read-post-logged-in` / `read-post-anonymously`
-/// (Twitter.agda:518-555); the cache is only an alternative way to compute it,
-/// and `tests/cache.rs` checks that it computes the same thing as the database.
+/// Correctness rests on the existing `read-post` and timeline theorems, not on
+/// a new `Step`: the cache introduces no command and no state of the spec's
+/// world. The answer is still `read-post-logged-in` /
+/// `read-post-anonymously` (Twitter.agda:518-555) or
+/// `get-personal-timeline` / `get-private-global-timeline` /
+/// `get-public-global-timeline`; the cache is only an alternative way to
+/// compute it, and `tests/cache.rs` and `tests/timeline_cache.rs` check that it
+/// computes the same thing as the database.
 pub struct Cache {
 	/// `false` for the test-only uncached handles: every operation is then a
 	/// no-op, so those handles behave exactly like the pre-cache code.

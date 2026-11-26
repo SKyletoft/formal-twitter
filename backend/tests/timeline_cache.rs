@@ -11,9 +11,9 @@
 
 use formal_twitter::db::{Db, TimelineKey};
 use formal_twitter::engine::EngineResult;
-use formal_twitter::engine::auth::revoke_token;
+use formal_twitter::engine::auth::{authenticate, register, revoke_token};
 use formal_twitter::engine::posts::{delete, publish};
-use formal_twitter::engine::social::{follow, unfollow};
+use formal_twitter::engine::social::{follow, like, unfollow, unlike};
 use formal_twitter::engine::time::time_passes;
 use formal_twitter::engine::timeline::{global_timeline, personal_timeline};
 use formal_twitter::model::{PostId, SessionId, Visibility};
@@ -144,10 +144,12 @@ fn cold_and_warm_answers_match_an_uncached_handle_for_every_length_and_session()
 }
 
 #[test]
-fn a_timeline_hit_answers_without_querying_the_database() {
+fn a_timeline_hit_answers_with_the_cached_ids() {
 	let db = cached();
 	let n = 4;
-	// Seed the three keys with sentinel ids the database does not contain.
+	// Seed the three keys with sentinel ids the database does not contain, so
+	// a hit is recognisable from the answer alone: a store query could never
+	// return them.
 	let generation = db.cache_generation();
 	let sentinels = [
 		TimelineKey::Personal(ALICE.to_owned(), n),
@@ -157,8 +159,15 @@ fn a_timeline_hit_answers_without_querying_the_database() {
 	for (index, key) in sentinels.iter().enumerate() {
 		db.cache_put_timeline(generation, key.clone(), vec![PostId(9000 + index as i64)]);
 	}
-	// A hit returns the sentinel, so the answer cannot have come from the
-	// database.
+	// A hit returns the sentinel, so the ids cannot have come from the
+	// timeline query. Only the *anonymous* form is database-free, though:
+	// `personal_timeline` and `global_timeline (just sid)` run `active_user`
+	// before consulting the cache, because session validity is never cached and
+	// `Expired` must win over a cached list (see
+	// `a_cached_list_never_makes_an_invalid_session_return_a_timeline`). So
+	// this test proves id provenance for all three forms and no statement
+	// count for the two session-carrying ones -- `global_timeline(db, None, n)`
+	// returns before it takes the database lock at all.
 	assert_eq!(
 		ids(personal_timeline(&db, ALICE_SID, n).expect("personal")),
 		vec![PostId(9000)]
@@ -333,6 +342,60 @@ fn time_passes_invalidates_and_expires_the_session_forms() {
 		EngineResult::Expired
 	);
 	assert_forms_equal(&cached.db, &plain.db, ALICE_SID, 5);
+}
+
+/// Every mutating command reports through `Db::write`, so every one of them
+/// must clear the whole cache -- not only the post/follow commands covered by
+/// `every_write_invalidates_all_three_kinds_and_the_next_read_reflects_it`.
+/// `like`, `unlike`, `register`, `login` and `logout` are checked here
+/// directly, because the invalidation policy is *total*: a `like` leaves the id
+/// lists themselves unchanged but drops them anyway (the stale value it must
+/// prevent is the post body -- the like count -- which `tests/cache.rs`
+/// covers), and the three auth commands change the session a session-carrying
+/// key is named after.
+#[test]
+fn like_unlike_register_login_and_logout_clear_the_cache() {
+	let db = cached();
+	let n = 5;
+	let cleared = |what: &str| {
+		for key in keys_for(ALICE_SID, n) {
+			assert!(
+				db.cache_get_timeline(&key).is_none(),
+				"{what}: {key:?} survived the write"
+			);
+		}
+	};
+
+	// Warm, run the command, assert the whole cache went -- one command at a
+	// time, so each clearing is attributed to that command alone.
+	let _ = warm_keys(&db, ALICE_SID, n);
+	expect_success(like(&db, ALICE_SID, CAROL_PUBLIC), "like");
+	cleared("like");
+
+	let _ = warm_keys(&db, ALICE_SID, n);
+	expect_success(unlike(&db, ALICE_SID, CAROL_PUBLIC), "unlike");
+	cleared("unlike");
+
+	let _ = warm_keys(&db, ALICE_SID, n);
+	expect_success(register(&db, "dave", PASSWORD), "register");
+	cleared("register");
+
+	let _ = warm_keys(&db, ALICE_SID, n);
+	assert!(
+		matches!(
+			authenticate(&db, CAROL, PASSWORD).expect("login"),
+			EngineResult::IssuedSession(_)
+		),
+		"login issues a session"
+	);
+	cleared("login");
+
+	let _ = warm_keys(&db, ALICE_SID, n);
+	expect_success(revoke_token(&db, BOB_SID), "logout");
+	cleared("logout");
+
+	// After all of it, the cache is still an exact stand-in for the database.
+	assert_forms_equal(&db, &uncached(), ALICE_SID, n);
 }
 
 // ---------------------------------------------------------------------------

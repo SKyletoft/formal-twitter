@@ -370,6 +370,55 @@ fn personal_timeline_excludes_own_without_self_follow() {
 	assert!(timeline.contains(&friend));
 }
 
+/// `personal_timeline_for` binds `n` twice -- the per-author
+/// `ROW_NUMBER() ... <= n` window and the outer `LIMIT n` -- so the boundary
+/// values must be right at both binds: `n = 0` is empty, `n = 1` is exactly the
+/// newest followed post (the window keeps one row per author, the outer limit
+/// one overall), and `n` larger than every followed author's posts returns the
+/// whole filtered list in `newest-first` order.
+#[test]
+fn personal_timeline_honours_n_at_both_window_binds() {
+	let mut c = conn();
+	let mut newest_first = Vec::new();
+	// Two followed authors with unequal counts (a: 3, b: 2) so `n = 1` cannot
+	// be satisfied by the per-author window alone.
+	for (author, text) in [
+		("a", "a1"),
+		("b", "b1"),
+		("a", "a2"),
+		("b", "b2"),
+		("a", "a3"),
+	] {
+		let pid = allocate_post_id(&mut c).unwrap();
+		insert_post(&mut c, pid, author, text, Visibility::Everyone).unwrap();
+		newest_first.push(pid);
+	}
+	add_follow(&mut c, "u", "a").unwrap();
+	add_follow(&mut c, "u", "b").unwrap();
+	newest_first.reverse();
+
+	assert_eq!(
+		personal_timeline_for(&mut c, "u", 0).unwrap(),
+		Vec::new(),
+		"n = 0 must answer nothing"
+	);
+	assert_eq!(
+		personal_timeline_for(&mut c, "u", 1).unwrap(),
+		newest_first[..1].to_vec(),
+		"n = 1 must answer the single newest followed post"
+	);
+	assert_eq!(
+		personal_timeline_for(&mut c, "u", 3).unwrap(),
+		newest_first[..3].to_vec(),
+		"n = 3 must answer the three newest, spanning both authors"
+	);
+	assert_eq!(
+		personal_timeline_for(&mut c, "u", 6).unwrap(),
+		newest_first,
+		"n greater than the followed posts must answer all of them"
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Id allocation
 // ---------------------------------------------------------------------------

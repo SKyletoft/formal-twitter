@@ -829,15 +829,25 @@ pub fn from_db(db: &Db) -> WorldState {
 /// implements `Testable` for `fn` pointers, so a capturing closure cannot be
 /// handed to `QuickCheck` directly. The adapter also shrinks through the
 /// validity-preserving `WorldState::shrink` and reports the minimal failing
-/// world in the panic message.
+/// world together with the failure's own message.
 ///
 /// quickcheck 1.1 calls `Testable::result` without `catch_unwind`, and Q1b
 /// properties assert, so a failing assertion would unwind straight out of the
 /// harness: no `TestResult` comes back, `first.is_failure()` is never reached
-/// and nothing shrinks. `WorldProperty::run` therefore wraps the whole case
-/// (reset, materialise, round-trip check, property) in `catch_unwind` and
-/// turns a panic into `TestResult::error`, so panicking properties shrink
-/// like ordinary failures.
+/// and nothing shrinks. `WorldProperty::run` therefore wraps the case in
+/// `catch_unwind` and turns a panic into a failing `Outcome`, so panicking
+/// properties shrink like ordinary failures.
+///
+/// A failure is an [`Outcome`], not a bare `TestResult`, because the harness
+/// has to tell two very different bugs apart and keep the message of the first:
+///
+/// * a **property** failure -- the assertion the property author wrote;
+/// * a **harness** failure -- `materialise` or the round-trip check panicked,
+///   i.e. a bug in this module, never in the property.
+///
+/// Only the property's message is worth appending to the minimal-world report;
+/// a harness panic is reported under its own label so it cannot be misread as a
+/// failing property.
 pub fn check<A>(prop: impl Fn(&Db, &WorldState, A) -> TestResult + 'static)
 where
 	A: Arbitrary + std::fmt::Debug + 'static,
@@ -859,7 +869,88 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 	} else if let Some(message) = payload.downcast_ref::<String>() {
 		message.clone()
 	} else {
-		"property panicked".to_string()
+		"panicked with a non-string payload".to_string()
+	}
+}
+
+/// What one harness case did.
+///
+/// The variant is the label of the failure: only `Property*` is a property
+/// bug, `HarnessPanic` is a bug in this module.
+enum Outcome {
+	/// The case did not fail; the `TestResult` is passed through unchanged
+	/// (it may be a discard).
+	NotFailed(TestResult),
+	/// The property returned a failing `TestResult` without panicking.
+	/// quickcheck keeps `TestResult`'s fields private, so its message is not
+	/// retrievable here; a panicking `assert!` is the usual shape anyway.
+	PropertyFailed,
+	/// The property panicked (an `assert!` or `panic!`): the assertion text.
+	PropertyPanic(String),
+	/// `materialise` or the round-trip check panicked: the harness is broken.
+	HarnessPanic(String),
+}
+
+impl Outcome {
+	fn is_failure(&self) -> bool {
+		!matches!(self, Outcome::NotFailed(_))
+	}
+}
+
+/// A failing case: which side failed and the message to report.
+///
+/// The harness folds every failing probe of the shrink loop into one of these.
+/// A harness panic always wins (it makes the whole shrink meaningless);
+/// otherwise the *first* message that carried one is kept, so the original
+/// assertion text survives probes that fail without a message.
+struct Failure {
+	harness: bool,
+	message: Option<String>,
+}
+
+impl Failure {
+	fn of(outcome: &Outcome) -> Self {
+		let mut failure = Self {
+			harness: false,
+			message: None,
+		};
+		failure.absorb(outcome);
+		failure
+	}
+
+	fn absorb(&mut self, outcome: &Outcome) {
+		match outcome {
+			Outcome::HarnessPanic(message) => {
+				self.harness = true;
+				self.message = Some(message.clone());
+			}
+			Outcome::PropertyPanic(message) => {
+				if self.message.is_none() {
+					self.message = Some(message.clone());
+				}
+			}
+			Outcome::PropertyFailed => {}
+			Outcome::NotFailed(_) => {}
+		}
+	}
+
+	/// The failure report: the message first, then the minimal world, so a
+	/// shrunken failure still says what broke.
+	fn report(&self, world: &WorldState, arg: &dyn std::fmt::Debug) -> String {
+		let message = self
+			.message
+			.as_deref()
+			.unwrap_or("no assertion message (the property returned a failing TestResult)");
+		if self.harness {
+			format!(
+				"harness error (materialiser or round-trip check panicked, \
+				not a property failure): {message}; world: {world:?}\nargument: {arg:?}"
+			)
+		} else {
+			format!(
+				"property failed: {message}; minimal world: {world:?}\nminimal argument: {arg:?}"
+			)
+		}
 	}
 }
 
@@ -877,11 +968,11 @@ where
 	/// Reset the shared database, materialise `world`, verify the round-trip
 	/// and run the property. No database is created here.
 	///
-	/// Any panic -- from the materialiser's round-trip assertion or from the
-	/// property -- is caught and reported as a failing `TestResult`, so the
-	/// shrinker (which probes candidates through `run`) can shrink it.
-	fn run(&self, world: &WorldState, arg: &A) -> TestResult {
-		match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	/// The two halves are contained separately, so a panic can be attributed:
+	/// a panic while setting up is a harness bug, a panic in the property is
+	/// the property's own assertion.
+	fn run(&self, world: &WorldState, arg: &A) -> Outcome {
+		let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			reset(&self.db);
 			materialise(&self.db, world);
 			assert_eq!(
@@ -889,35 +980,55 @@ where
 				*world,
 				"the materialiser must round-trip every generated world"
 			);
+		}));
+		if let Err(payload) = prepared {
+			return Outcome::HarnessPanic(panic_message(payload.as_ref()));
+		}
+		match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			(self.prop)(&self.db, world, arg.clone())
 		})) {
-			Ok(test_result) => test_result,
-			Err(payload) => TestResult::error(panic_message(payload.as_ref())),
+			Ok(result) if result.is_failure() => Outcome::PropertyFailed,
+			Ok(result) => Outcome::NotFailed(result),
+			Err(payload) => Outcome::PropertyPanic(panic_message(payload.as_ref())),
 		}
 	}
 
-	/// Greedily shrink the world, then the argument, while the property still
+	/// Greedily shrink the world, then the argument, while the case still
 	/// fails. Every step strictly decreases `WorldState::measure` or the
-	/// argument's own measure, so this terminates.
-	fn minimal_failure(&self, world: &WorldState, arg: &A) -> (WorldState, A) {
+	/// argument's own measure, so this terminates. Returns the minimal failing
+	/// case and the folded [`Failure`] (original message included).
+	fn minimal_failure(&self, world: &WorldState, arg: &A) -> (WorldState, A, Failure) {
 		let mut world = world.clone();
 		let mut arg = arg.clone();
+		let mut failure = Failure::of(&self.run(&world, &arg));
 		loop {
-			if let Some(smaller) = world
-				.shrink()
-				.find(|candidate| self.run(candidate, &arg).is_failure())
-			{
+			let mut shrunk = None;
+			for candidate in world.shrink() {
+				let outcome = self.run(&candidate, &arg);
+				if outcome.is_failure() {
+					failure.absorb(&outcome);
+					shrunk = Some(candidate);
+					break;
+				}
+			}
+			if let Some(smaller) = shrunk {
 				world = smaller;
 				continue;
 			}
-			if let Some(smaller) = arg
-				.shrink()
-				.find(|candidate| self.run(&world, candidate).is_failure())
-			{
+			let mut shrunk = None;
+			for candidate in arg.shrink() {
+				let outcome = self.run(&world, &candidate);
+				if outcome.is_failure() {
+					failure.absorb(&outcome);
+					shrunk = Some(candidate);
+					break;
+				}
+			}
+			if let Some(smaller) = shrunk {
 				arg = smaller;
 				continue;
 			}
-			return (world, arg);
+			return (world, arg, failure);
 		}
 	}
 }
@@ -929,14 +1040,13 @@ where
 {
 	fn result(&self, g: &mut Gen) -> TestResult {
 		let (world, arg): (WorldState, A) = Arbitrary::arbitrary(g);
-		let first = self.run(&world, &arg);
-		if !first.is_failure() {
-			return first;
+		match self.run(&world, &arg) {
+			Outcome::NotFailed(result) => result,
+			_ => {
+				let (world, arg, failure) = self.minimal_failure(&world, &arg);
+				TestResult::error(failure.report(&world, &arg))
+			}
 		}
-		let (world, arg) = self.minimal_failure(&world, &arg);
-		TestResult::error(format!(
-			"property failed; minimal world: {world:?}\nminimal argument: {arg:?}"
-		))
 	}
 }
 
@@ -968,8 +1078,10 @@ mod tests {
 	#[test]
 	fn replies_are_seq_ordered_and_match_the_store() {
 		let mut root = post("ada", None);
-		// newest_first below is [2, 4, 1, 3], so the children of post 1 rank
-		// 2 (seq 2), 3 (seq 1) and 0 (seq 4): seq-desc order is [2, 4, 3].
+		// newest_first is [2, 4, 1, 3], so ranks (and seqs) are post 2 at
+		// rank 0 (seq 4), post 4 at rank 1 (seq 3), post 1 at rank 2 (seq 2)
+		// and post 3 at rank 3 (seq 1). The children of post 1 are therefore
+		// 2, 4 and 3, and seq-descending order is [2, 4, 3].
 		root.replies = vec![PostId(2), PostId(4), PostId(3)];
 		let world = WorldState {
 			accounts: BTreeMap::from([(
@@ -1125,8 +1237,66 @@ mod harness_tests {
 			.expect_err("quickcheck reports the failure"),
 		);
 		assert!(
-			message.contains("property failed; minimal world:"),
-			"quickcheck must report the harness's minimal world, got: {message}"
+			message.contains("property failed: boom; minimal world:"),
+			"quickcheck must report the assertion text and the minimal world, got: {message}"
+		);
+	}
+
+	/// (a) Message fidelity: the report of a *shrunk* failure still carries the
+	/// original assertion text, not just the minimal world -- otherwise a
+	/// failing property says where it broke but never what it expected.
+	///
+	/// The property asserts a fixed, always-false equality so the case fails on
+	/// *every* generated world: the point is the report, not the world, and
+	/// `QUICKCHECK_TESTS` only changes how many cases QuickCheck runs.
+	#[test]
+	fn a_minimal_world_report_keeps_the_assertion_text() {
+		let property = harness(|_db: &Db, world: &WorldState, _: Unit| -> TestResult {
+			assert_eq!(
+				world.posts.len(),
+				usize::MAX,
+				"expected a world without posts"
+			);
+			TestResult::passed()
+		});
+		let message = payload_message(
+			std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				QuickCheck::new().tests(1).quickcheck(property);
+			}))
+			.expect_err("quickcheck reports the failure"),
+		);
+		assert!(
+			message.contains("expected a world without posts"),
+			"the assertion text is lost, got: {message}"
+		);
+		assert!(
+			message.contains("; minimal world: "),
+			"the minimal world is missing, got: {message}"
+		);
+	}
+
+	/// (a) Attribution: a world the materialiser cannot round-trip is a harness
+	/// bug, labelled as such, never reported as a failing property.
+	#[test]
+	fn a_broken_round_trip_is_labelled_a_harness_error() {
+		let property = harness(|_db: &Db, _world: &WorldState, _: Unit| -> TestResult {
+			panic!("the property must not run on a world that does not round-trip");
+		});
+		let (_, mut world) = generated_world(2);
+		// No longer a permutation of `posts`, so `validate` refuses it inside
+		// `materialise`: a harness bug, not a property one.
+		world.newest_first.pop();
+		assert!(matches!(
+			property.run(&world, &()),
+			Outcome::HarnessPanic(_)
+		));
+
+		let (_, _, failure) = property.minimal_failure(&world, &());
+		assert!(failure.harness, "a materialiser panic is a harness error");
+		let report = failure.report(&world, &());
+		assert!(
+			report.contains("harness error") && !report.contains("property failed"),
+			"a harness bug must not read as a property failure, got: {report}"
 		);
 	}
 
@@ -1136,7 +1306,8 @@ mod harness_tests {
 	fn b_panicking_property_shrinks_to_one_post() {
 		let property = harness(posts_must_be_empty);
 		let (_, world) = generated_world(2);
-		let (minimal, ()) = property.minimal_failure(&world, &());
+		let (minimal, (), failure) = property.minimal_failure(&world, &());
+		assert!(!failure.harness, "a property failure is not a harness one");
 
 		assert_eq!(minimal.validate(), Ok(()), "shrinks stay valid");
 		assert_eq!(minimal.posts.len(), 1, "minimal world: {minimal:?}");
@@ -1155,7 +1326,7 @@ mod harness_tests {
 	fn b_always_failing_property_shrinks_to_the_empty_world() {
 		let property = harness(|_db: &Db, _world: &WorldState, _: Unit| TestResult::failed());
 		let (_, world) = generated_world(1);
-		let (minimal, ()) = property.minimal_failure(&world, &());
+		let (minimal, (), _) = property.minimal_failure(&world, &());
 
 		assert_eq!(minimal.validate(), Ok(()), "shrinks stay valid");
 		assert!(minimal.accounts.is_empty(), "minimal world: {minimal:?}");
