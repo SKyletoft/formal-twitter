@@ -345,6 +345,13 @@ fn post_reply_and_read_post() {
 	assert_json_ok(&read_post(&client, Some(&token), &post), &expected, true);
 	// read-post-anonymously: a `live` `everyone` post (Twitter.agda:550-554).
 	assert_json_ok(&read_post(&client, None, &post), &expected, true);
+	// cant-read-post-public (Twitter.agda:518-522): a valid session reading a
+	// post that never existed answers `denied`.
+	assert_json_error(
+		&read_post(&client, Some(&token), ABSENT_POST),
+		403,
+		ACCESS_DENIED,
+	);
 	// The reply is itself a post and reads back as one.
 	assert_json_ok(
 		&read_post(&client, Some(&token), &first),
@@ -389,6 +396,13 @@ fn like_and_unlike() {
 	// failed-like-post (Twitter.agda:615-619).
 	assert_json_error(
 		&request(&client, "like-tweet", &[&bob, ABSENT_POST]),
+		403,
+		ACCESS_DENIED,
+	);
+	// failed-unlike-post (Twitter.agda:649-653) shares the same readability
+	// premise: an absent post is `denied` for a valid session.
+	assert_json_error(
+		&request(&client, "unlike-tweet", &[&bob, ABSENT_POST]),
 		403,
 		ACCESS_DENIED,
 	);
@@ -483,7 +497,9 @@ fn timelines_are_exact_newest_first_and_filtered() {
 	let (db, private_id) = seed_private_post("bob private");
 	let client = harness_with(db);
 	let alice = account(&client, "alice", "pw");
-	let bob = account(&client, "bob", "pw");
+	// `seed_private_post` already registered bob, so signing him up again would
+	// be `signup-failed`: log in to the seeded account instead.
+	let bob = session(&login(&client, "bob", "pw"));
 
 	let first = publish(&client, &alice, "alice one");
 	let bob_post = publish(&client, &bob, "bob one");
@@ -630,6 +646,18 @@ fn expired_sessions_and_anonymous_unreadable_posts() {
 		401,
 		SESSION_EXPIRED,
 	);
+	// The same `failed-access` covers the mutating commands, which leave the
+	// world untouched; `doomed` is still alice's to delete below.
+	assert_json_error(
+		&request(&client, "delete-tweet", &[&token, &doomed]),
+		401,
+		SESSION_EXPIRED,
+	);
+	assert_json_error(
+		&request(&client, "like-tweet", &[&token, &post]),
+		401,
+		SESSION_EXPIRED,
+	);
 
 	// `extract-sid (read-post nothing _)` is `nothing`, so `failed-access` is
 	// vacuous for an anonymous read: an unreadable post answers `expired`,
@@ -691,13 +719,14 @@ fn malformed_requests_are_bad_request() {
 	let token = account(&client, "alice", "pw");
 	let post = publish(&client, &token, "a post");
 
-	// Wrong number of lines: `post-tweet` takes two, `get-tweet` one or two,
-	// `signup` two.
+	// Wrong number of lines: `post-tweet` takes two, `post-reply` three,
+	// `get-tweet` one or two, `signup` two.
 	assert_bad_request(&request_raw(&client, "post-tweet", ""));
 	assert_bad_request(&request(&client, "post-tweet", &[&token]));
 	assert_bad_request(&request(&client, "post-tweet", &[&token, "text", "extra"]));
 	assert_bad_request(&request(&client, "get-tweet", &[]));
 	assert_bad_request(&request(&client, "signup", &["a", "b", "c"]));
+	assert_bad_request(&request(&client, "post-reply", &[&token, "reply"]));
 
 	// Missing the trailing CRLF, and bare LF line separators.
 	assert_bad_request(&request_raw(
@@ -719,19 +748,34 @@ fn malformed_requests_are_bad_request() {
 	assert_bad_request(&request(&client, "like-tweet", &[&token, "1e3"]));
 	assert_bad_request(&request(&client, "get-tweet", &[""]));
 
-	// Overflow: wider than the 64-bit ids and 32-bit lengths of the database.
+	// Unparseable: wider than 64 bits, so not a `Nat` the request can carry.
 	assert_bad_request(&request(&client, "get-tweet", &["99999999999999999999999"]));
 	assert_bad_request(&request(
 		&client,
 		"get-tweet",
 		&[&token, "99999999999999999999999"],
 	));
-	assert_bad_request(&request(&client, "global-timeline", &["4294967296"]));
 	assert_bad_request(&request(
 		&client,
-		"private-timeline",
-		&[&token, "4294967296"],
+		"global-timeline",
+		&["99999999999999999999999"],
 	));
+
+	// A timeline length is an unbounded `Nat` and `take n` is defined for every
+	// `n` (Twitter.agda:557-585), so a length far past the 32-bit range is not
+	// malformed: it returns the whole timeline. Alice follows only herself here,
+	// which is enough for both timelines to hold her single post.
+	assert_ok(&request(&client, "follow-user", &[&token, "alice"]));
+	assert_json_ok(
+		&request(&client, "global-timeline", &["4294967296"]),
+		&timeline_body(&[&post]),
+		true,
+	);
+	assert_json_ok(
+		&request(&client, "private-timeline", &[&token, "4294967296"]),
+		&timeline_body(&[&post]),
+		true,
+	);
 
 	// Empty username, password and text are valid: `""` is a `String`.
 	assert_ok(&signup(&client, "", ""));
