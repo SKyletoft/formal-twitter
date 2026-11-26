@@ -89,51 +89,71 @@ fn lines(db: &Db, sql: &str) -> Vec<String> {
 }
 
 /// The accounts table rendered as text.
+///
+/// The snapshot is sorted in Rust on the *composed* line, never on the SQL
+/// columns: `'|'` (0x7C) sorts after every letter and digit, so `ORDER BY
+/// username` and a sort of `username|password|visibility` disagree whenever
+/// one username is a prefix of another. Properties that build the expected
+/// rows in Rust sort the composed lines too, so this side must match.
 fn accounts_snapshot(db: &Db) -> Vec<String> {
-	lines(
+	let mut out = lines(
 		db,
 		"SELECT username || '|' || password || '|' || default_visibility AS line \
 		 FROM accounts ORDER BY username",
-	)
+	);
+	out.sort_unstable();
+	out
 }
 
-/// The sessions table rendered as text.
+/// The sessions table rendered as text, sorted on the composed line for the
+/// same reason as `accounts_snapshot`.
 fn sessions_snapshot(db: &Db) -> Vec<String> {
-	lines(
+	let mut out = lines(
 		db,
 		"SELECT CAST(id AS TEXT) || '|' || status || '|' || username AS line \
 		 FROM sessions ORDER BY id",
-	)
+	);
+	out.sort_unstable();
+	out
 }
 
 /// The sessions table minus the row `skip`, so a property can assert that a
-/// command touched exactly one session and left the others alone.
+/// command touched exactly one session and left the others alone. Sorted on
+/// the composed line, like `sessions_snapshot`.
 fn sessions_snapshot_except(db: &Db, skip: SessionId) -> Vec<String> {
 	let skip = skip.0;
-	lines(
+	let mut out = lines(
 		db,
 		&format!(
 			"SELECT CAST(id AS TEXT) || '|' || status || '|' || username AS line \
 			 FROM sessions WHERE id <> {skip} ORDER BY id"
 		),
-	)
+	);
+	out.sort_unstable();
+	out
 }
 
-/// Everything except accounts and sessions: posts, follows and likes.
+/// Everything except accounts and sessions: posts, follows and likes. Each
+/// table's rows are sorted on their composed line; the `--...--` markers keep
+/// the three groups apart.
 fn others_snapshot(db: &Db) -> Vec<String> {
-	let mut out = Vec::new();
-	out.extend(lines(
+	fn sorted(db: &Db, sql: &str) -> Vec<String> {
+		let mut out = lines(db, sql);
+		out.sort_unstable();
+		out
+	}
+	let mut out = sorted(
 		db,
 		"SELECT CAST(id AS TEXT) || '|' || author || '|' || text || '|' || visibility \
 		 || '|' || status AS line FROM posts ORDER BY id",
-	));
+	);
 	out.push("--follows--".to_string());
-	out.extend(lines(
+	out.extend(sorted(
 		db,
 		"SELECT follower || '|' || followee AS line FROM follows ORDER BY 1",
 	));
 	out.push("--likes--".to_string());
-	out.extend(lines(
+	out.extend(sorted(
 		db,
 		"SELECT CAST(pid AS TEXT) || '|' || user AS line FROM post_likes ORDER BY 1",
 	));
