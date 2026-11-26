@@ -469,3 +469,86 @@ fn soft_delete_keeps_reply_listed() {
 		.expect("deleted reply retained");
 	assert_eq!(deleted.status, PostStatus::Deleted);
 }
+
+// ---------------------------------------------------------------------------
+// JSON-safe ids
+// ---------------------------------------------------------------------------
+
+/// `2^53 - 1`, the largest integer a JavaScript `Number` holds exactly.
+///
+/// `show-tweets` (Interface.agda:219-222) writes timeline and reply ids as
+/// *bare* JSON numbers, and `JSON.parse` rounds anything above this bound, so a
+/// client could no longer ask for the tweet it just saw. `CreateNew` only asks
+/// for a fresh id, so the allocator stays inside the exactly representable
+/// range.
+const MAX_SAFE_ID: i64 = 9_007_199_254_740_991;
+
+/// Each id space draws this many `CreateNew`s. The birthday bound over
+/// `2^53` values is far below one percent even for the whole space combined,
+/// so a collision here means the allocator is broken, not unlucky.
+const SAFE_ID_SAMPLES: usize = 2000;
+
+/// Draws `SAFE_ID_SAMPLES` ids, storing each one so the freshness check really
+/// has to avoid it (a redraw of a live id hits the primary key and errors),
+/// and returns them.
+fn safe_post_ids() -> Vec<i64> {
+	let mut c = conn();
+	(0..SAFE_ID_SAMPLES)
+		.map(|_| {
+			let pid = allocate_post_id(&mut c).expect("allocate post id");
+			assert!(
+				(1..=MAX_SAFE_ID).contains(&pid.0),
+				"post id {} is outside 1..={MAX_SAFE_ID} and cannot be written as a bare JSON number",
+				pid.0
+			);
+			insert_post(&mut c, pid, "alice", "t", Visibility::Everyone).expect("insert post");
+			pid.0
+		})
+		.collect()
+}
+
+fn safe_session_ids() -> Vec<i64> {
+	let mut c = conn();
+	create_account(&mut c, "alice", "pw").expect("create account");
+	(0..SAFE_ID_SAMPLES)
+		.map(|_| {
+			let sid = allocate_session_id(&mut c).expect("allocate session id");
+			assert!(
+				(1..=MAX_SAFE_ID).contains(&sid.0),
+				"session id {} is outside 1..={MAX_SAFE_ID} and cannot be written as a bare JSON number",
+				sid.0
+			);
+			activate_session(&mut c, sid, "alice").expect("activate session");
+			sid.0
+		})
+		.collect()
+}
+
+fn assert_unique(mut ids: Vec<i64>) {
+	let drawn = ids.len();
+	ids.sort_unstable();
+	ids.dedup();
+	assert_eq!(ids.len(), drawn, "the allocator handed out a duplicate id");
+}
+
+#[test]
+fn post_ids_are_json_safe_and_unique() {
+	assert_unique(safe_post_ids());
+}
+
+#[test]
+fn session_ids_are_json_safe_and_unique() {
+	assert_unique(safe_session_ids());
+}
+
+#[test]
+fn id_spaces_are_independent() {
+	// Post ids and session ids are separate `CreateNew` sequences: the same
+	// value may legitimately appear once in each space.
+	let posts = safe_post_ids();
+	let sessions = safe_session_ids();
+	assert_eq!(posts.len(), SAFE_ID_SAMPLES);
+	assert_eq!(sessions.len(), SAFE_ID_SAMPLES);
+	assert_unique(posts);
+	assert_unique(sessions);
+}

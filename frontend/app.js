@@ -59,6 +59,9 @@
 	let bannerTimer = 0;
 	let routeSeq = 0;
 	let lastTimeline = 'global';
+	/* Set once a reply has said the session expired, so a batch of in-flight
+	   requests reports it exactly once. */
+	let sessionExpiring = false;
 
 	function isNat(value) {
 		return typeof value === 'string' && /^[0-9]+$/.test(value);
@@ -100,6 +103,7 @@
 	}
 
 	function setSession(newToken, newUsername) {
+		sessionExpiring = false;
 		if (isNat(newToken) && typeof newUsername === 'string' && newUsername !== '') {
 			token = newToken;
 			username = newUsername;
@@ -128,8 +132,12 @@
 		followingHint.hidden = loggedIn;
 		if (loggedIn) {
 			tabFollowing.removeAttribute('aria-disabled');
+			tabFollowing.removeAttribute('tabindex');
 		} else {
+			/* Disabled here: keep it out of the tab order as well, so keyboard
+			   users are not sent to a link that only explains itself. */
 			tabFollowing.setAttribute('aria-disabled', 'true');
+			tabFollowing.setAttribute('tabindex', '-1');
 		}
 	}
 
@@ -221,7 +229,13 @@
 		}
 
 		const error = errorName(json);
+		if (error === 'session_expired' && sessionExpiring) {
+			/* The rest of an in-flight batch: the banner and the fallback render
+			   already happened once, so stay silent. */
+			return { ok: false, status: response.status, error: error, json: json };
+		}
 		if (error === 'session_expired' && token !== null) {
+			sessionExpiring = true;
 			log('error', name + ': your session expired');
 			expireSession();
 			return { ok: false, status: response.status, error: error, json: json };
@@ -342,6 +356,17 @@
 		return null;
 	}
 
+	/* True when `raw` is a JSON number `JSON.parse` had to round: anything above
+	   2^53 - 1 is no longer the server's id. The backend draws ids from
+	   1..=2^53 - 1, so this only fires if that contract is ever broken. */
+	function idOutOfRange(raw) {
+		return typeof raw === 'number' && !(Number.isSafeInteger(raw) && raw >= 0);
+	}
+
+	/* Ids of a `show-tweets` list, in order. A number the browser cannot hold
+	   exactly becomes `null`, which renders as an "unsupported id" placeholder
+	   instead of a request for a tweet the server does not have; an entry that
+	   is not an id at all makes the whole list `null`. */
 	function idsOf(raw) {
 		if (!Array.isArray(raw)) {
 			return null;
@@ -349,7 +374,7 @@
 		const ids = [];
 		for (let i = 0; i < raw.length; i += 1) {
 			const id = idOf(raw[i]);
-			if (id === null) {
+			if (id === null && !idOutOfRange(raw[i])) {
 				return null;
 			}
 			ids.push(id);
@@ -429,6 +454,9 @@
 	}
 
 	async function fetchTweet(id) {
+		if (id === null) {
+			return { id: null, tweet: null };
+		}
 		const result = await call('get-tweet', withToken([id]));
 		if (!result.ok) {
 			return { id: id, tweet: null };
@@ -491,20 +519,28 @@
 	function listItems(ids, items) {
 		const nodes = [];
 		let missing = 0;
+		let unsupported = 0;
 		for (let i = 0; i < ids.length; i += 1) {
-			const item = items[i];
+			const id = ids[i];
 			const listItem = document.createElement('li');
 			listItem.className = 'tweet-item';
-			listItem.dataset.tweetId = ids[i];
+			if (id === null) {
+				unsupported += 1;
+				listItem.appendChild(unavailable('unsupported id: this browser cannot hold it exactly'));
+				nodes.push(listItem);
+				continue;
+			}
+			listItem.dataset.tweetId = id;
+			const item = items[i];
 			if (item === null || item === undefined || item.tweet === null) {
 				missing += 1;
-				listItem.appendChild(unavailable('tweet ' + ids[i] + ' unavailable'));
+				listItem.appendChild(unavailable('tweet ' + id + ' unavailable'));
 			} else {
-				listItem.appendChild(buildCard(ids[i], item.tweet));
+				listItem.appendChild(buildCard(id, item.tweet));
 			}
 			nodes.push(listItem);
 		}
-		return { nodes: nodes, missing: missing };
+		return { nodes: nodes, missing: missing, unsupported: unsupported };
 	}
 
 	/* ---------- timelines ---------- */
@@ -539,7 +575,28 @@
 		if (rendered.missing > 0) {
 			summary += ', ' + rendered.missing + ' unavailable';
 		}
+		if (rendered.unsupported > 0) {
+			summary += ', ' + rendered.unsupported + ' unsupported id' +
+				(rendered.unsupported === 1 ? '' : 's');
+		}
 		timelineStatus.textContent = summary;
+	}
+
+	/* The wording under the reply list: how many replies exist, how many are
+	   shown, and how many of the shown ones could not be rendered. The
+	   truncation notice never swallows the unavailable count. */
+	function replySummary(total, shownCount, rendered) {
+		let note = total > shownCount
+			? 'Showing ' + shownCount + ' of ' + total + ' replies'
+			: total + (total === 1 ? ' reply' : ' replies');
+		if (rendered.missing > 0) {
+			note += ', ' + rendered.missing + ' unavailable';
+		}
+		if (rendered.unsupported > 0) {
+			note += ', ' + rendered.unsupported + ' unsupported id' +
+				(rendered.unsupported === 1 ? '' : 's');
+		}
+		return total > shownCount ? note + '.' : note;
 	}
 
 	function detailErrorMessage(result) {
@@ -586,13 +643,7 @@
 		}
 		const rendered = listItems(shown, items);
 		detailReplies.replaceChildren.apply(detailReplies, rendered.nodes);
-		if (total > shown.length) {
-			repliesNote.textContent = 'Showing ' + shown.length + ' of ' + total + ' replies.';
-		} else if (rendered.missing > 0) {
-			repliesNote.textContent = total + (total === 1 ? ' reply' : ' replies') + ', ' + rendered.missing + ' unavailable';
-		} else {
-			repliesNote.textContent = total + (total === 1 ? ' reply' : ' replies');
-		}
+		repliesNote.textContent = replySummary(total, shown.length, rendered);
 	}
 
 	/* ---------- authentication ---------- */

@@ -793,3 +793,82 @@ fn malformed_requests_are_bad_request() {
 		true,
 	);
 }
+
+/* ---------- 9. ids a browser can round-trip ---------- */
+
+/// `2^53 - 1`: the largest integer a JavaScript `Number` represents exactly.
+/// `show-tweets` (Interface.agda:219-222) writes timeline and reply ids as
+/// bare JSON numbers, so a larger id would be rounded by `JSON.parse` and the
+/// client could never request that tweet again.
+const MAX_SAFE_ID: i64 = 9_007_199_254_740_991;
+
+/// Asserts a `show-tweets` element is a natural number a browser can hold.
+fn assert_json_safe_id(id: &str) {
+	assert!(
+		id.bytes().all(|byte| byte.is_ascii_digit()) && !id.is_empty(),
+		"id {id:?} is not a natural number"
+	);
+	let value: i64 = id
+		.parse()
+		.unwrap_or_else(|_| panic!("id {id:?} does not fit in 64 bits"));
+	assert!(
+		(0..=MAX_SAFE_ID).contains(&value),
+		"id {value} exceeds 2^53 - 1, so a JavaScript client cannot round-trip it"
+	);
+}
+
+/// Splits the `show-tweets` list of a reply body that contains `<"key">: [a,
+/// b, c]` — the whole body of `timeline`, or the `replies` field of `tweet`.
+fn id_list(resp: &Resp, key: &str) -> Vec<String> {
+	assert_status(resp, 200);
+	let marker = format!("\"{key}\": [");
+	let start = resp
+		.body
+		.find(&marker)
+		.unwrap_or_else(|| panic!("body {:?} has no {marker:?}", resp.body))
+		+ marker.len();
+	let inner = resp.body[start..]
+		.strip_suffix("]}")
+		.unwrap_or_else(|| panic!("body {:?} does not close with \"}}\"", resp.body));
+	if inner.is_empty() {
+		return Vec::new();
+	}
+	inner.split(", ").map(str::to_string).collect()
+}
+
+#[test]
+fn ids_round_trip_through_bare_json_numbers() {
+	let client = harness();
+	let token = account(&client, "alice", "pw");
+	let post = publish(&client, &token, "json safe");
+	let first = reply(&client, &token, "first", &post);
+	let second = reply(&client, &token, "second", &post);
+	for id in [&post, &first, &second] {
+		assert_json_safe_id(id);
+	}
+
+	// Every id of a timeline reply is a bare number a browser can hold. Live
+	// posts and replies are all posts, newest-first.
+	let timeline = id_list(&request(&client, "global-timeline", &["100"]), "timeline");
+	assert_eq!(
+		timeline,
+		vec![second.clone(), first.clone(), post.clone()],
+		"the timeline lists live posts newest-first, by their exact ids"
+	);
+	for id in &timeline {
+		assert_json_safe_id(id);
+	}
+
+	// Same for a `get-tweet` reply list: `replies` is newest-first.
+	let replies = id_list(&read_post(&client, Some(&token), &post), "replies");
+	assert_eq!(replies, vec![second.clone(), first.clone()]);
+	for id in &replies {
+		assert_json_safe_id(id);
+	}
+
+	// A browser that rounded an id would not match the created one, so the
+	// timeline and replies ids must repeat the exact digits `post-tweet` and
+	// `post-reply` returned.
+	assert_eq!(timeline[2], post);
+	assert_eq!(replies, vec![second, first]);
+}
