@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod posts;
 pub mod result;
+pub mod social;
 
 pub use crate::db::Db;
 pub use result::EngineResult;

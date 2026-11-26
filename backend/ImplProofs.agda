@@ -1816,3 +1816,523 @@ read-expired :
   Step before (read-post (just sid) pid) before expired
 read-expired before {sid} {pid} ¬act =
   failed-access-inactive before (read-post (just sid) pid) sid refl ¬act
+
+--------------------------------------------------------------------------------
+-- P12: follow / unfollow (Twitter.agda:655-675)
+--
+-- `follow-user` and `unfollow-user` change the follow table and nothing else.
+-- No `World` invariant (Twitter.agda:64-116) mentions `follows`, so every
+-- obligation of `follows-world` / `unfollows-world` is copied from `before`.
+-- Neither rule looks the followee up: following an account that does not exist
+-- is `success` (there is no failure rule), so `followee` is an arbitrary
+-- `String`.
+--------------------------------------------------------------------------------
+
+follows-world : (before : World) (follower followee : String) → World
+follows-world before follower followee = record
+  { account-at          = World.account-at before
+  ; session-at          = World.session-at before
+  ; post-at             = World.post-at before
+  ; follows             = add-follower (World.follows before) follower followee
+  ; newest-first        = World.newest-first before
+  ; used-post-ids       = World.used-post-ids before
+  ; used-session-ids    = World.used-session-ids before
+  ; only-used-pids      = World.only-used-pids before
+  ; only-used-sids      = World.only-used-sids before
+  ; only-valid-sessions = World.only-valid-sessions before
+  ; only-valid-posts    = World.only-valid-posts before
+  ; only-valid-replies  = World.only-valid-replies before
+  ; no-duplicate-replies = World.no-duplicate-replies before
+  ; no-duplicate-likes   = World.no-duplicate-likes before
+  ; no-duplicate-posts   = World.no-duplicate-posts before
+  }
+
+-- `follow-user` (Twitter.agda:655-664): the session must be valid, the
+-- follower is its user, and the only change is `add-follower`.
+follow-success :
+  ∀ (before : World) {sid : SessionId} {acc : Account}
+    {follower followee : String} →
+  ValidSession before sid acc follower →
+  Step before (follow sid followee)
+       (follows-world before follower followee) success
+follow-success before {sid} {acc} {follower} {followee} vs =
+  follow-user
+    {before   = before}
+    {after    = follows-world before follower followee}
+    {sid      = sid}
+    {acc      = acc}
+    {follower = follower}
+    {followee = followee}
+    vs
+    refl
+    refl
+    refl
+    refl
+    refl
+
+unfollows-world : (before : World) (follower followee : String) → World
+unfollows-world before follower followee = record
+  { account-at          = World.account-at before
+  ; session-at          = World.session-at before
+  ; post-at             = World.post-at before
+  ; follows             = remove-follower (World.follows before) follower followee
+  ; newest-first        = World.newest-first before
+  ; used-post-ids       = World.used-post-ids before
+  ; used-session-ids    = World.used-session-ids before
+  ; only-used-pids      = World.only-used-pids before
+  ; only-used-sids      = World.only-used-sids before
+  ; only-valid-sessions = World.only-valid-sessions before
+  ; only-valid-posts    = World.only-valid-posts before
+  ; only-valid-replies  = World.only-valid-replies before
+  ; no-duplicate-replies = World.no-duplicate-replies before
+  ; no-duplicate-likes   = World.no-duplicate-likes before
+  ; no-duplicate-posts   = World.no-duplicate-posts before
+  }
+
+-- `unfollow-user` (Twitter.agda:666-675).  There is no precondition that the
+-- pair was followed, which is why a repeated `unfollow` is still `success`.
+unfollow-success :
+  ∀ (before : World) {sid : SessionId} {acc : Account}
+    {follower followee : String} →
+  ValidSession before sid acc follower →
+  Step before (unfollow sid followee)
+       (unfollows-world before follower followee) success
+unfollow-success before {sid} {acc} {follower} {followee} vs =
+  unfollow-user
+    {before   = before}
+    {after    = unfollows-world before follower followee}
+    {sid      = sid}
+    {acc      = acc}
+    {follower = follower}
+    {followee = followee}
+    vs
+    refl
+    refl
+    refl
+    refl
+    refl
+
+--------------------------------------------------------------------------------
+-- P13: like / unlike (Twitter.agda:574-653)
+--
+-- `like-post` requires that `user` be a member of the AFTER like list and that
+-- the membership of every OTHER user be unchanged (Twitter.agda:601-604);
+-- `unlike-post` requires the mirror image, with `user` absent from the AFTER
+-- list (Twitter.agda:621-647).  `like-add` / `like-remove` are exactly those
+-- two list operations, and the bundle below shows that each satisfies its
+-- half -- and that both keep the list duplicate-free, which is what
+-- `no-duplicate-likes` (Twitter.agda:110-113) needs.
+--------------------------------------------------------------------------------
+
+-- `user` is consed only when absent, so a repeated like changes nothing.
+--
+-- The `Dec` of the head element is passed to a separate `like-add-cons`, so
+-- that the case tree of the step splits on a *variable*, not on the value of
+-- `_≟_` (whose reduction on two variables is stuck).  Each lemma below then
+-- matches on that variable, which is why the two branches are trivially
+-- available.
+mutual
+  like-add : List String → String → List String
+  like-add []       user = user ∷ []
+  like-add (x ∷ xs) user = like-add-cons x xs user (x ≟ user)
+
+  like-add-cons : (x : String) (xs : List String) (user : String)
+                  → Dec (x ≡ user) → List String
+  like-add-cons x xs user (yes _) = x ∷ xs
+  like-add-cons x xs user (no  _) = x ∷ like-add xs user
+
+-- Every occurrence of `user` is deleted, so a repeated unlike changes nothing.
+mutual
+  like-remove : List String → String → List String
+  like-remove []       user = []
+  like-remove (x ∷ xs) user = like-remove-cons x xs user (x ≟ user)
+
+  like-remove-cons : (x : String) (xs : List String) (user : String)
+                     → Dec (x ≡ user) → List String
+  like-remove-cons x xs user (yes _) = like-remove xs user
+  like-remove-cons x xs user (no  _) = x ∷ like-remove xs user
+
+infix 3 _⇔_
+_⇔_ : Set → Set → Set
+_⇔_ a b = (a → b) ∧ (b → a)
+
+-- Absence from a cons, from absence of the head and of the tail.
+∉-cons : {x y : String} {xs : List String} → x ≢ y → x ∉ xs → x ∉ (y ∷ xs)
+∉-cons {x} {y} {xs} ne ¬xs m = aux (∈-cons m)
+  where
+    aux : (x ≡ y) ⊎ (x ∈ xs) → ⊥
+    aux (inj₁ e) = ne e
+    aux (inj₂ q) = ¬xs q
+
+like-add-member : (likes : List String) (user : String) → user ∈ like-add likes user
+like-add-member []       user = here
+like-add-member (x ∷ xs) user = aux (x ≟ user)
+  where
+    aux : (d : Dec (x ≡ user)) → user ∈ like-add-cons x xs user d
+    aux (yes p) = subst (λ z → z ∈ x ∷ xs) p here
+    aux (no  _) = there (like-add-member xs user)
+
+-- Every OTHER user keeps its membership status: the per-user premise of
+-- `like-post` (Twitter.agda:601-604), in both directions.
+like-add-iff :
+  (likes : List String) (user u : String) → user ≢ u →
+  (u ∈ likes) ⇔ (u ∈ like-add likes user)
+like-add-iff [] user u ne = (λ ()) , (λ m → ⊥-elim (aux (∈-cons m)))
+  where
+    aux : (u ≡ user) ⊎ (u ∈ []) → ⊥
+    aux (inj₁ e) = ne (sym e)
+    aux (inj₂ ())
+like-add-iff (x ∷ xs) user u ne = aux (x ≟ user)
+  where
+    ih = like-add-iff xs user u ne
+
+    aux : (d : Dec (x ≡ user)) →
+          (u ∈ x ∷ xs) ⇔ (u ∈ like-add-cons x xs user d)
+    aux (yes _) = (λ m → m) , (λ m → m)
+    aux (no ¬q) = fwd , bwd
+      where
+        fwd : u ∈ (x ∷ xs) → u ∈ (x ∷ like-add xs user)
+        fwd m = step (∈-cons m)
+          where
+            step : (u ≡ x) ⊎ (u ∈ xs) → u ∈ (x ∷ like-add xs user)
+            step (inj₁ e) =
+              subst (λ z → z ∈ (x ∷ like-add xs user)) (sym e) here
+            step (inj₂ q) = there (proj₁ ih q)
+
+        bwd : u ∈ (x ∷ like-add xs user) → u ∈ (x ∷ xs)
+        bwd m = step (∈-cons m)
+          where
+            step : (u ≡ x) ⊎ (u ∈ like-add xs user) → u ∈ (x ∷ xs)
+            step (inj₁ e) = subst (λ z → z ∈ (x ∷ xs)) (sym e) here
+            step (inj₂ q) = there (proj₂ ih q)
+
+like-add-others :
+  (likes : List String) (user u : String) → user ≢ u →
+  (u ∈ likes → u ∈ like-add likes user)
+  ∧ (u ∉ likes → u ∉ like-add likes user)
+like-add-others likes user u ne =
+    proj₁ (like-add-iff likes user u ne)
+  , (λ ¬mem mem → ¬mem (proj₂ (like-add-iff likes user u ne) mem))
+
+uniq-like-add :
+  (likes : List String) (user : String) → uniq likes → uniq (like-add likes user)
+uniq-like-add []       user uq = (λ ()) , tt
+uniq-like-add (x ∷ xs) user uq = aux (x ≟ user)
+  where
+    aux : (d : Dec (x ≡ user)) → uniq (like-add-cons x xs user d)
+    aux (yes _) = uq
+    aux (no ¬q) =
+      ( (λ m → proj₁ uq (proj₂ (like-add-iff xs user x (≢-swap ¬q)) m))
+      , uniq-like-add xs user (proj₂ uq) )
+
+like-remove-absent :
+  (likes : List String) (user : String) → user ∉ like-remove likes user
+like-remove-absent []       user = λ ()
+like-remove-absent (x ∷ xs) user = aux (x ≟ user)
+  where
+    aux : (d : Dec (x ≡ user)) → user ∉ like-remove-cons x xs user d
+    aux (yes _) = like-remove-absent xs user
+    aux (no ¬q) = ∉-cons (≢-swap ¬q) (like-remove-absent xs user)
+
+-- Every OTHER user keeps its membership status.  Stated in the orientation of
+-- `unlike-post` (Twitter.agda:628-631), whose `post` is the AFTER post.
+like-remove-iff :
+  (likes : List String) (user u : String) → user ≢ u →
+  (u ∈ likes) ⇔ (u ∈ like-remove likes user)
+like-remove-iff [] user u ne = (λ ()) , (λ ())
+like-remove-iff (x ∷ xs) user u ne = aux (x ≟ user)
+  where
+    ih = like-remove-iff xs user u ne
+
+    aux : (d : Dec (x ≡ user)) →
+          (u ∈ x ∷ xs) ⇔ (u ∈ like-remove-cons x xs user d)
+    aux (yes q) = fwd , bwd
+      where
+        fwd : u ∈ (x ∷ xs) → u ∈ like-remove xs user
+        fwd m = step (∈-cons m)
+          where
+            step : (u ≡ x) ⊎ (u ∈ xs) → u ∈ like-remove xs user
+            step (inj₁ e) = ⊥-elim (ne (sym (trans e q)))
+            step (inj₂ r) = proj₁ ih r
+
+        bwd : u ∈ like-remove xs user → u ∈ (x ∷ xs)
+        bwd r = there (proj₂ ih r)
+    aux (no ¬q) = fwd , bwd
+      where
+        fwd : u ∈ (x ∷ xs) → u ∈ (x ∷ like-remove xs user)
+        fwd m = step (∈-cons m)
+          where
+            step : (u ≡ x) ⊎ (u ∈ xs) → u ∈ (x ∷ like-remove xs user)
+            step (inj₁ e) =
+              subst (λ z → z ∈ (x ∷ like-remove xs user)) (sym e) here
+            step (inj₂ r) = there (proj₁ ih r)
+
+        bwd : u ∈ (x ∷ like-remove xs user) → u ∈ (x ∷ xs)
+        bwd m = step (∈-cons m)
+          where
+            step : (u ≡ x) ⊎ (u ∈ like-remove xs user) → u ∈ (x ∷ xs)
+            step (inj₁ e) = subst (λ z → z ∈ (x ∷ xs)) (sym e) here
+            step (inj₂ r) = there (proj₂ ih r)
+
+like-remove-others :
+  (likes : List String) (user u : String) → user ≢ u →
+  (u ∈ like-remove likes user → u ∈ likes)
+  ∧ (u ∉ like-remove likes user → u ∉ likes)
+like-remove-others likes user u ne =
+    proj₂ (like-remove-iff likes user u ne)
+  , (λ ¬mem mem → ¬mem (proj₁ (like-remove-iff likes user u ne) mem))
+
+uniq-like-remove :
+  (likes : List String) (user : String) → uniq likes → uniq (like-remove likes user)
+uniq-like-remove []       user uq = tt
+uniq-like-remove (x ∷ xs) user uq = aux (x ≟ user)
+  where
+    aux : (d : Dec (x ≡ user)) → uniq (like-remove-cons x xs user d)
+    aux (yes _) = uniq-like-remove xs user (proj₂ uq)
+    aux (no ¬q) =
+      ( (λ m → proj₁ uq (proj₂ (like-remove-iff xs user x (≢-swap ¬q)) m))
+      , uniq-like-remove xs user (proj₂ uq) )
+
+--------------------------------------------------------------------------------
+-- The post transition: `pid`'s post keeps every field but its like list.
+--------------------------------------------------------------------------------
+
+with-likes : Post → List String → Post
+with-likes (post a t v s _ r p) ls = post a t v s ls r p
+
+liked-post : (pst : Post) (user : String) → Post
+liked-post pst user = with-likes pst (like-add (Post.likes pst) user)
+
+unliked-post : (pst : Post) (user : String) → Post
+unliked-post pst user = with-likes pst (like-remove (Post.likes pst) user)
+
+with-likes-replies :
+  (pst : Post) (ls : List String) → Post.replies (with-likes pst ls) ≡ Post.replies pst
+with-likes-replies (post _ _ _ _ _ _ _) _ = refl
+
+with-likes-parent :
+  (pst : Post) (ls : List String) → Post.parent (with-likes pst ls) ≡ Post.parent pst
+with-likes-parent (post _ _ _ _ _ _ _) _ = refl
+
+-- `no-duplicate-likes` (Twitter.agda:110-113) after a like.
+like-uniq-likes :
+  (before : World) (pid : PostId) (pst pst' : Post) (user : String) →
+  World.post-at before pid ≡ just pst →
+  Post.likes pst' ≡ like-add (Post.likes pst) user →
+  {y : PostId} {z : Post} →
+  set-post (World.post-at before) pid (just pst') y ≡ just z →
+  uniq (Post.likes z)
+like-uniq-likes before pid pst pst' user peq likes-eq {y} {z} eq =
+  decide (y ≟ₚ pid)
+  where
+    decide : Dec (y ≡ pid) → uniq (Post.likes z)
+    decide (yes p) =
+      subst (λ r → uniq (Post.likes r))
+            (just-inj (trans (sym (set-post-same-at {x = y} p)) eq))
+            (subst (λ r → uniq r) (sym likes-eq)
+                   (uniq-like-add (Post.likes pst) user
+                                  (World.no-duplicate-likes before peq)))
+    decide (no ¬p) =
+      World.no-duplicate-likes before
+        (trans (sym (set-post-other {x = y} ¬p)) eq)
+
+-- ... and after an unlike.
+unlike-uniq-likes :
+  (before : World) (pid : PostId) (pst pst' : Post) (user : String) →
+  World.post-at before pid ≡ just pst →
+  Post.likes pst' ≡ like-remove (Post.likes pst) user →
+  {y : PostId} {z : Post} →
+  set-post (World.post-at before) pid (just pst') y ≡ just z →
+  uniq (Post.likes z)
+unlike-uniq-likes before pid pst pst' user peq likes-eq {y} {z} eq =
+  decide (y ≟ₚ pid)
+  where
+    decide : Dec (y ≡ pid) → uniq (Post.likes z)
+    decide (yes p) =
+      subst (λ r → uniq (Post.likes r))
+            (just-inj (trans (sym (set-post-same-at {x = y} p)) eq))
+            (subst (λ r → uniq r) (sym likes-eq)
+                   (uniq-like-remove (Post.likes pst) user
+                                     (World.no-duplicate-likes before peq)))
+    decide (no ¬p) =
+      World.no-duplicate-likes before
+        (trans (sym (set-post-other {x = y} ¬p)) eq)
+
+liked-world :
+  (before : World) (pid : PostId) (user : String) (pst : Post) →
+  World.post-at before pid ≡ just pst → World
+liked-world before pid user pst peq = record
+  { account-at          = World.account-at before
+  ; session-at          = World.session-at before
+  ; post-at             = set-post (World.post-at before) pid
+                            (just (liked-post pst user))
+  ; follows             = World.follows before
+  ; newest-first        = World.newest-first before
+  ; used-post-ids       = World.used-post-ids before
+  ; used-session-ids    = World.used-session-ids before
+  ; only-used-pids      = delete-used before pid (liked-post pst user)
+                            (present-used before peq)
+  ; only-used-sids      = World.only-used-sids before
+  ; only-valid-sessions = World.only-valid-sessions before
+  ; only-valid-posts    = delete-valid-posts before pid (liked-post pst user)
+  ; only-valid-replies  = delete-replies before pid pst (liked-post pst user) peq
+                            (with-likes-replies pst (like-add (Post.likes pst) user))
+                            (with-likes-parent pst (like-add (Post.likes pst) user))
+  ; no-duplicate-replies = delete-uniq-replies before pid pst (liked-post pst user) peq
+                            (with-likes-replies pst (like-add (Post.likes pst) user))
+  ; no-duplicate-likes   = like-uniq-likes before pid pst (liked-post pst user) user
+                            peq refl
+  ; no-duplicate-posts   = World.no-duplicate-posts before
+  }
+
+unliked-world :
+  (before : World) (pid : PostId) (user : String) (pst : Post) →
+  World.post-at before pid ≡ just pst → World
+unliked-world before pid user pst peq = record
+  { account-at          = World.account-at before
+  ; session-at          = World.session-at before
+  ; post-at             = set-post (World.post-at before) pid
+                            (just (unliked-post pst user))
+  ; follows             = World.follows before
+  ; newest-first        = World.newest-first before
+  ; used-post-ids       = World.used-post-ids before
+  ; used-session-ids    = World.used-session-ids before
+  ; only-used-pids      = delete-used before pid (unliked-post pst user)
+                            (present-used before peq)
+  ; only-used-sids      = World.only-used-sids before
+  ; only-valid-sessions = World.only-valid-sessions before
+  ; only-valid-posts    = delete-valid-posts before pid (unliked-post pst user)
+  ; only-valid-replies  = delete-replies before pid pst (unliked-post pst user) peq
+                            (with-likes-replies pst (like-remove (Post.likes pst) user))
+                            (with-likes-parent pst (like-remove (Post.likes pst) user))
+  ; no-duplicate-replies = delete-uniq-replies before pid pst (unliked-post pst user) peq
+                            (with-likes-replies pst (like-remove (Post.likes pst) user))
+  ; no-duplicate-likes   = unlike-uniq-likes before pid pst (unliked-post pst user) user
+                            peq refl
+  ; no-duplicate-posts   = World.no-duplicate-posts before
+  }
+
+-- `like-post` (Twitter.agda:587-613), with every premise discharged: the user
+-- is a member of the after list, every other user keeps its membership status,
+-- the rest of the post is unchanged, and no other row of the world moves.
+like-success :
+  ∀ (before : World) {sid : SessionId} {pid : PostId}
+    {acc : Account} {user : String} {pst : Post}
+  (vs : ValidSession before sid acc user)
+  (can : CanReadPost before sid pid)
+  (peq : World.post-at before pid ≡ just pst) →
+  Step before (like sid pid) (liked-world before pid user pst peq) success
+like-success before {sid} {pid} {acc} {user} {pst} vs can peq =
+  like-post
+    {before = before}
+    {after  = liked-world before pid user pst peq}
+    {sid    = sid}
+    {pid    = pid}
+    {acc    = acc}
+    {user   = user}
+    {post   = pst}
+    {post'  = liked-post pst user}
+    vs
+    can
+    peq
+    set-post-same
+    (like-add-member (Post.likes pst) user)
+    refl
+    refl
+    refl
+    refl
+    refl
+    refl
+    (λ {u'} ne → like-add-others (Post.likes pst) user u' ne)
+    (λ {other} ¬e →
+         refl , refl , sym (set-post-other (≢-swap ¬e)) , refl , refl)
+
+-- `unlike-post` (Twitter.agda:621-647).  Its `post` is the AFTER post and its
+-- `post'` the BEFORE one, so `user ∉ Post.likes post` is discharged by
+-- `like-remove-absent`.
+unlike-success :
+  ∀ (before : World) {sid : SessionId} {pid : PostId}
+    {acc : Account} {user : String} {pst : Post}
+  (vs : ValidSession before sid acc user)
+  (can : CanReadPost before sid pid)
+  (peq : World.post-at before pid ≡ just pst) →
+  Step before (unlike sid pid) (unliked-world before pid user pst peq) success
+unlike-success before {sid} {pid} {acc} {user} {pst} vs can peq =
+  unlike-post
+    {before = before}
+    {after  = unliked-world before pid user pst peq}
+    {sid    = sid}
+    {pid    = pid}
+    {acc    = acc}
+    {user   = user}
+    {post   = unliked-post pst user}
+    {post'  = pst}
+    vs
+    can
+    peq
+    set-post-same
+    (like-remove-absent (Post.likes pst) user)
+    refl
+    refl
+    refl
+    refl
+    refl
+    refl
+    (λ {u'} ne → like-remove-others (Post.likes pst) user u' ne)
+    (λ {other} ¬e →
+         sym (set-post-other (≢-swap ¬e)) , refl , refl , refl , refl)
+
+-- `failed-like-post` / `failed-unlike-post` (Twitter.agda:615-619, 649-653):
+-- an unreadable post is `denied` and the world is untouched.  `can-read-absent`,
+-- `can-read-deleted` and `can-read-private` above all supply the
+-- `¬ CanReadPost` these need.
+like-denied :
+  ∀ (before : World) {sid : SessionId} {pid : PostId}
+    {acc : Account} {user : String} →
+  ValidSession before sid acc user →
+  ¬ CanReadPost before sid pid →
+  Step before (like sid pid) before denied
+like-denied before vs ¬can = failed-like-post vs ¬can
+
+unlike-denied :
+  ∀ (before : World) {sid : SessionId} {pid : PostId}
+    {acc : Account} {user : String} →
+  ValidSession before sid acc user →
+  ¬ CanReadPost before sid pid →
+  Step before (unlike sid pid) before denied
+unlike-denied before vs ¬can = failed-unlike-post vs ¬can
+
+--------------------------------------------------------------------------------
+-- P14: failed-access for the social commands (Twitter.agda:464-468)
+--
+-- Each of the four commands extracts its session (Twitter.agda:203-207), so a
+-- session that is not `active` expires the request and changes nothing.
+--------------------------------------------------------------------------------
+
+follow-expired :
+  ∀ (before : World) {sid : SessionId} {followee : String} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (follow sid followee) before expired
+follow-expired before {sid} {followee} ¬act =
+  failed-access-inactive before (follow sid followee) sid refl ¬act
+
+unfollow-expired :
+  ∀ (before : World) {sid : SessionId} {followee : String} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (unfollow sid followee) before expired
+unfollow-expired before {sid} {followee} ¬act =
+  failed-access-inactive before (unfollow sid followee) sid refl ¬act
+
+like-expired :
+  ∀ (before : World) {sid : SessionId} {pid : PostId} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (like sid pid) before expired
+like-expired before {sid} {pid} ¬act =
+  failed-access-inactive before (like sid pid) sid refl ¬act
+
+unlike-expired :
+  ∀ (before : World) {sid : SessionId} {pid : PostId} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (unlike sid pid) before expired
+unlike-expired before {sid} {pid} ¬act =
+  failed-access-inactive before (unlike sid pid) sid refl ¬act
