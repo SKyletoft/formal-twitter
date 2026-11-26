@@ -16,7 +16,10 @@
 
 	/* ---------- response log ---------- */
 
-	function log(kind, message) {
+	/* A part is either a string (shown as text) or a node the caller built
+	   itself, so no string is ever interpreted as markup. */
+
+	function logEntry(kind, parts) {
 		const entry = document.createElement('li');
 		entry.className = 'entry ' + kind;
 		const stamp = document.createElement('span');
@@ -24,11 +27,21 @@
 		stamp.textContent = new Date().toLocaleTimeString();
 		const body = document.createElement('span');
 		body.className = 'message';
-		body.textContent = message;
+		for (let i = 0; i < parts.length; i += 1) {
+			if (typeof parts[i] === 'string') {
+				body.appendChild(document.createTextNode(parts[i]));
+			} else {
+				body.appendChild(parts[i]);
+			}
+		}
 		entry.appendChild(stamp);
 		entry.appendChild(body);
 		logList.appendChild(entry);
 		logList.scrollTop = logList.scrollHeight;
+	}
+
+	function log(kind, message) {
+		logEntry(kind, [message]);
 	}
 
 	function ok(message) {
@@ -86,7 +99,10 @@
 	async function api(name, fields) {
 		const response = await fetch('/api/' + name, {
 			method: 'POST',
-			headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'text/plain; charset=utf-8'
+			},
 			body: fields.join('\r\n') + '\r\n'
 		});
 		const text = await response.text();
@@ -150,6 +166,15 @@
 		const raw = String(document.getElementById(fieldId).value).trim();
 		if (!/^[0-9]+$/.test(raw)) {
 			failure(label + ': "' + raw + '" is not a tweet id (expected a number)');
+			return null;
+		}
+		return raw.replace(/^0+(?=[0-9])/, '');
+	}
+
+	function readLength(label, fieldId) {
+		const raw = String(document.getElementById(fieldId).value).trim();
+		if (!/^[0-9]+$/.test(raw)) {
+			failure(label + ': "' + raw + '" is not a length (expected a number)');
 			return null;
 		}
 		return raw.replace(/^0+(?=[0-9])/, '');
@@ -352,6 +377,92 @@
 			return;
 		}
 		showTweet(id, result);
+	});
+
+	/* ---------- timelines ---------- */
+
+	function chip(id) {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'chip';
+		button.textContent = id;
+		button.title = 'use tweet ' + id + ' in the get-tweet field';
+		button.addEventListener('click', function () {
+			const field = document.getElementById('get-id');
+			field.value = id;
+			field.focus();
+		});
+		return button;
+	}
+
+	function timelineIds(label, result) {
+		const json = result.json;
+		if (json === null || typeof json !== 'object' || Array.isArray(json)) {
+			failure(label + ': the server did not return a JSON object (' + JSON.stringify(result.text) + ')');
+			return null;
+		}
+		const raw = json.timeline;
+		if (!Array.isArray(raw)) {
+			failure(label + ': the response has no "timeline" array (' + JSON.stringify(result.text) + ')');
+			return null;
+		}
+		const ids = [];
+		for (let i = 0; i < raw.length; i += 1) {
+			const id = String(raw[i]).trim();
+			if (!isNat(id)) {
+				failure(label + ': the response contains something that is not a tweet id (' + JSON.stringify(raw[i]) + ')');
+				return null;
+			}
+			ids.push(id.replace(/^0+(?=[0-9])/, ''));
+		}
+		return ids;
+	}
+
+	function showTimeline(label, result) {
+		const ids = timelineIds(label, result);
+		if (ids === null) {
+			return;
+		}
+		if (ids.length === 0) {
+			ok(label + ': the timeline is empty');
+			return;
+		}
+		const parts = [label + ': ' + ids.length + (ids.length === 1 ? ' tweet: ' : ' tweets: ')];
+		for (let i = 0; i < ids.length; i += 1) {
+			if (i !== 0) {
+				parts.push(' ');
+			}
+			parts.push(chip(ids[i]));
+		}
+		logEntry('ok', parts);
+	}
+
+	onSubmit('global-timeline-form', async function () {
+		const length = readLength('Global timeline', 'global-timeline-length');
+		if (length === null) {
+			return;
+		}
+		const fields = token === null ? [length] : [token, length];
+		const result = await call('Global timeline', 'global-timeline', fields);
+		if (result === null) {
+			return;
+		}
+		showTimeline('Global timeline', result);
+	});
+
+	onSubmit('private-timeline-form', async function () {
+		if (!haveToken('Private timeline')) {
+			return;
+		}
+		const length = readLength('Private timeline', 'private-timeline-length');
+		if (length === null) {
+			return;
+		}
+		const result = await call('Private timeline', 'private-timeline', [token, length]);
+		if (result === null) {
+			return;
+		}
+		showTimeline('Private timeline', result);
 	});
 
 	document.getElementById('clear-log').addEventListener('click', function () {

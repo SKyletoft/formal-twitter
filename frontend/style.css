@@ -90,8 +90,7 @@ label {
 	letter-spacing: 0.05em;
 }
 
-input,
-textarea {
+input {
 	width: 100%;
 	padding: 0.45rem 0.55rem;
 	background: var(--bg);
@@ -101,15 +100,9 @@ textarea {
 	font: inherit;
 }
 
-input:focus,
-textarea:focus {
+input:focus {
 	outline: 2px solid var(--accent);
 	outline-offset: 1px;
-}
-
-textarea {
-	resize: vertical;
-	min-height: 3.5rem;
 }
 
 button {
@@ -197,6 +190,27 @@ button.secondary {
 
 .entry.info .message {
 	color: var(--info);
+}
+
+/* Tweet ids in a timeline: plain text in a clickable chip. */
+.chip {
+	display: inline-block;
+	padding: 0 0.4rem;
+	background: transparent;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	color: var(--accent);
+	font: inherit;
+	font-size: 0.85rem;
+	font-weight: 500;
+	font-variant-numeric: tabular-nums;
+	cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+	filter: none;
+	border-color: var(--accent);
+	background: rgba(74, 163, 223, 0.15);
 }
 
 @media (max-width: 30rem) {

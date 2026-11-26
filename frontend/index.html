@@ -46,7 +46,7 @@
 
 			<section>
 				<h2>Logout</h2>
-				<p class="hint">Forget the session token on this device.</p>
+				<p class="hint">Log out (revokes this session token).</p>
 				<button type="button" id="logout-button" data-needs-token>Log out</button>
 			</section>
 
@@ -54,7 +54,7 @@
 				<h2>Post tweet</h2>
 				<form id="post-tweet-form">
 					<label for="post-text">Text</label>
-					<textarea id="post-text" name="text" rows="3" required></textarea>
+					<input id="post-text" name="text" type="text" required>
 					<button type="submit" data-needs-token>Post</button>
 				</form>
 			</section>
@@ -63,7 +63,7 @@
 				<h2>Reply</h2>
 				<form id="post-reply-form">
 					<label for="reply-text">Text</label>
-					<textarea id="reply-text" name="text" rows="3" required></textarea>
+					<input id="reply-text" name="text" type="text" required>
 					<label for="reply-id">Tweet id</label>
 					<input id="reply-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
 					<button type="submit" data-needs-token>Reply</button>
@@ -122,6 +122,27 @@
 					<input id="get-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
 					<button type="submit">Fetch</button>
 				</form>
+				<p class="hint">Timeline entries below fill this field when clicked.</p>
+			</section>
+
+			<section>
+				<h2>Global timeline</h2>
+				<form id="global-timeline-form">
+					<label for="global-timeline-length">Length</label>
+					<input id="global-timeline-length" name="length" inputmode="numeric" pattern="[0-9]+" value="10" required>
+					<button type="submit">Load</button>
+				</form>
+				<p class="hint">Works logged out; the session token is sent when you have one.</p>
+			</section>
+
+			<section>
+				<h2>Private timeline</h2>
+				<form id="private-timeline-form">
+					<label for="private-timeline-length">Length</label>
+					<input id="private-timeline-length" name="length" inputmode="numeric" pattern="[0-9]+" value="10" required>
+					<button type="submit" data-needs-token>Load</button>
+				</form>
+				<p class="hint">Needs a session token; the response is never cached.</p>
 			</section>
 		</div>
 	</main>
