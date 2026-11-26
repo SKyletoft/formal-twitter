@@ -14,8 +14,9 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T4: HTTP interface. Integration-test + skeleton stage running in
-  `/home/u3836/git/formal-twitter.git/wt-t4` (branch `task/t4-http`, from merge b00d15e).
+- [ ] T4: implementation green on `wt-t4` (HEAD 13ccdf6); verification gate PASSED (116 tests ×3,
+  Agda --safe, clippy/fmt, `nix build` with checks, `nix run` smoke). Code-review gate running.
+- [ ] Next after T4 merge: T6 benchmarks/perf + spec-change audit.
 - [ ] T3b: DONE/merged b00d15e (tests/proofs be49628, impl 8427c53).
 - [ ] T4 plan: ACCEPTED with amendments (see "T4 plan"). Blocked on T2+T3 engine.
 
@@ -36,7 +37,7 @@
 
 ## State as of 2026-11-26
 - `maki-loop-3` HEAD b00d15e: T5, T2a, T2b, T3a, T3b all merged; engine complete.
-- `wt-t4` at b00d15e, branch `task/t4-http` (T4 in progress).
+- `wt-t4` at 13ccdf6, branch `task/t4-http` (implementation green; code review in progress).
 - `wt-t3b` removed after merge (branch `task/t3b-engine-timelines` retained).
 
 
@@ -107,6 +108,10 @@
 - No Agda proofs for T4: every `Interface.agda` helper (`unlines-crlf`, `show`, `escape`,
   `octet-strlen`, `date`, `host`) is a postulate, so only functional/integration tests are meaningful.
 - Split: T4a (parse+respond+routes+server+main), T4b (assets+flake), T4c (integration tests).
+- IMPLEMENTED DECISIONS: timeline length parsed as `u64`, clamped to `u32::MAX` (>u64 -> 400);
+  `ok` = 200 empty with NO Content-Type/Cache-Control; `Content-Length` set explicitly and via
+  `sized_body`; JSON body limit raised to 16 MiB; `main` returns `Box<rocket::Error>`;
+  `nix build` keeps checks enabled (so the build runs the full test suite).
 
 ## Spec gaps / open decisions
 - Anonymous `read-post` of absent/private/deleted: `failed-access` applies vacuously
