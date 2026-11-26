@@ -2,7 +2,12 @@
 
 ## Tasks
 <!-- Add new tasks here as `- [ ] ...`. -->
-- [ ] (none open)
+- [ ] T9: perf-driven optimization run — profile engine hot paths and a loaded server with
+  `perf`, then fix the top hotspots.
+
+## In progress
+- [ ] T9-profile: symbolized bench scenarios + `perf record`/flamegraphs on personal-tl-100k,
+  get-tweet cold/warm, publish, and a `wrk`-loaded server; hotspot report in `wt-t9`.
 
 ## Completed (latest cycle)
 - [x] T7: `time-passes` engine command (`session-timeout` proof) + background timer in `main`
