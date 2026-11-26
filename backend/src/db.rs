@@ -32,6 +32,11 @@ pub struct Db {
 }
 
 impl Db {
+	/// An in-memory database. For tests only; production uses a file.
+	pub fn in_memory() -> Result<Self, DbError> {
+		Self::new(":memory:")
+	}
+
 	pub fn new(url: &str) -> Result<Self, DbError> {
 		let mut conn = establish(url)?;
 		configure(&mut conn)?;
