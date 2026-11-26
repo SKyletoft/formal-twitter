@@ -1,8 +1,8 @@
 //! Static-asset contract for task T4.
 //!
-//! The frontend (`frontend/app.js:100` posts to `/api/<action>`) must be
-//! served, and nothing else: in particular `frontend/prompt`, the operator
-//! prompt, must never be reachable over HTTP.
+//! The frontend (`frontend/app.js` posts to `/api/<action>`) must be served,
+//! and nothing else: in particular `frontend/prompt`, the operator prompt,
+//! must never be reachable over HTTP.
 
 use formal_twitter::db::Db;
 use formal_twitter::server;
@@ -51,6 +51,10 @@ fn serves_frontend_assets() {
 			body.contains("<title>Formal Twitter</title>"),
 			"GET {path} serves index.html"
 		);
+		// The two timeline tabs the redesigned page is built around.
+		for tab in ["Global", "Following"] {
+			assert!(body.contains(tab), "GET {path} offers the {tab} tab");
+		}
 	}
 
 	let javascript = client.get("/app.js").dispatch();
@@ -66,6 +70,18 @@ fn serves_frontend_assets() {
 	assert_present(&javascript, "/app.js");
 	let body = javascript.into_string().expect("app.js is UTF-8");
 	assert!(body.contains("/api/"), "/app.js posts to the API");
+	// The browsing endpoints of the redesign (T8a).
+	for endpoint in ["global-timeline", "private-timeline", "get-tweet"] {
+		assert!(
+			body.contains(endpoint),
+			"/app.js calls the {endpoint} endpoint"
+		);
+	}
+	// Tweet text is rendered as text nodes only, never parsed as markup.
+	assert!(
+		!body.contains("innerHTML"),
+		"/app.js must not set markup from data"
+	);
 
 	let stylesheet = client.get("/style.css").dispatch();
 	assert_eq!(stylesheet.status().code, 200);

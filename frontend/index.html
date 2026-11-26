@@ -8,143 +8,65 @@
 	<script src="app.js" defer></script>
 </head>
 <body>
-	<header>
-		<h1>Formal Twitter</h1>
-		<p class="session">Session: <strong id="session-state">logged out</strong></p>
+	<header class="site-header">
+		<div class="wrap header-row">
+			<h1 class="wordmark"><a href="#/">Formal Twitter</a></h1>
+
+			<div class="session">
+				<form id="auth-form" class="auth-form">
+					<div class="auth-field">
+						<label for="username">Username</label>
+						<input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+					</div>
+					<div class="auth-field">
+						<label for="password">Password</label>
+						<input id="password" name="password" type="password" autocomplete="current-password" required>
+					</div>
+					<div class="auth-actions">
+						<button type="submit" id="login-button">Log in</button>
+						<button type="submit" id="signup-button" class="secondary">Sign up</button>
+					</div>
+				</form>
+
+				<p id="signed-in" class="signed-in" hidden>
+					<span class="signed-in-name">Signed in as <strong id="session-username">@</strong></span>
+					<button type="button" id="logout-button" class="secondary">Log out</button>
+				</p>
+			</div>
+		</div>
+
+		<nav class="tabs wrap" aria-label="Timelines">
+			<a href="#/" id="tab-global" class="tab">Global</a>
+			<a href="#/following" id="tab-following" class="tab">Following</a>
+			<span id="following-hint" class="tab-hint">log in to see the following timeline</span>
+		</nav>
 	</header>
 
-	<main>
-		<section class="log-panel">
-			<h2>Responses</h2>
-			<p class="hint">Nothing is loaded automatically. Every request you send is reported here.</p>
-			<ul id="log" aria-live="polite" aria-label="response log"></ul>
-			<button type="button" id="clear-log" class="secondary">Clear log</button>
+	<p id="banner" class="banner" role="status" aria-live="polite" hidden></p>
+
+	<main class="wrap">
+		<section id="timeline-view" aria-labelledby="timeline-heading">
+			<h2 id="timeline-heading">Global</h2>
+			<p id="timeline-status" class="status" role="status" aria-live="polite"></p>
+			<ol id="timeline" class="timeline"></ol>
 		</section>
 
-		<div class="grid">
-			<section>
-				<h2>Signup</h2>
-				<form id="signup-form">
-					<label for="signup-username">Username</label>
-					<input id="signup-username" name="username" autocomplete="username" required>
-					<label for="signup-password">Password</label>
-					<input id="signup-password" name="password" type="password" autocomplete="new-password" required>
-					<button type="submit">Sign up</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Login</h2>
-				<form id="login-form">
-					<label for="login-username">Username</label>
-					<input id="login-username" name="username" autocomplete="username" required>
-					<label for="login-password">Password</label>
-					<input id="login-password" name="password" type="password" autocomplete="current-password" required>
-					<button type="submit">Log in</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Logout</h2>
-				<p class="hint">Log out (revokes this session token).</p>
-				<button type="button" id="logout-button" data-needs-token>Log out</button>
-			</section>
-
-			<section>
-				<h2>Post tweet</h2>
-				<form id="post-tweet-form">
-					<label for="post-text">Text</label>
-					<input id="post-text" name="text" type="text" required>
-					<button type="submit" data-needs-token>Post</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Reply</h2>
-				<form id="post-reply-form">
-					<label for="reply-text">Text</label>
-					<input id="reply-text" name="text" type="text" required>
-					<label for="reply-id">Tweet id</label>
-					<input id="reply-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
-					<button type="submit" data-needs-token>Reply</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Delete tweet</h2>
-				<form id="delete-tweet-form">
-					<label for="delete-id">Tweet id</label>
-					<input id="delete-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
-					<button type="submit" data-needs-token>Delete</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Like</h2>
-				<form id="like-form">
-					<label for="like-id">Tweet id</label>
-					<input id="like-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
-					<button type="submit" data-needs-token>Like</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Unlike</h2>
-				<form id="unlike-form">
-					<label for="unlike-id">Tweet id</label>
-					<input id="unlike-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
-					<button type="submit" data-needs-token>Unlike</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Follow</h2>
-				<form id="follow-form">
-					<label for="follow-username">Username</label>
-					<input id="follow-username" name="username" autocomplete="off" required>
-					<button type="submit" data-needs-token>Follow</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Unfollow</h2>
-				<form id="unfollow-form">
-					<label for="unfollow-username">Username</label>
-					<input id="unfollow-username" name="username" autocomplete="off" required>
-					<button type="submit" data-needs-token>Unfollow</button>
-				</form>
-			</section>
-
-			<section>
-				<h2>Get tweet</h2>
-				<form id="get-tweet-form">
-					<label for="get-id">Tweet id</label>
-					<input id="get-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
-					<button type="submit">Fetch</button>
-				</form>
-				<p class="hint">Timeline entries below fill this field when clicked.</p>
-			</section>
-
-			<section>
-				<h2>Global timeline</h2>
-				<form id="global-timeline-form">
-					<label for="global-timeline-length">Length</label>
-					<input id="global-timeline-length" name="length" inputmode="numeric" pattern="[0-9]+" value="10" required>
-					<button type="submit">Load</button>
-				</form>
-				<p class="hint">Works logged out; the session token is sent when you have one.</p>
-			</section>
-
-			<section>
-				<h2>Private timeline</h2>
-				<form id="private-timeline-form">
-					<label for="private-timeline-length">Length</label>
-					<input id="private-timeline-length" name="length" inputmode="numeric" pattern="[0-9]+" value="10" required>
-					<button type="submit" data-needs-token>Load</button>
-				</form>
-				<p class="hint">Needs a session token; the response is never cached.</p>
-			</section>
-		</div>
+		<section id="detail-view" aria-labelledby="detail-heading" hidden>
+			<p class="back"><a id="detail-back" href="#/">← Back to Global</a></p>
+			<h2 id="detail-heading">Tweet</h2>
+			<p id="detail-status" class="status" role="status" aria-live="polite"></p>
+			<div id="detail-tweet" class="detail-tweet"></div>
+			<h3 id="replies-heading">Replies</h3>
+			<ol id="detail-replies" class="timeline" aria-labelledby="replies-heading"></ol>
+			<p id="replies-note" class="status"></p>
+		</section>
 	</main>
+
+	<footer class="wrap site-footer">
+		<details id="activity" class="activity">
+			<summary>Activity (<span id="log-count">0</span>)</summary>
+			<ul id="log" class="log" aria-live="polite" aria-label="Activity log"></ul>
+		</details>
+	</footer>
 </body>
 </html>
