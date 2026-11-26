@@ -10,16 +10,20 @@
 - [ ] T8b: Frontend actions — like/unlike, follow/unfollow, reply composer; depends on T8a.
 
 ## In progress
-- [ ] T7: research/plan.
-- [ ] T8a: research/plan.
-- [ ] T8b: blocked on T8a.
+- [ ] T7: plan ACCEPTED. Tests+proofs running in `wt-t7` (branch `task/t7-time-passes`).
+  Key plan: `engine::time::time_passes` = one write calling `store::revoke_all_sessions`; proof
+  `time-passes-success` over `timed-out-world`; timer spawned ONLY in `main` (env
+  `FORMAL_TWITTER_TIME_PASSES_SECS`, default 120, 0 disables; `Db` becomes cloneable via
+  `Arc<Mutex<_>>`); quickcheck active/revoked/unused + idempotence.
+- [ ] T8a: plan ACCEPTED. Implementation+tests running in `wt-t8a` (branch
+  `task/t8a-frontend-browse`). Hash-routed single-column SPA; tabs Global/Following; timeline ids +
+  bounded `get-tweet` fan-out (20, mapLimit 6); cards; tweet detail with replies; keep 3 frontend
+  files; add nodejs to the devShell for `node --check`; extend `http_static` string assertions.
+- [ ] T8b: blocked on T8a (like/unlike, follow/unfollow, reply/post/delete, 401/403 UX).
 
 ## State
-- Branch `maki-loop-3`, HEAD `2087880`. All earlier tasks merged: T1 persistence, T2a auth,
+- Branch `maki-loop-3`, HEAD `ee8176c`. All earlier tasks merged: T1 persistence, T2a auth,
   T2b posts, T3a social, T3b timelines, T4 HTTP/static/`nix run`, T5 frontend, T6 benchmarks+perf.
-- 120 tests green; `agda --safe ImplProofs.agda` clean (no postulates/holes);
-  `clippy --tests -- -D warnings` + `fmt --check` clean; `nix build` runs the test suite;
-  `nix run` smoke verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
