@@ -87,8 +87,11 @@ fn serves_frontend_assets() {
 		"logout",
 		"signup",
 	] {
+		// The name as a JavaScript string literal. `/api/{endpoint}` would be
+		// more explicit but `call()` assembles that at run time, and a bare
+		// substring would also match element ids such as `login-button`.
 		assert!(
-			body.contains(endpoint),
+			body.contains(&format!("'{endpoint}'")),
 			"/app.js calls the {endpoint} endpoint"
 		);
 	}
@@ -98,6 +101,8 @@ fn serves_frontend_assets() {
 		"insertAdjacentHTML",
 		"outerHTML",
 		"eval(",
+		"new Function",
+		"document.write",
 		"onclick=",
 	] {
 		assert!(

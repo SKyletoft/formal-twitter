@@ -360,6 +360,8 @@
 		detailStatus.textContent = '';
 		repliesNote.textContent = '';
 		replyStatus.textContent = '';
+		/* "Posted tweet #n." belongs to the view it was written in. */
+		postStatus.textContent = '';
 		timelineStatus.textContent = 'Loading timeline…';
 		loadTimeline(kind, seq);
 	}
@@ -850,8 +852,10 @@
 	}
 
 	/* Follow and unfollow are one toggle as well. A success refreshes the
-	   active view, because following changes which private posts are
-	   readable; the sequence guard there discards a slower earlier render. */
+	   active view: following changes which private posts are readable, so
+	   the tweets already on screen may be stale or newly hidden. The refetch
+	   is bounded (one page, at most 20 tweets) and the sequence guard there
+	   discards a slower earlier render. */
 	async function toggleFollow(name, node, card) {
 		if (!isLoggedIn() || node.dataset.busy === '1') {
 			return;
@@ -907,7 +911,9 @@
 			}
 			likedIds.delete(id);
 			log('ok', 'deleted tweet #' + id);
-			if (currentRoute().name === 'tweet') {
+			/* Only the thread's own tweet disappears with the thread; a deleted
+			   reply simply leaves the thread to be fetched again. */
+			if (currentRoute().name === 'tweet' && currentRoute().id === id) {
 				window.location.hash = lastTimeline === 'following' ? '#/following' : '#/';
 				/* Without a hashchange event (a stub page) the render is done
 				   here instead; in a browser it already happened. */

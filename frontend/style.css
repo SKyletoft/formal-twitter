@@ -16,6 +16,14 @@
 	color-scheme: dark light;
 }
 
+/* Visibility is toggled with the `hidden` attribute, but the author rules
+   below set `display` on the very same elements (`.composer`, `.auth-form`,
+   `.signed-in`); without this rule they would beat the user agent's
+   `[hidden] { display: none }`. */
+[hidden] {
+	display: none !important;
+}
+
 @media (prefers-color-scheme: light) {
 	:root {
 		--bg: #f7f8fb;
