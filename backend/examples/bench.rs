@@ -11,7 +11,10 @@
 //!   statistics per request.
 //!
 //! A third section reports how the timeline and `read-post` queries scale with
-//! the number of posts (1 000 / 20 000 / 100 000).
+//! the number of posts (1 000 / 20 000 / 100 000), and a fourth how the public
+//! post cache changes `read-post`: cache disabled (the pre-cache path), cold
+//! (dropped before every measured call) and warm (filled by the previous call),
+//! for one `get-tweet` and for a 21-read timeline render burst.
 //!
 //! Seeding goes through `store` and `ids` exactly like the integration tests do,
 //! in a single `db.write` transaction, so every row is committed before the
@@ -57,6 +60,8 @@ const TIMELINE_LENGTH: u32 = 20;
 const HTTP_SAMPLES: usize = 200;
 /// Post counts of the scaling section.
 const SCALING: [usize; 3] = [1_000, 20_000, 100_000];
+/// `get-tweet` reads in one render burst: the up-to-20 tweets of a timeline.
+const RENDER_GET_TWEETS: usize = 20;
 
 fn username(index: usize) -> String {
 	format!("u{index:04}")
@@ -368,6 +373,15 @@ fn expect_post(result: Result<EngineResult, DbError>, what: &str) {
 	}
 }
 
+/// A `returned-post` answer of a post that need not have replies, for the
+/// timeline-sized pool of public posts the render burst reads.
+fn expect_returned(result: Result<EngineResult, DbError>, what: &str) {
+	match result {
+		Ok(EngineResult::ReturnedPost { .. }) => {}
+		other => panic!("{what}: expected a returned post, got {other:?}"),
+	}
+}
+
 fn engine_report(db: &Db, seeded: &Seeded) -> Vec<Row> {
 	let session = seeded.session;
 	let actor = username(0);
@@ -506,6 +520,121 @@ fn engine_report(db: &Db, seeded: &Seeded) -> Vec<Row> {
 	rows
 }
 
+/* ---------- cache scenarios ---------- */
+
+/// The `n` newest public (`live`, `everyone`) posts: the tweets a timeline
+/// render fetches one `get-tweet` at a time.
+fn public_posts(db: &Db, n: usize) -> Vec<PostId> {
+	db.read(|c| {
+		let mut out = Vec::new();
+		for pid in store::newest_first(c, u32::MAX)? {
+			if store::can_read_anonymous(c, pid)? {
+				out.push(pid);
+				if out.len() == n {
+					break;
+				}
+			}
+		}
+		Ok(out)
+	})
+	.expect("public posts")
+}
+
+/// One timeline render: the timeline of `spec/Interface.agda` plus one
+/// `get-tweet` per tweet it shows.
+fn render_burst(db: &Db, session: Option<SessionId>, tweets: &[PostId]) {
+	expect_timeline(
+		timeline::global_timeline(db, session, TIMELINE_LENGTH),
+		"burst-timeline",
+	);
+	for pid in tweets {
+		expect_returned(posts::read_post(db, session, *pid), "burst-get-tweet");
+	}
+}
+
+/// The cache scenarios, measured on the same file-backed database and the same
+/// data as the engine table above:
+///
+/// * `no cache` -- a second handle on the same file with
+///   [`Db::new_uncached`], i.e. exactly the pre-cache read path;
+/// * `cold` -- the cache is dropped outside the timed region, so each call pays
+///   the database read plus one insertion;
+/// * `warm` -- the cache was filled by the immediately preceding call.
+fn cache_report(db: &Db, uncached: &Db, seeded: &Seeded) -> Vec<Row> {
+	let session = seeded.session;
+	let target = seeded.target;
+	let tweets = public_posts(db, RENDER_GET_TWEETS);
+	assert_eq!(tweets.len(), RENDER_GET_TWEETS, "not enough public posts");
+	let mut rows = Vec::new();
+
+	rows.push(Row::new(
+		"cache: get-tweet session (no cache)",
+		measure(|| {
+			expect_post(
+				posts::read_post(uncached, Some(session), target),
+				"get-tweet-no-cache",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: get-tweet session (cold)",
+		measure_with_reset(
+			|| {
+				expect_post(
+					posts::read_post(db, Some(session), target),
+					"get-tweet-cold",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: get-tweet session (warm)",
+		measure(|| {
+			expect_post(
+				posts::read_post(db, Some(session), target),
+				"get-tweet-warm",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: get-tweet anonymous (no cache)",
+		measure(|| {
+			expect_post(
+				posts::read_post(uncached, None, target),
+				"get-tweet-anon-no-cache",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: get-tweet anonymous (cold)",
+		measure_with_reset(
+			|| expect_post(posts::read_post(db, None, target), "get-tweet-anon-cold"),
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: get-tweet anonymous (warm)",
+		measure(|| expect_post(posts::read_post(db, None, target), "get-tweet-anon-warm")),
+	));
+	rows.push(Row::new(
+		"cache: render burst 1+20 (no cache)",
+		measure(|| render_burst(uncached, Some(session), &tweets)),
+	));
+	rows.push(Row::new(
+		"cache: render burst 1+20 (cold)",
+		measure_with_reset(
+			|| render_burst(db, Some(session), &tweets),
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: render burst 1+20 (warm)",
+		measure(|| render_burst(db, Some(session), &tweets)),
+	));
+	rows
+}
+
 /* ---------- HTTP scenarios ---------- */
 
 fn request_body(lines: &[&str]) -> String {
@@ -607,7 +736,12 @@ struct ScalingRow {
 	cells: [Duration; 4],
 }
 
-const SCALING_HEADERS: [&str; 4] = ["personal-tl", "private-global", "anon-global", "get-tweet"];
+const SCALING_HEADERS: [&str; 4] = [
+	"personal-tl",
+	"private-global",
+	"anon-global",
+	"get-tweet-cold",
+];
 
 fn scaling_measure(db: &Db, session: SessionId, target: PostId) -> [Duration; 4] {
 	[
@@ -632,7 +766,13 @@ fn scaling_measure(db: &Db, session: SessionId, target: PostId) -> [Duration; 4]
 			)
 		})
 		.median,
-		measure(|| expect_post(posts::read_post(db, None, target), "scaling-get-tweet")).median,
+		// The cache is dropped outside the timed region, so the column keeps
+		// measuring the database path rather than a warm cache hit.
+		measure_with_reset(
+			|| expect_post(posts::read_post(db, None, target), "scaling-get-tweet"),
+			|| db.clear_cache_for_tests(),
+		)
+		.median,
 	]
 }
 
@@ -707,10 +847,21 @@ fn main() {
 	);
 	println!("database: {path} (WAL), engine in-process, HTTP via Rocket's local client");
 
+	// The cache table is measured first, on the freshly seeded databases: later
+	// sections mutate the shared target post (the reply benchmark adds hundreds
+	// of replies, past the per-entry reply cap).
+	// A second handle on the same file with the cache disabled: the "before"
+	// column of the cache table. Reads only, so it never needs to invalidate.
+	let uncached = Db::new_uncached(&path).expect("uncached handle to the same database");
+	let cache = cache_report(&db, &uncached, &seeded);
 	let engine = engine_report(&db, &seeded);
 	let http = http_report();
 	let scaling = scaling_report();
 
+	print_table(
+		"cache: same database and data, cache disabled / cold / warm",
+		&cache,
+	);
 	print_table("engine (warmup + 15 samples, adaptive batch)", &engine);
 	print_table(
 		&format!("http ({HTTP_SAMPLES} requests per scenario, in-memory db, 500 posts)"),
@@ -741,7 +892,10 @@ fn print_hotspots() {
 	println!("     correlated `EXISTS`, so cost tracks match density, not `n`.");
 	println!("  6. `post_view` LEFT-JOINs `post_likes` and groups; `read_post` runs it plus");
 	println!("     `can_read_post` and `replies_of`, i.e. three queries for one tweet, each");
-	println!("     rebuilding a `format!`ed SQL string.");
+	println!("     rebuilding a `format!`ed SQL string. A live `everyone` tweet skips all three");
+	println!("     on a warm cache hit, which is why the cache table's warm row is one session");
+	println!("     probe and nothing else; any write drops the whole map, so a cold row pays");
+	println!("     the full database path plus the insertion.");
 	println!("  7. The rest is fixed overhead: `rand` for ids, `serde_json` for escaping,");
 	println!("     `format!`/`Vec` per body, and a formatted `Date` header on every response.");
 }
