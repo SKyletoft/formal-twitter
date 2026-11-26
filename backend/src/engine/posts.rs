@@ -18,7 +18,7 @@ use diesel::SqliteConnection;
 
 use crate::db::Db;
 use crate::engine::result::EngineResult;
-use crate::model::{DbError, PostId, PostStatus, SessionId, Visibility};
+use crate::model::{DbError, Post, PostId, PostStatus, PublicPost, SessionId, Visibility};
 use crate::store;
 
 /// Spec `publish sid txt parent` (Twitter.agda:387-430).
@@ -92,15 +92,32 @@ pub fn delete(db: &Db, session_id: SessionId, post_id: PostId) -> Result<EngineR
 	})
 }
 
-/// The `returned-post` answer of `read-post` (Twitter.agda:518-555).
-fn returned_post(c: &mut SqliteConnection, view: store::PostView) -> Result<EngineResult, DbError> {
+/// The `returned-post` body of `read-post` (Twitter.agda:518-555): the author,
+/// text, like count (`likes` is the length of the spec's like list) and reply
+/// ids of `view`. Also the value the public read cache stores.
+fn public_body(c: &mut SqliteConnection, view: store::PostView) -> Result<PublicPost, DbError> {
 	let replies = store::replies_of(c, view.post.id)?;
-	Ok(EngineResult::ReturnedPost {
+	Ok(PublicPost {
 		author: view.post.author,
 		text: view.post.text,
 		likes: view.likes.max(0) as u64,
 		replies,
 	})
+}
+
+fn returned_post(body: PublicPost) -> EngineResult {
+	EngineResult::ReturnedPost {
+		author: body.author,
+		text: body.text,
+		likes: body.likes,
+		replies: body.replies,
+	}
+}
+
+/// `is-post-public` (Twitter.agda:342-357) on a post already read: `live` and
+/// visible to `everyone`. Only such a post has a reader-independent body.
+fn is_public(post: &Post) -> bool {
+	post.status == PostStatus::Live && post.visibility == Visibility::Everyone
 }
 
 /// Spec `read-post msid pid` (Twitter.agda:518-554).
@@ -113,32 +130,73 @@ fn returned_post(c: &mut SqliteConnection, view: store::PostView) -> Result<Engi
 /// (Twitter.agda:464-468), and so does an anonymous read of a post that
 /// `is-post-public` rejects: `read-post nothing` extracts no session, so
 /// `failed-access` applies vacuously there.
+///
+/// Public bodies are served from the cache of [`Db`] when possible. Only a
+/// `live`, `everyone` post is ever inserted, because only such a post has the
+/// same body for every reader; every successful write empties the cache, so a
+/// hit is never stale. Session validity is never cached, so the session check
+/// of the `Some(sid)` path always runs first and `Expired` keeps its precedence
+/// over `Denied`/`ReturnedPost` (T7 revokes sessions). The cache adds no `Step`
+/// to the spec: it only recomputes the answer these same theorems define, and
+/// `tests/cache.rs` checks it against an uncached `Db`.
 pub fn read_post(
 	db: &Db,
 	session_id: Option<SessionId>,
 	post_id: PostId,
 ) -> Result<EngineResult, DbError> {
-	db.read(|c| match session_id {
-		Some(sid) => {
-			let Some(username) = store::active_user(c, sid)? else {
-				return Ok(EngineResult::Expired);
-			};
-			if !store::can_read_post(c, &username, post_id)? {
-				return Ok(EngineResult::Denied);
-			}
-			match store::post_view(c, post_id)? {
-				Some(view) => returned_post(c, view),
-				None => Ok(EngineResult::Denied),
-			}
+	// Anonymous reads have no session to validate, and every cached body is a
+	// live `everyone` post, readable without a session at all: a hit answers
+	// without taking the database lock.
+	let Some(sid) = session_id else {
+		if let Some(body) = db.cache_get(post_id) {
+			return Ok(returned_post(body));
 		}
-		None => {
+		return db.read(|c| {
 			if !store::can_read_anonymous(c, post_id)? {
 				return Ok(EngineResult::Expired);
 			}
+			let sampled = db.cache_generation();
 			match store::post_view(c, post_id)? {
-				Some(view) => returned_post(c, view),
+				Some(view) => {
+					let public = is_public(&view.post);
+					let body = public_body(c, view)?;
+					if public {
+						db.cache_put(sampled, post_id, body.clone());
+					}
+					Ok(returned_post(body))
+				}
 				None => Ok(EngineResult::Expired),
 			}
+		});
+	};
+	db.read(|c| {
+		// Never cached: a write may revoke the session, and `Expired` wins over
+		// any cached body.
+		let Some(username) = store::active_user(c, sid)? else {
+			return Ok(EngineResult::Expired);
+		};
+		// A hit needs no query: the cached post is live and `everyone`, which
+		// `CanReadPost` (Twitter.agda:158-179) grants to every account.
+		if let Some(body) = db.cache_get(post_id) {
+			return Ok(returned_post(body));
 		}
+		// Sampled before the database read below, and checked by `cache_put`
+		// against the generation the write transaction moved: a write racing in
+		// between keeps its invalidation. No cache lock is held across the I/O.
+		let sampled = db.cache_generation();
+		if !store::can_read_post(c, &username, post_id)? {
+			return Ok(EngineResult::Denied);
+		}
+		let Some(view) = store::post_view(c, post_id)? else {
+			return Ok(EngineResult::Denied);
+		};
+		let public = is_public(&view.post);
+		let body = public_body(c, view)?;
+		// `Denied` and `Expired` are never cached, and neither is a
+		// `followers-only` body: it depends on who is asking.
+		if public {
+			db.cache_put(sampled, post_id, body.clone());
+		}
+		Ok(returned_post(body))
 	})
 }
