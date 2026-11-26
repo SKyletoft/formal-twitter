@@ -10,7 +10,7 @@
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
   valid AND shrinkable generated world state. (Q1a infra+time `48514db`; Q1b auth/social `4a9f6af`,
   posts/timeline `d938c35`; Q1c cleanup pending.)
-- [ ] B1: Database query batching without destroying worst-case latency.
+- [x] B1: Database query batching/query fusion. Merged `1e69ed4`.
 
 ## In progress
 - [x] T8a: DONE/merged `0dad6e1` (`fbc3220` + JSON-safe-id fix `c9e0aca`). Post-merge gate: 136
@@ -23,16 +23,16 @@
   46 ns; render burst 3.4×; dead-cache/invalidation mutations now fail the property.
 - [x] Q1b: DONE/merged — auth+social `4a9f6af`, posts+timeline `d938c35`. All engine suites now
   use one `Db` per `#[test]`, reset+materialise a generated valid `WorldState` per case.
-- [ ] Q1-harness: `support::WorldProperty::result` panic containment + real shrinking fix running
-  in `wt-harness` (review found panics escaped quickcheck, so failures never shrank).
-- [ ] B1/T6e: implementation `e8b3caa` (get-tweet 4→3/3→2, reply 5→3, like 3→2, bound LIMIT);
-  review running in `wt-b1`.
-- [ ] C1b: timeline id caches; after B1.
-- [ ] Q1c: cleanup (dead helpers, duplicate tests, docs) after harness+B1 merge.
+- [x] Q1-harness: DONE/merged `946d164` (`5fe269c`). Property panics are caught and shrunk; minimal
+  world tests (1-post/empty) and a temporary failing-property demo confirmed.
+- [x] B1/T6e: DONE/merged `1e69ed4` (`e8b3caa`). get-tweet 4→3 / 3→2, reply 5→3, like 3→2, bound
+  `LIMIT`; 168 tests then; no worst-case regression.
+- [ ] C1b: timeline id caches running in `wt-c1b` (branch `task/c1b-timeline-cache`).
+- [ ] Q1c: cleanup (harness messages, duplicate test, bound-limit store test, bench labels) after C1b.
 
 ## State
-- Branch `maki-loop-3`, HEAD `d938c35`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, C1a.
-- 155 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
+- Branch `maki-loop-3`, HEAD `946d164`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, Q1-harness, C1a, B1.
+- All tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
