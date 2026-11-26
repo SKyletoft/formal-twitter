@@ -1,11 +1,18 @@
 # todo.md — formal-twitter
 
 ## Tasks
-- [ ] Send time-passes event every couple of minutes.
-- [ ] Redo frontend to look more like a reasonable twitter interface. Two timelines (one global one followed) (maybe in tabs?) Like buttons on tweets, follow/unfollow buttons on usernames. Replies when you click on a tweet and so on.
+- [ ] T7: Send a `time-passes` event every couple of minutes.
+  - Engine `time_passes` (revoke all active sessions) + Agda `session-timeout` proof + quickcheck.
+  - Background timer in `main` only (env-configurable, default ~120 s) so tests and in-process
+    `server::build` never revoke sessions mid-test.
+- [ ] T8a: Frontend redesign — layout, two timeline tabs (global/followed), tweet cards,
+  tweet detail with replies.
+- [ ] T8b: Frontend actions — like/unlike, follow/unfollow, reply composer; depends on T8a.
 
 ## In progress
-- (none)
+- [ ] T7: research/plan.
+- [ ] T8a: research/plan.
+- [ ] T8b: blocked on T8a.
 
 ## State
 - Branch `maki-loop-3`, HEAD `2087880`. All earlier tasks merged: T1 persistence, T2a auth,
