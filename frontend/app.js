@@ -1,8 +1,9 @@
 'use strict';
 
-/* Formal Twitter, browsing only: no posting, liking, following or deleting.
-   Every node is built with createElement/textContent; no markup is ever
-   parsed from data, and URLs only ever carry numeric ids. */
+/* Formal Twitter: browse the timelines, then post, reply, like, follow and
+   delete through the thirteen `/api` endpoints of the spec. Every node is
+   built with createElement/textContent; no markup is ever parsed from data,
+   and URLs only ever carry numeric ids. */
 
 (function () {
 	const TOKEN_KEY = 'formal-twitter.session-token';
@@ -43,10 +44,18 @@
 	const timelineHeading = byId('timeline-heading');
 	const timelineStatus = byId('timeline-status');
 	const timelineList = byId('timeline');
+	const composerForm = byId('composer');
+	const postText = byId('post-text');
+	const postButton = byId('post-button');
+	const postStatus = byId('post-status');
 	const detailView = byId('detail-view');
 	const detailBack = byId('detail-back');
 	const detailStatus = byId('detail-status');
 	const detailTweet = byId('detail-tweet');
+	const replyForm = byId('reply-composer');
+	const replyText = byId('reply-text');
+	const replyButton = byId('reply-button');
+	const replyStatus = byId('reply-status');
 	const detailReplies = byId('detail-replies');
 	const repliesNote = byId('replies-note');
 	const logList = byId('log');
@@ -62,6 +71,16 @@
 	/* Set once a reply has said the session expired, so a batch of in-flight
 	   requests reports it exactly once. */
 	let sessionExpiring = false;
+	/* The API has no "did I like this" or "do I follow this" query, so both
+	   are remembered only for actions taken in this tab: they are cleared on
+	   login, logout and session expiry, and never claim to be the server's
+	   state. */
+	const likedIds = new Set();
+	const followedUsers = new Set();
+	/* One post or reply in flight at a time: the composers disable their
+	   button and ignore a second submit until the first answers. */
+	let posting = false;
+	let replying = false;
 
 	function isNat(value) {
 		return typeof value === 'string' && /^[0-9]+$/.test(value);
@@ -113,6 +132,10 @@
 		}
 		writeStorage(TOKEN_KEY, token);
 		writeStorage(USER_KEY, username);
+		/* Likes and follows are per-session guesses; a new session starts
+		   from nothing rather than from the previous account's clicks. */
+		likedIds.clear();
+		followedUsers.clear();
 		refreshSessionUi();
 	}
 
@@ -121,7 +144,17 @@
 		username = null;
 		writeStorage(TOKEN_KEY, null);
 		writeStorage(USER_KEY, null);
+		likedIds.clear();
+		followedUsers.clear();
+		postText.value = '';
+		replyText.value = '';
+		postStatus.textContent = '';
+		replyStatus.textContent = '';
 		refreshSessionUi();
+	}
+
+	function isLoggedIn() {
+		return token !== null && username !== null;
 	}
 
 	function refreshSessionUi() {
@@ -130,6 +163,8 @@
 		signedIn.hidden = !loggedIn;
 		sessionUsername.textContent = loggedIn ? '@' + username : '@';
 		followingHint.hidden = loggedIn;
+		composerForm.hidden = !loggedIn;
+		replyForm.hidden = !loggedIn;
 		if (loggedIn) {
 			tabFollowing.removeAttribute('aria-disabled');
 			tabFollowing.removeAttribute('tabindex');
@@ -324,6 +359,7 @@
 		detailReplies.replaceChildren();
 		detailStatus.textContent = '';
 		repliesNote.textContent = '';
+		replyStatus.textContent = '';
 		timelineStatus.textContent = 'Loading timeline…';
 		loadTimeline(kind, seq);
 	}
@@ -338,6 +374,7 @@
 		detailTweet.replaceChildren();
 		detailReplies.replaceChildren();
 		repliesNote.textContent = '';
+		replyStatus.textContent = '';
 		detailStatus.textContent = 'Loading tweet ' + id + '…';
 		loadDetail(id, seq);
 	}
@@ -473,6 +510,77 @@
 		return node;
 	}
 
+	function likeText(count) {
+		return '♥ ' + count + (count === 1 ? ' like' : ' likes');
+	}
+
+	function replyCountText(count) {
+		return '↩ ' + count + (count === 1 ? ' reply' : ' replies');
+	}
+
+	/* ---------- action buttons ---------- */
+
+	/* A card's inline message: a refusal that is not the session ending. The
+	   activity log keeps the wire-level detail. */
+	function note(card, text) {
+		card.note.textContent = text;
+		card.note.hidden = text === '';
+	}
+
+	function button(label, className) {
+		const node = document.createElement('button');
+		node.type = 'button';
+		node.className = className;
+		node.textContent = label;
+		return node;
+	}
+
+	/* Disabled exactly when the session is gone or the button is mid-request;
+	   the title says which while the session is what is missing. */
+	function syncAction(node, hint) {
+		const busy = node.dataset.busy === '1';
+		const loggedIn = isLoggedIn();
+		node.disabled = busy || !loggedIn;
+		if (loggedIn) {
+			node.removeAttribute('title');
+		} else {
+			node.title = hint;
+		}
+	}
+
+	function setBusy(node, busy, hint) {
+		if (busy) {
+			node.dataset.busy = '1';
+		} else {
+			delete node.dataset.busy;
+		}
+		syncAction(node, hint);
+	}
+
+	/* `aria-pressed` and the visible label both follow the local set; the
+	   title states that the set is this tab's memory, not the server's. */
+	function paintLike(node, id) {
+		const liked = likedIds.has(id);
+		node.textContent = liked ? 'Unlike' : 'Like';
+		node.setAttribute('aria-pressed', liked ? 'true' : 'false');
+		node.setAttribute('aria-label', (liked ? 'Unlike tweet #' : 'Like tweet #') + id);
+		syncAction(node, 'log in to like tweets');
+		if (isLoggedIn()) {
+			node.title = 'Liked here in this tab; the API does not report your likes back';
+		}
+	}
+
+	function paintFollow(node, name) {
+		const following = followedUsers.has(name);
+		node.textContent = following ? 'Unfollow' : 'Follow';
+		node.setAttribute('aria-pressed', following ? 'true' : 'false');
+		node.setAttribute('aria-label', (following ? 'Unfollow @' : 'Follow @') + name);
+		syncAction(node, 'log in to follow users');
+		if (isLoggedIn()) {
+			node.title = 'Followed here in this tab; the API does not report who you follow';
+		}
+	}
+
 	function buildCard(id, tweet) {
 		const card = document.createElement('article');
 		card.className = 'tweet-card';
@@ -483,10 +591,16 @@
 		author.className = 'tweet-author';
 		author.href = '#/tweet/' + id;
 		author.textContent = '@' + tweet.username;
+		const follow = button('Follow', 'action follow-toggle');
+		follow.addEventListener('click', function () {
+			toggleFollow(tweet.username, follow, card);
+		});
+		paintFollow(follow, tweet.username);
 		const stamp = document.createElement('span');
 		stamp.className = 'tweet-id';
 		stamp.textContent = '#' + id;
 		head.appendChild(author);
+		head.appendChild(follow);
 		head.appendChild(stamp);
 
 		const text = document.createElement('p');
@@ -495,17 +609,43 @@
 
 		const meta = document.createElement('div');
 		meta.className = 'tweet-meta';
-		meta.appendChild(metric('♥ ' + tweet.likes + (tweet.likes === 1 ? ' like' : ' likes')));
+		const like = button('Like', 'action like-toggle');
+		const likes = metric(likeText(tweet.likes));
+		like.addEventListener('click', function () {
+			toggleLike(id, like, likes, card);
+		});
+		paintLike(like, id);
 		const replyCount = tweet.replies.length;
-		meta.appendChild(metric('↩ ' + replyCount + (replyCount === 1 ? ' reply' : ' replies')));
+		meta.appendChild(like);
+		meta.appendChild(likes);
+		meta.appendChild(metric(replyCountText(replyCount)));
 		const open = document.createElement('a');
 		open.href = '#/tweet/' + id;
 		open.textContent = 'Open thread';
 		meta.appendChild(open);
 
+		const actions = document.createElement('div');
+		actions.className = 'tweet-actions';
+		if (username !== null && tweet.username === username) {
+			const remove = button('Delete', 'action danger');
+			remove.setAttribute('aria-label', 'Delete tweet #' + id);
+			remove.addEventListener('click', function () {
+				deleteTweet(id, remove, card);
+			});
+			actions.appendChild(remove);
+		}
+
+		const noteNode = document.createElement('p');
+		noteNode.className = 'tweet-note';
+		noteNode.hidden = true;
+		noteNode.setAttribute('role', 'status');
+		card.note = noteNode;
+
 		card.appendChild(head);
 		card.appendChild(text);
 		card.appendChild(meta);
+		card.appendChild(actions);
+		card.appendChild(noteNode);
 		return card;
 	}
 
@@ -646,6 +786,215 @@
 		repliesNote.textContent = replySummary(total, shown.length, rendered);
 	}
 
+	/* ---------- actions ---------- */
+
+	/* The wording of a refusal that is not the session ending (that one has
+	   already been handled by `call`). */
+	function failureText(result, forbidden) {
+		if (result.status === 403) {
+			return forbidden;
+		}
+		if (result.status === 401) {
+			return 'Your session ended, so nothing changed.';
+		}
+		if (result.status === 0) {
+			return 'Could not reach the server.';
+		}
+		return 'The request failed (HTTP ' + result.status + ').';
+	}
+
+	/* Like and unlike are one toggle: the local set decides the endpoint, and
+	   only the tweet's own like count is fetched again afterwards. A refusal
+	   puts the button back; likes are idempotent, so a retry is safe. */
+	async function toggleLike(id, node, countNode, card) {
+		if (!isLoggedIn() || node.dataset.busy === '1') {
+			return;
+		}
+		const wasLiked = likedIds.has(id);
+		const endpoint = wasLiked ? 'unlike-tweet' : 'like-tweet';
+		if (wasLiked) {
+			likedIds.delete(id);
+		} else {
+			likedIds.add(id);
+		}
+		paintLike(node, id);
+		setBusy(node, true, 'log in to like tweets');
+		try {
+			const result = await call(endpoint, [token, id]);
+			if (!result.ok) {
+				/* Only revert while the session that clicked is still the one
+				   in hand: expiry has already dropped the whole set. */
+				if (isLoggedIn()) {
+					if (wasLiked) {
+						likedIds.add(id);
+					} else {
+						likedIds.delete(id);
+					}
+					paintLike(node, id);
+					note(card, failureText(
+						result,
+						'You may not ' + (wasLiked ? 'unlike' : 'like') + ' that tweet.'
+					));
+				}
+				return;
+			}
+			const fresh = await fetchTweet(id);
+			if (fresh.tweet !== null) {
+				countNode.textContent = likeText(fresh.tweet.likes);
+			}
+			/* A previous refusal on this card no longer applies. */
+			note(card, '');
+		} finally {
+			setBusy(node, false, 'log in to like tweets');
+		}
+	}
+
+	/* Follow and unfollow are one toggle as well. A success refreshes the
+	   active view, because following changes which private posts are
+	   readable; the sequence guard there discards a slower earlier render. */
+	async function toggleFollow(name, node, card) {
+		if (!isLoggedIn() || node.dataset.busy === '1') {
+			return;
+		}
+		const wasFollowing = followedUsers.has(name);
+		const endpoint = wasFollowing ? 'unfollow-user' : 'follow-user';
+		if (wasFollowing) {
+			followedUsers.delete(name);
+		} else {
+			followedUsers.add(name);
+		}
+		paintFollow(node, name);
+		setBusy(node, true, 'log in to follow users');
+		try {
+			const result = await call(endpoint, [token, name]);
+			if (!result.ok) {
+				if (isLoggedIn()) {
+					if (wasFollowing) {
+						followedUsers.add(name);
+					} else {
+						followedUsers.delete(name);
+					}
+					paintFollow(node, name);
+					note(card, failureText(
+						result,
+						'You may not ' + (wasFollowing ? 'unfollow' : 'follow') + ' that user.'
+					));
+				}
+				return;
+			}
+			log('ok', (wasFollowing ? 'unfollowed @' : 'followed @') + name);
+			renderRoute();
+		} finally {
+			setBusy(node, false, 'log in to follow users');
+		}
+	}
+
+	/* Delete appears only on the session's own tweets. In a thread it returns
+	   to the timeline; in a timeline the view is fetched again without it. */
+	async function deleteTweet(id, node, card) {
+		if (!isLoggedIn() || node.dataset.busy === '1') {
+			return;
+		}
+		if (!window.confirm('Delete tweet #' + id + '? This cannot be undone.')) {
+			return;
+		}
+		setBusy(node, true, 'log in to delete tweets');
+		try {
+			const result = await call('delete-tweet', [token, id]);
+			if (!result.ok) {
+				note(card, failureText(result, 'You can only delete your own tweets.'));
+				return;
+			}
+			likedIds.delete(id);
+			log('ok', 'deleted tweet #' + id);
+			if (currentRoute().name === 'tweet') {
+				window.location.hash = lastTimeline === 'following' ? '#/following' : '#/';
+				/* Without a hashchange event (a stub page) the render is done
+				   here instead; in a browser it already happened. */
+				if (currentRoute().name === 'tweet') {
+					renderRoute();
+				}
+				return;
+			}
+			renderRoute();
+		} finally {
+			setBusy(node, false, 'log in to delete tweets');
+		}
+	}
+
+	/* ---------- composers ---------- */
+
+	function setComposerBusy(form, busy) {
+		const button = form === composerForm ? postButton : replyButton;
+		button.disabled = busy;
+		if (form === composerForm) {
+			posting = busy;
+		} else {
+			replying = busy;
+		}
+	}
+
+	/* A tweet and its text: the body is `<token>\r\n<text>\r\n`, so the text
+	   must not carry a line break of its own. */
+	function singleLine(form, text) {
+		if (!/[\r\n]/.test(text)) {
+			return true;
+		}
+		const status = form === composerForm ? postStatus : replyStatus;
+		status.textContent = 'Only one line is allowed: the API takes the text as a single field.';
+		return false;
+	}
+
+	async function submitPost() {
+		if (posting || !isLoggedIn()) {
+			return;
+		}
+		const text = postText.value;
+		if (!singleLine(composerForm, text)) {
+			return;
+		}
+		setComposerBusy(composerForm, true);
+		try {
+			const result = await call('post-tweet', [token, text]);
+			if (!result.ok) {
+				postStatus.textContent = failureText(result, 'You may not post.');
+				return;
+			}
+			const created = idOf(textField(result.json, 'tweet_id'));
+			postText.value = '';
+			log('ok', created === null ? 'posted a tweet' : 'posted tweet #' + created);
+			renderRoute();
+			postStatus.textContent = created === null ? 'Posted.' : 'Posted tweet #' + created + '.';
+		} finally {
+			setComposerBusy(composerForm, false);
+		}
+	}
+
+	async function submitReply(parentId) {
+		if (replying || !isLoggedIn() || !isNat(parentId)) {
+			return;
+		}
+		const text = replyText.value;
+		if (!singleLine(replyForm, text)) {
+			return;
+		}
+		setComposerBusy(replyForm, true);
+		try {
+			const result = await call('post-reply', [token, text, parentId]);
+			if (!result.ok) {
+				replyStatus.textContent = failureText(result, 'You may not reply to that tweet.');
+				return;
+			}
+			const created = idOf(textField(result.json, 'tweet_id'));
+			replyText.value = '';
+			log('ok', created === null ? 'posted a reply' : 'replied with tweet #' + created);
+			renderRoute();
+			replyStatus.textContent = 'Reply posted.';
+		} finally {
+			setComposerBusy(replyForm, false);
+		}
+	}
+
 	/* ---------- authentication ---------- */
 
 	function setAuthBusy(busy) {
@@ -730,6 +1079,23 @@
 	});
 
 	logoutButton.addEventListener('click', logOut);
+
+	composerForm.addEventListener('submit', function (event) {
+		event.preventDefault();
+		if (currentRoute().name === 'tweet') {
+			return;
+		}
+		submitPost();
+	});
+
+	replyForm.addEventListener('submit', function (event) {
+		event.preventDefault();
+		const route = currentRoute();
+		if (route.name !== 'tweet') {
+			return;
+		}
+		submitReply(route.id);
+	});
 
 	tabFollowing.addEventListener('click', function (event) {
 		if (token === null) {

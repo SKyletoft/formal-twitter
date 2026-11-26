@@ -70,18 +70,49 @@ fn serves_frontend_assets() {
 	assert_present(&javascript, "/app.js");
 	let body = javascript.into_string().expect("app.js is UTF-8");
 	assert!(body.contains("/api/"), "/app.js posts to the API");
-	// The browsing endpoints of the redesign (T8a).
-	for endpoint in ["global-timeline", "private-timeline", "get-tweet"] {
+	// The browsing endpoints of the redesign (T8a) and the action endpoints
+	// of T8b: the whole `/api` surface the page uses.
+	for endpoint in [
+		"global-timeline",
+		"private-timeline",
+		"get-tweet",
+		"post-tweet",
+		"post-reply",
+		"like-tweet",
+		"unlike-tweet",
+		"follow-user",
+		"unfollow-user",
+		"delete-tweet",
+		"login",
+		"logout",
+		"signup",
+	] {
 		assert!(
 			body.contains(endpoint),
 			"/app.js calls the {endpoint} endpoint"
 		);
 	}
 	// Tweet text is rendered as text nodes only, never parsed as markup.
-	assert!(
-		!body.contains("innerHTML"),
-		"/app.js must not set markup from data"
-	);
+	for forbidden in [
+		"innerHTML",
+		"insertAdjacentHTML",
+		"outerHTML",
+		"eval(",
+		"onclick=",
+	] {
+		assert!(
+			!body.contains(forbidden),
+			"/app.js must not set markup from data ({forbidden})"
+		);
+	}
+	// Both composers the action layer needs are in the page the script drives.
+	let page = html(&client, "/");
+	for id in ["composer", "post-text", "reply-composer", "reply-text"] {
+		assert!(
+			page.contains(&format!("id=\"{id}\"")),
+			"/index.html has the {id} element"
+		);
+	}
 
 	let stylesheet = client.get("/style.css").dispatch();
 	assert_eq!(stylesheet.status().code, 200);

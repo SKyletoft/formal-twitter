@@ -47,6 +47,15 @@
 	<main class="wrap">
 		<section id="timeline-view" aria-labelledby="timeline-heading">
 			<h2 id="timeline-heading">Global</h2>
+			<form id="composer" class="composer" hidden>
+				<label class="composer-label" for="post-text">New tweet</label>
+				<div class="composer-row">
+					<input id="post-text" name="post-text" type="text" autocomplete="off" spellcheck="false" required>
+					<button type="submit" id="post-button">Post</button>
+				</div>
+				<p class="composer-hint">One line only: the API takes the text as a single field.</p>
+				<p id="post-status" class="status" role="status" aria-live="polite"></p>
+			</form>
 			<p id="timeline-status" class="status" role="status" aria-live="polite"></p>
 			<ol id="timeline" class="timeline"></ol>
 		</section>
@@ -56,6 +65,15 @@
 			<h2 id="detail-heading">Tweet</h2>
 			<p id="detail-status" class="status" role="status" aria-live="polite"></p>
 			<div id="detail-tweet" class="detail-tweet"></div>
+			<form id="reply-composer" class="composer" hidden>
+				<label class="composer-label" for="reply-text">Reply</label>
+				<div class="composer-row">
+					<input id="reply-text" name="reply-text" type="text" autocomplete="off" spellcheck="false" required>
+					<button type="submit" id="reply-button">Reply</button>
+				</div>
+				<p class="composer-hint">One line only: the API takes the text as a single field.</p>
+				<p id="reply-status" class="status" role="status" aria-live="polite"></p>
+			</form>
 			<h3 id="replies-heading">Replies</h3>
 			<ol id="detail-replies" class="timeline" aria-labelledby="replies-heading"></ol>
 			<p id="replies-note" class="status"></p>
