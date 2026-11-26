@@ -2,25 +2,31 @@
 
 ## Tasks
 - [x] T7: Send a `time-passes` event every couple of minutes. Merged `8d83761`.
-- [ ] T8a: Frontend redesign — layout, two timeline tabs (global/followed), tweet cards,
-  tweet detail with replies.
-- [ ] T8b: Frontend actions — like/unlike, follow/unfollow, reply composer; depends on T8a.
-- [ ] C1: Cache commonly read public data (in-memory only; invalidate on every write; the DB stays
+- [x] T8a: Frontend redesign — layout, two timeline tabs, tweet cards, detail with replies.
+  Merged `0dad6e1`.
+- [ ] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. In progress.
+- [ ] C1: Cache commonly read public data (in-memory; total invalidation on every write; DB stays
   the source of truth before serving).
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
   valid AND shrinkable generated world state.
 - [ ] B1: Database query batching without destroying worst-case latency.
 
 ## In progress
-- [x] T7: DONE/merged `8d83761` (tests/proofs `bceac91`, impl `3f818e9`). 132 tests; timer smoke ok.
-- [ ] T8a: implementation `fbc3220` reviewed; blocking JSON-id precision defect (ids > 2^53).
-  Root-cause fix running: allocate PostId/SessionId in `1..=2^53-1`, frontend safe-integer guards,
-  regression tests. Worktree `wt-t8a`.
-- [ ] T8b: blocked on T8a.
-- [ ] C1/Q1/B1: queued; plan after T8b.
+- [x] T8a: DONE/merged `0dad6e1` (`fbc3220` + JSON-safe-id fix `c9e0aca`). Post-merge gate: 136
+  tests, Agda, lint, `nix build`, HTTP + timer smokes all green.
+- [ ] T8b: implementation running in `wt-t8b` (branch `task/t8b-frontend-actions`).
+- [ ] C1a: plan ACCEPTED. Public-data cache in `Db` (public tweet views + anonymous global timeline),
+  total invalidation at the end of every `Db::write`, cache-vs-DB property tests, no new Agda proof
+  (the cache introduces no spec `Step`). NEXT after T8b.
+- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, bound `LIMIT`); after C1a.
+- [ ] C1b: timeline id caches; after B1.
+- [ ] Q1a/Q1b/Q1c: `WorldState` generator/shrinker/materialiser + pilot, then migrate all engine
+  suites. One `Db` per `#[test]`, reset per case; no DB construction inside properties. Q1a can run
+  in parallel with C1a (src vs tests); Q1b after.
 
 ## State
-- Branch `maki-loop-3`, HEAD `8d83761`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7.
+- Branch `maki-loop-3`, HEAD `0dad6e1`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a.
+- 136 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
