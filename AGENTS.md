@@ -19,6 +19,8 @@ Set each task to work in its own git worktree. Do close to no
 work yourself, leave everything you can to subagents.
 
 Sign all your commits with maki@deepseek-v4.1-flash as a coauthor.
+Never ask questions I haven't authorised you to ask in the instructions below.
+Record your assumptions in a subheading at the end of todo.md.
 
 Your workflow:
 * Review a task. See if it's a reasonable size or should be split off
@@ -41,6 +43,7 @@ Your workflow:
   matters. All agda must typecheck without postulates, all tests must
   pass, it must be lint-free with clippy. Then run rustfmt and commit
   and merge it into your branch.
+* Check if the todo-list needs a cleanup.
 * If there are no tasks in the todo list:
 	- Start a subagent to run benchmarks and create new tasks to
 	  fix performance issues.
