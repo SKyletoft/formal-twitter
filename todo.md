@@ -1,71 +1,78 @@
 # todo.md — formal-twitter
 
 ## Tasks
-- [x] T7: Send a `time-passes` event every couple of minutes. Merged `8d83761`.
-- [x] T8a: Frontend redesign — layout, two timeline tabs, tweet cards, detail with replies.
-  Merged `0dad6e1`.
-- [x] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. Merged `eec038b`.
-- [x] C1: Cache commonly read public data. Merged `c5b4447` (C1a public tweet cache `c91d9d6`;
-  C1b timeline id caches `860602c`).
-- [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
-  valid AND shrinkable generated world state. (Q1a `48514db`; Q1b auth/social `4a9f6af`, posts/
-  timeline `d938c35`; harness `946d164`; Q1c cleanup in progress.)
-- [x] B1: Database query batching/query fusion. Merged `1e69ed4`.
+<!-- Add new tasks here as `- [ ] ...`. -->
+- [ ] (none open)
 
-## In progress
-- [x] T8a: DONE/merged `0dad6e1` (`fbc3220` + JSON-safe-id fix `c9e0aca`). Post-merge gate: 136
-  tests, Agda, lint, `nix build`, HTTP + timer smokes all green.
-- [x] T8b: DONE/merged `eec038b` (`4405ef3` + CSS/UX fix `53c2a6d`). 136 tests, DOM stub 73/73,
-  live smoke 44/44.
-- [x] Q1a: DONE/merged `48514db` (`057c42c` + reply-order fix `e57d2ac`). WorldState/Arbitrary/
-  shrink/materialiser + `engine_time` pilot; 137 tests; 0 discards.
-- [x] C1a: DONE/merged `c91d9d6` (`4b1b4a9` + strengthened test `e5c2857`). Warm anon get-tweet
-  46 ns; render burst 3.4×; dead-cache/invalidation mutations now fail the property.
-- [x] Q1b: DONE/merged — auth+social `4a9f6af`, posts+timeline `d938c35`. All engine suites now
-  use one `Db` per `#[test]`, reset+materialise a generated valid `WorldState` per case.
-- [x] Q1-harness: DONE/merged `946d164` (`5fe269c`). Property panics are caught and shrunk; minimal
-  world tests (1-post/empty) and a temporary failing-property demo confirmed.
-- [x] B1/T6e: DONE/merged `1e69ed4` (`e8b3caa`). get-tweet 4→3 / 3→2, reply 5→3, like 3→2, bound
-  `LIMIT`; 168 tests then; no worst-case regression.
-- [x] C1b: DONE/merged `c5b4447` (`860602c`). Timeline warm: personal ~39×, anon ~500×, render
-  burst 5.5×; 205 tests; dead-cache/invalidation mutations fail the property.
-- [ ] Q1c: cleanup running in `wt-q1c` (harness message fidelity, duplicate/double assertions,
-  `personal_timeline_for` bound tests, cache docs/memory bound, bench labels).
+## Completed (latest cycle)
+- [x] T7: `time-passes` engine command (`session-timeout` proof) + background timer in `main`
+  (`FORMAL_TWITTER_TIME_PASSES_SECS`, default 120, `0` disables). Merged `8d83761`.
+- [x] T8a/T8b: Twitter-like static frontend (hash-routed tabs, timeline cards, tweet detail/replies,
+  post/reply/like/unlike/follow/unfollow/delete, safe-integer ids). Merged `0dad6e1`/`eec038b`.
+- [x] C1a/C1b: in-memory public read cache (tweet bodies + timeline id lists), total invalidation on
+  every committed write, generation-checked. Merged `c91d9d6`/`c5b4447`.
+- [x] B1/T6e: query fusion (get-tweet 4→3 / 3→2, reply publish 5→3, like 3→2, bound `LIMIT`).
+  Merged `1e69ed4`.
+- [x] Q1a/Q1b/Q1-harness/Q1c: world-state-driven quickcheck (one `Db` per `#[test]`, generated valid
+  + shrinkable `WorldState`, reset+materialise per case, no DB construction inside properties,
+  panic-contained shrinking). Merged `48514db`/`4a9f6af`/`d938c35`/`946d164`/`ebf729b`.
+- [x] Earlier: T1 persistence, T2a auth, T2b posts, T3a social, T3b timelines, T4 HTTP/static/`nix run`,
+  T5 frontend, T6 benchmark harness + `synchronous=NORMAL`/fused account/lookups/thin LTO/top-n
+  timeline.
 
-## State
-- Branch `maki-loop-3`, HEAD `c5b4447`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, Q1-harness, C1a, B1, C1b.
-- 205 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
+## Final state (2026-11-27)
+- Branch `maki-loop-3`, HEAD `ebf729b` (+ this todo commit).
+- **216 tests**, 0 failed (lib 14, main 5, cache 10, engine_auth 19, engine_posts 27,
+  engine_social 29, engine_time 13, engine_timeline 22, http_api 11, http_static 2, persistence 26,
+  store_posts 28, timeline_cache 10).
+- `agda --safe ImplProofs.agda` clean (no postulates/holes); `clippy --tests -D warnings` and
+  `fmt --check` clean; `node --check` clean.
+- `nix build .#default` runs the full test suite in checkPhase; `nix run` smoke: 95/95 checks
+  (all 13 endpoints, static assets, `/prompt` 404, no `Server:` header, JSON-safe ids); timer
+  expiry (`=1`) and disabled (`=0`) verified.
+- Spec unchanged; audit CLEAN (all Commands/Actions/Results/Steps covered).
+- Benchmarks (release): writes 13–47 µs; get-tweet cold 23–31 µs / warm 6.2 µs (anon 52 ns);
+  personal timeline cold 237 µs at 20k (1.49 ms at 100k), warm 6.3 µs; anon global warm 24 ns;
+  render burst 1+20 449 µs cold → 132 µs warm; HTTP 3–28 µs.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
 - Each task gets a worktree `/home/u3836/git/formal-twitter.git/wt-<id>`, branch `task/<id>`.
 - Read ONLY `spec/Twitter.agda` and `spec/Interface.agda` inside `spec/`.
 - Commits end with `Co-authored-by: maki@deepseek-v4.1-flash <maki@deepseek-v4.1-flash>`.
-- Tests: quickcheck properties with a matching theorem in `backend/ImplProofs.agda`; no
-  postulates/holes. T1/store-layer (no spec `Step`) and T4 wire layer (Interface helpers are
-  postulates) are unit/integration-tested only.
-- Sandbox: `rm` is denied unless it involves scratch files; never plan a task requiring deletion of tracked files.
+- Tests: quickcheck properties with matching theorems in `backend/ImplProofs.agda`; no
+  postulates/holes. Layer tests with no spec `Step` (T1/store, cache, HTTP wire, frontend) are
+  unit/integration-tested only, with cache-vs-DB equivalence properties where relevant.
+- Verification policy: one full `cargo test` run, with an elevated `QUICKCHECK_TESTS` (e.g. 1000)
+  rather than repeating the whole suite; re-run only a specific target when debugging a flake.
+- Sandbox: `rm` is denied; avoid tasks that require deleting tracked files.
 
 ## Gotchas / decisions
 - Spec is the source of truth; never edit `spec/`.
-- `Expired` (`failed-access`) takes precedence for every session-carrying command.
-- Anonymous unreadable `read-post` -> `expired` (vacuous `failed-access`), NOT 403.
-- Reply visibility: parent `everyone` -> account default; `followers-only` -> `followers-only`.
-- Deleting an already-deleted own post succeeds.
-- Personal timeline = live posts by followed authors (self-follow to include own); private global =
-  live ∧ (public ∨ followed); anonymous global = live ∧ public.
-- `newest-first` and reply lists include deleted posts; replies are newest-first.
-- HTTP: malformed -> 400 `bad_request`; leading zeros accepted; ids > `i64::MAX` -> 400; timeline
-  length is `u64` clamped to `u32::MAX`; JSON escaping via `serde_json`; static allowlist only
-  (`index.html`,`app.js`,`style.css`); `frontend/prompt` must stay unreachable.
-- DB: WAL + `synchronous=NORMAL`; one connection behind a Mutex; one transaction per command;
-  `FORMAL_TWITTER_DB` / `DATABASE_URL` / `formal-twitter.db`.
-- Perf: `store::personal_timeline_for` uses the per-author top-n window query.
+- `Expired` (`failed-access`) precedes everything for session-carrying commands; anonymous
+  unreadable `read-post` is `Expired` (vacuous `failed-access`), NOT 403.
+- Reply visibility: parent `everyone` → account default; `followers-only` → `followers-only`.
+  Deleting an already-deleted own post succeeds.
+- Personal timeline = live ∧ followed(author) (self-follow for own); private global = live ∧
+  (public ∨ followed); anonymous global = live ∧ public; `newest-first`/replies include deleted
+  posts and are seq-desc (replies newest-first).
+- Ids are `i64` but allocated in `1..=2^53−1` so bare JSON ids are safe for JavaScript.
+- HTTP: malformed → 400 `bad_request`; leading zeros accepted; timeline length `u64` clamped to
+  `u32::MAX`; JSON escaping via `serde_json`; static allowlist only (`index.html`,`app.js`,
+  `style.css`); `frontend/prompt` never served/embedded.
+- DB: WAL + `synchronous=NORMAL`; one `Arc<Mutex<SqliteConnection>>` shared with the timer; one
+  transaction per command; cache invalidated on every committed write.
+- Quickcheck harness: `WorldState` is a valid spec world; `newest-first` is a permutation of all
+  posts and each post's `replies` is exactly its children in seq-desc order (DB representation).
 
-## Limitations / deferred
-- `time-passes` / session timeout: no Interface endpoint.
-- `followers-only` default is unreachable (register always creates `everyone`).
-- DB errors -> 500 `{"error":"internal"}`; `collect-dead-posts` is commented out in the spec;
-  `store::revoke_all_sessions` is unused.
-- Deferred perf: T6b read connection pool, T6e read_post query fusion, T6f body allocations,
-  T6h partial index, personal timeline at 100k posts (1.49 ms).
+## Possible follow-ups (not started)
+- Personal timeline cold at 100k posts (1.49 ms; density-dependent) — e.g. recursive per-followee
+  top-n or a different plan.
+- Read concurrency: the single `Mutex<SqliteConnection>` serialises requests (a read pool is
+  possible but `:memory:` tests would need shared-cache; medium risk).
+- `publish` cold ~47 µs (id probe + insert + fsyncless commit) — minor.
+- `time-passes` has no Interface endpoint (internal timer only); `followers-only` default is
+  unreachable via `register`; DB errors answer 500 `internal`; `collect-dead-posts` is commented
+  out in the spec.
+- Ignored local artifacts remain (e.g. `backend/src/formal-twitter.db`, `target/`, `result`);
+  they are not tracked.
