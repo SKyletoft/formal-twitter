@@ -1,3 +1,5 @@
+pub mod api;
+pub mod assets;
 pub mod db;
 pub mod engine;
 pub mod ids;
