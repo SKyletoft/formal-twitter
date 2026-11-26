@@ -64,6 +64,13 @@
 - Bash/file permissions are restrictive: `rm` is denied for everyone and writes are limited to the
   coordinator's own files. Do not plan tasks that require deleting tracked files; make them
   unreachable instead. Recorded for `frontend/prompt`.
+- Proof strategy (from T2a review): state each engine theorem over an arbitrary `World` and
+  exhibit the updated world via builders (`registered-world`, `logged-in-world`,
+  `logged-out-world`) that re-discharge all `World` invariants. Reuse this for T2b/T3 post,
+  follow and like worlds; do not use single-account/single-session toy worlds.
+- T3: `store::newest_first(n)` applies `LIMIT` before visibility filtering; never use it to
+  build a timeline (spec filters then takes). Use the dedicated timeline queries.
+- T2b/T3: `newest-first` and reply lists include deleted posts; reply lists are newest-first.
 - Commit trailer on every commit: `Co-authored-by: maki@deepseek-v4.1-flash <maki@deepseek-v4.1-flash>`.
 
 ## T4 plan (accepted, amendments)
