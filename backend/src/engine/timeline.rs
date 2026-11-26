@@ -29,8 +29,18 @@
 //! (Twitter.agda:464-468). `global_timeline` with `None` is tokenless -- its
 //! extracted session is `nothing` -- so `failed-access`'s premise is vacuous
 //! and it never expires: it always answers `ReturnedTimeline`.
+//!
+//! The id lists are cached in [`Db`], keyed by [`TimelineKey`] (which timeline
+//! and which `n`). A hit answers the same `ReturnedTimeline` the query would:
+//! ids change only through commands that go through [`Db::write`], and every
+//! successful write clears the whole cache and bumps the generation, so a list
+//! cached before a write can never be served after it. Session validity is
+//! never cached: `active_user` always runs first for the two session-carrying
+//! forms, so `Expired` keeps precedence over a cached list. The cache adds no
+//! `Step` to the spec -- the three rules above still define the answer, and
+//! `tests/timeline_cache.rs` checks the cached handle against an uncached one.
 
-use crate::db::Db;
+use crate::db::{Db, TimelineKey};
 use crate::engine::result::EngineResult;
 use crate::model::{DbError, SessionId};
 use crate::store;
@@ -43,15 +53,27 @@ use crate::store;
 /// *not* special-cased: it is included iff the user follows themself, exactly
 /// like `follows-post-author` (Twitter.agda:366-369). Replies are ordinary
 /// entries. An inactive session answers `Expired` (`failed-access`,
-/// Twitter.agda:464-468).
+/// Twitter.agda:464-468), checked before the cache is consulted.
 pub fn personal_timeline(db: &Db, session_id: SessionId, n: u32) -> Result<EngineResult, DbError> {
 	db.read(|c| {
+		// Never cached: a write may revoke the session, and `Expired` wins over
+		// any cached list.
 		let Some(username) = store::active_user(c, session_id)? else {
 			return Ok(EngineResult::Expired);
 		};
-		Ok(EngineResult::ReturnedTimeline(
-			store::personal_timeline_for(c, &username, n)?,
-		))
+		let key = TimelineKey::Personal(username.clone(), n);
+		// A hit needs no timeline query: the ids are exactly what the filter
+		// below would return for this still-valid session.
+		if let Some(ids) = db.cache_get_timeline(&key) {
+			return Ok(EngineResult::ReturnedTimeline(ids));
+		}
+		// Sampled before the database read below and checked by
+		// `cache_put_timeline` against the generation the write transaction
+		// moved: a write racing in between keeps its invalidation.
+		let sampled = db.cache_generation();
+		let ids = store::personal_timeline_for(c, &username, n)?;
+		db.cache_put_timeline(sampled, key, ids.clone());
+		Ok(EngineResult::ReturnedTimeline(ids))
 	})
 }
 
@@ -64,23 +86,46 @@ pub fn personal_timeline(db: &Db, session_id: SessionId, n: u32) -> Result<Engin
 /// the `n` newest `is-post-public` posts (Twitter.agda:342-357): `live` and
 /// `everyone`, whatever the follow table says. Both are in
 /// `World.newest-first` order. Only the session-carrying form can answer
-/// `Expired` (`failed-access`, Twitter.agda:464-468).
+/// `Expired` (`failed-access`, Twitter.agda:464-468), and it checks the session
+/// before the cache is consulted.
 pub fn global_timeline(
 	db: &Db,
 	session_id: Option<SessionId>,
 	n: u32,
 ) -> Result<EngineResult, DbError> {
-	db.read(|c| match session_id {
-		Some(sid) => {
+	match session_id {
+		Some(sid) => db.read(|c| {
+			// Never cached: a write may revoke the session, and `Expired` wins
+			// over any cached list.
 			let Some(username) = store::active_user(c, sid)? else {
 				return Ok(EngineResult::Expired);
 			};
-			Ok(EngineResult::ReturnedTimeline(store::global_timeline_for(
-				c, &username, n,
-			)?))
+			let key = TimelineKey::Global(username.clone(), n);
+			if let Some(ids) = db.cache_get_timeline(&key) {
+				return Ok(EngineResult::ReturnedTimeline(ids));
+			}
+			let sampled = db.cache_generation();
+			let ids = store::global_timeline_for(c, &username, n)?;
+			db.cache_put_timeline(sampled, key, ids.clone());
+			Ok(EngineResult::ReturnedTimeline(ids))
+		}),
+		None => {
+			// No session to validate, so a hit answers without taking the
+			// database lock at all.
+			let key = TimelineKey::Anonymous(n);
+			if let Some(ids) = db.cache_get_timeline(&key) {
+				return Ok(EngineResult::ReturnedTimeline(ids));
+			}
+			db.read(|c| {
+				// Sampled after the lock is taken, before the read: a write
+				// racing between the lookup above and here either invalidates
+				// this insert or the list it would serve, never leaves a stale
+				// list behind.
+				let sampled = db.cache_generation();
+				let ids = store::public_timeline(c, n)?;
+				db.cache_put_timeline(sampled, key, ids.clone());
+				Ok(EngineResult::ReturnedTimeline(ids))
+			})
 		}
-		None => Ok(EngineResult::ReturnedTimeline(store::public_timeline(
-			c, n,
-		)?)),
-	})
+	}
 }

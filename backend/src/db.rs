@@ -19,6 +19,30 @@ pub const CACHE_CAPACITY: usize = 10_000;
 /// `Vec` and re-reading it costs little relative to holding it resident.
 pub const CACHE_MAX_REPLIES: usize = 1_024;
 
+/// The most timeline id lists the cache keeps. Like [`CACHE_CAPACITY`], the
+/// map is dropped wholesale when full, so the bound costs at most one re-read.
+pub const CACHE_TIMELINE_CAPACITY: usize = 2_048;
+
+/// A timeline longer than this is not cached: answering it already copies a
+/// large `Vec`, and holding one resident is not worth the memory.
+pub const CACHE_MAX_TIMELINE_IDS: usize = 4_096;
+
+/// The key of a cached timeline id list: which timeline, asked for which
+/// length. The length is part of the key because `take n` is not prefix
+/// monotone in the answer: a request for `n` must be a `take n` of the *whole*
+/// filtered list, which is not derivable from a cached shorter or longer one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TimelineKey {
+	/// `read-global-timeline nothing n` (`get-public-global-timeline`).
+	Anonymous(u32),
+	/// `read-global-timeline (just sid) n` (`get-private-global-timeline`),
+	/// keyed by the session's user.
+	Global(String, u32),
+	/// `read-personal-timeline sid n` (`get-personal-timeline`), keyed by the
+	/// session's user.
+	Personal(String, u32),
+}
+
 pub fn establish(url: &str) -> Result<SqliteConnection, DbError> {
 	SqliteConnection::establish(url)
 		.map_err(|error| DbError(diesel::result::Error::QueryBuilderError(Box::new(error))))
@@ -55,6 +79,10 @@ struct CacheState {
 	/// which is what makes a stale entry impossible.
 	generation: u64,
 	map: HashMap<PostId, PublicPost>,
+	/// The cached timeline id lists, by [`TimelineKey`]. Same generation rule:
+	/// cleared by every write, so the ids always belong to the world the
+	/// database holds.
+	timelines: HashMap<TimelineKey, Vec<PostId>>,
 }
 
 /// The process-wide cache of public post bodies.
@@ -87,6 +115,7 @@ impl Cache {
 			state: Mutex::new(CacheState {
 				generation: 0,
 				map: HashMap::new(),
+				timelines: HashMap::new(),
 			}),
 		}
 	}
@@ -119,6 +148,33 @@ impl Cache {
 		state.map.insert(pid, view);
 	}
 
+	fn get_timeline(&self, key: &TimelineKey) -> Option<Vec<PostId>> {
+		if !self.enabled {
+			return None;
+		}
+		match self.state.lock() {
+			Ok(state) => state.timelines.get(key).cloned(),
+			Err(_) => None,
+		}
+	}
+
+	/// Inserts the ids for `key` iff no write completed since `sampled`.
+	fn put_timeline(&self, sampled: u64, key: TimelineKey, ids: Vec<PostId>) {
+		if !self.enabled || ids.len() > CACHE_MAX_TIMELINE_IDS {
+			return;
+		}
+		let Ok(mut state) = self.state.lock() else {
+			return;
+		};
+		if state.generation != sampled {
+			return;
+		}
+		if state.timelines.len() >= CACHE_TIMELINE_CAPACITY {
+			state.timelines.clear();
+		}
+		state.timelines.insert(key, ids);
+	}
+
 	fn generation(&self) -> u64 {
 		if !self.enabled {
 			return 0;
@@ -136,6 +192,7 @@ impl Cache {
 		}
 		if let Ok(mut state) = self.state.lock() {
 			state.map.clear();
+			state.timelines.clear();
 			state.generation = state.generation.wrapping_add(1);
 		}
 	}
@@ -202,6 +259,16 @@ impl Db {
 		self.cache.put(sampled, pid, view);
 	}
 
+	/// The timeline ids cached for `key`, if any. Never touches the database.
+	pub fn cache_get_timeline(&self, key: &TimelineKey) -> Option<Vec<PostId>> {
+		self.cache.get_timeline(key)
+	}
+
+	/// Caches `ids` for `key`, unless a write completed since `sampled`.
+	pub fn cache_put_timeline(&self, sampled: u64, key: TimelineKey, ids: Vec<PostId>) {
+		self.cache.put_timeline(sampled, key, ids);
+	}
+
 	/// Drops every cached body. For tests and benchmarks that need the cold
 	/// path; production only ever drops the cache through [`Db::write`].
 	#[doc(hidden)]
@@ -241,7 +308,10 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
-	use super::{CACHE_CAPACITY, CACHE_MAX_REPLIES, Db};
+	use super::{
+		CACHE_CAPACITY, CACHE_MAX_REPLIES, CACHE_MAX_TIMELINE_IDS, CACHE_TIMELINE_CAPACITY, Db,
+		TimelineKey,
+	};
 	use crate::model::{DbError, PostId, PublicPost};
 
 	fn body(text: &str) -> PublicPost {
@@ -320,6 +390,79 @@ mod tests {
 			db.cache_get(PostId(CACHE_CAPACITY as i64)),
 			Some(body("cached"))
 		);
+	}
+
+	#[test]
+	fn a_timeline_put_before_any_write_is_visible() {
+		let db = Db::in_memory().expect("database");
+		let key = TimelineKey::Personal("u".to_owned(), 2);
+		assert_eq!(db.cache_get_timeline(&key), None);
+		let generation = db.cache_generation();
+		db.cache_put_timeline(generation, key.clone(), vec![PostId(1), PostId(2)]);
+		assert_eq!(
+			db.cache_get_timeline(&key),
+			Some(vec![PostId(1), PostId(2)])
+		);
+	}
+
+	#[test]
+	fn every_successful_write_drops_the_timelines() {
+		let db = Db::in_memory().expect("database");
+		let key = TimelineKey::Anonymous(3);
+		let generation = db.cache_generation();
+		db.cache_put_timeline(generation, key.clone(), vec![PostId(1)]);
+		db.write(|_| Ok(())).expect("write");
+		assert_eq!(db.cache_get_timeline(&key), None);
+	}
+
+	#[test]
+	fn a_timeline_put_sampled_before_a_write_is_discarded() {
+		let db = Db::in_memory().expect("database");
+		let key = TimelineKey::Global("u".to_owned(), 1);
+		let stale = db.cache_generation();
+		db.write(|_| Ok(())).expect("write");
+		db.cache_put_timeline(stale, key.clone(), vec![PostId(1)]);
+		assert_eq!(db.cache_get_timeline(&key), None);
+	}
+
+	#[test]
+	fn a_too_long_timeline_is_not_cached() {
+		let db = Db::in_memory().expect("database");
+		let key = TimelineKey::Anonymous(CACHE_MAX_TIMELINE_IDS as u32 + 1);
+		let ids = (0..=CACHE_MAX_TIMELINE_IDS as i64).map(PostId).collect();
+		let generation = db.cache_generation();
+		db.cache_put_timeline(generation, key.clone(), ids);
+		assert_eq!(db.cache_get_timeline(&key), None);
+	}
+
+	#[test]
+	fn the_timeline_capacity_is_bounded() {
+		let db = Db::in_memory().expect("database");
+		let generation = db.cache_generation();
+		for n in 0..CACHE_TIMELINE_CAPACITY as u32 {
+			db.cache_put_timeline(generation, TimelineKey::Anonymous(n), vec![PostId(1)]);
+		}
+		assert!(db.cache_get_timeline(&TimelineKey::Anonymous(0)).is_some());
+		db.cache_put_timeline(
+			generation,
+			TimelineKey::Anonymous(CACHE_TIMELINE_CAPACITY as u32),
+			vec![PostId(2)],
+		);
+		// The map was dropped wholesale to stay inside its budget.
+		assert_eq!(db.cache_get_timeline(&TimelineKey::Anonymous(0)), None);
+		assert_eq!(
+			db.cache_get_timeline(&TimelineKey::Anonymous(CACHE_TIMELINE_CAPACITY as u32)),
+			Some(vec![PostId(2)])
+		);
+	}
+
+	#[test]
+	fn an_uncached_handle_never_keeps_a_timeline() {
+		let db = Db::in_memory_uncached().expect("database");
+		let key = TimelineKey::Anonymous(1);
+		let generation = db.cache_generation();
+		db.cache_put_timeline(generation, key.clone(), vec![PostId(1)]);
+		assert_eq!(db.cache_get_timeline(&key), None);
 	}
 
 	#[test]
