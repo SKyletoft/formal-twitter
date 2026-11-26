@@ -5,8 +5,8 @@
 - [x] T8a: Frontend redesign — layout, two timeline tabs, tweet cards, detail with replies.
   Merged `0dad6e1`.
 - [x] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. Merged `eec038b`.
-- [ ] C1: Cache commonly read public data (in-memory; total invalidation on every write; DB stays
-  the source of truth before serving).
+- [ ] C1: Cache commonly read public data. (C1a public tweet cache merged `c91d9d6`; C1b timeline
+  caches pending.)
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
   valid AND shrinkable generated world state. (Q1a infrastructure + time pilot merged `48514db`.)
 - [ ] B1: Database query batching without destroying worst-case latency.
@@ -18,16 +18,17 @@
   live smoke 44/44.
 - [x] Q1a: DONE/merged `48514db` (`057c42c` + reply-order fix `e57d2ac`). WorldState/Arbitrary/
   shrink/materialiser + `engine_time` pilot; 137 tests; 0 discards.
-- [ ] C1a: implementation `4b1b4a9` reviewed (cache behaviour correct; warm anon 46 ns, render
-  burst 3.4×). Test-strengthening fix (assert real hits/invalidations) running in `wt-c1a`.
-- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, bound `LIMIT`); after C1a merge.
+- [x] C1a: DONE/merged `c91d9d6` (`4b1b4a9` + strengthened test `e5c2857`). Warm anon get-tweet
+  46 ns; render burst 3.4×; dead-cache/invalidation mutations now fail the property.
+- [ ] B1/T6e: query fusion (`read_post`, reply `publish`, like/unlike, bound `LIMIT`) running in
+  `wt-b1` (branch `task/b1-query-fusion`).
+- [ ] Q1b: two migrations running from `0070593`: auth+social (`wt-q1b1`) and posts+timeline
+  (`wt-q1b2`).
 - [ ] C1b: timeline id caches; after B1.
-- [ ] Q1b: migrate `engine_auth/posts/social/timeline` to `WorldState`; after C1a merge (can run
-  parallel with B1).
 
 ## State
-- Branch `maki-loop-3`, HEAD `48514db`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a.
-- 137 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
+- Branch `maki-loop-3`, HEAD `c91d9d6`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, C1a.
+- 155 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
