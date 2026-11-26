@@ -5,3 +5,24 @@ allow = [
 	"git worktree *",
 	"git merge *"
 ]
+
+[edit]
+deny = [
+    "/home/u3836/git/ft-wt-t1/backend/Cargo.toml",
+    "/home/u3836/git/ft-wt-t1/backend/src/db.rs",
+    "/home/u3836/git/ft-wt-t5/frontend/app.js",
+    "/home/u3836/git/ft-wt-t5/frontend/index.html",
+]
+
+[write]
+allow = [
+    "/home/u3836/git/formal-twitter.git/**"
+]
+deny = [
+    "*",
+]
+
+[multiedit]
+deny = [
+    "/home/u3836/git/ft-wt-t5/frontend/app.js",
+]
