@@ -6,14 +6,19 @@
 
 use std::io::Cursor;
 
-use include_dir::{Dir, include_dir};
 use rocket::get;
 use rocket::http::Header;
 use rocket::request::Request;
 use rocket::response::{Responder, Response, Result as ResponseResult};
 
-/// The frontend, embedded at compile time.
-static FRONTEND: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../frontend");
+/// The page, embedded at compile time.
+static INDEX: &[u8] = include_bytes!("../../frontend/index.html");
+
+/// The page's script, embedded at compile time.
+static APP_JS: &[u8] = include_bytes!("../../frontend/app.js");
+
+/// The page's stylesheet, embedded at compile time.
+static STYLE_CSS: &[u8] = include_bytes!("../../frontend/style.css");
 
 /// One of the served files.
 pub struct Asset {
@@ -36,15 +41,14 @@ impl<'r> Responder<'r, 'static> for Asset {
 
 /// The asset called `name`, if it is one of the served three.
 fn asset(name: &str) -> Option<Asset> {
-	let content_type = match name {
-		"index.html" => "text/html",
-		"app.js" => "text/javascript",
-		"style.css" => "text/css",
+	let (contents, content_type) = match name {
+		"index.html" => (INDEX, "text/html"),
+		"app.js" => (APP_JS, "text/javascript"),
+		"style.css" => (STYLE_CSS, "text/css"),
 		_ => return None,
 	};
-	let file = FRONTEND.get_file(name)?;
 	Some(Asset {
-		contents: file.contents(),
+		contents,
 		content_type,
 	})
 }

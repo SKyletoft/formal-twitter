@@ -4,43 +4,48 @@
 //! so it is a non-empty sequence of lines, each terminated by `\r\n`, with the
 //! last line terminated like the others. Numbers are `show`n `Nat`s, i.e.
 //! decimal digits only.
+//!
+//! Parsing never collects the whole body: the `\r\n`-separated fields are read
+//! lazily, and only the `n` a body is allowed to have are ever touched.
 
-/// Splits a request body into its lines.
+/// The exactly-`N` fields of `body`, in order.
 ///
-/// The body must end with a trailing `\r\n` and every line must be free of
+/// The body must end with a trailing `\r\n` and every field must be free of
 /// `\r` and `\n`, so a missing terminator, a bare `\n` separator or a stray
-/// `\r` all fail to parse.
-pub fn lines(body: &str) -> Option<Vec<&str>> {
+/// `\r` all fail to parse. At most `N + 1` fields are ever read: the `N` kept
+/// and one to detect a body that carries more fields than the action takes.
+fn fields<const N: usize>(body: &str) -> Option<[&str; N]> {
 	let rest = body.strip_suffix("\r\n")?;
-	let lines: Vec<&str> = rest.split("\r\n").collect();
-	if lines.iter().any(|line| line.contains(['\r', '\n'])) {
+	let mut fields = rest.split("\r\n");
+	let mut out = [""; N];
+	for field in &mut out {
+		let next = fields.next()?;
+		if next.contains(['\r', '\n']) {
+			return None;
+		}
+		*field = next;
+	}
+	if fields.next().is_some() {
 		return None;
 	}
-	Some(lines)
+	Some(out)
 }
 
-/// A body of exactly one line.
+/// A body of exactly one field.
 pub fn one(body: &str) -> Option<&str> {
-	match lines(body)?.as_slice() {
-		&[line] => Some(line),
-		_ => None,
-	}
+	Some(fields::<1>(body)?[0])
 }
 
-/// A body of exactly two lines.
+/// A body of exactly two fields.
 pub fn two(body: &str) -> Option<(&str, &str)> {
-	match lines(body)?.as_slice() {
-		&[first, second] => Some((first, second)),
-		_ => None,
-	}
+	let [first, second] = fields::<2>(body)?;
+	Some((first, second))
 }
 
-/// A body of exactly three lines.
+/// A body of exactly three fields.
 pub fn three(body: &str) -> Option<(&str, &str, &str)> {
-	match lines(body)?.as_slice() {
-		&[first, second, third] => Some((first, second, third)),
-		_ => None,
-	}
+	let [first, second, third] = fields::<3>(body)?;
+	Some((first, second, third))
 }
 
 /// True when `field` is a number as `to-request` writes it: one or more ASCII
@@ -52,8 +57,9 @@ fn is_digits(field: &str) -> bool {
 /// A `TweetId` or `LoginToken` as `to-request` writes it: a `Nat` that fits in
 /// a non-negative `i64` (`new-pid` and `new-sid` draw from `1..`).
 ///
-/// Empty, signed, padded or 64-bit-overflowing numerals fail, since none of
-/// them is the `show` of a token or id this implementation can represent.
+/// Empty, signed or 64-bit-overflowing numerals fail, since none of them is the
+/// `show` of a token or id this implementation can represent. Leading zeros are
+/// accepted: `"007"` denotes the `Nat` 7, exactly as `show 7` would be read back.
 pub fn natural(field: &str) -> Option<i64> {
 	if !is_digits(field) {
 		return None;

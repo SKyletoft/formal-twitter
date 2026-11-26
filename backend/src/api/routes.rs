@@ -117,41 +117,37 @@ pub fn unfollow_user(db: &State<Db>, body: &str) -> ApiResponse {
 /// `get-tweet`: `read-post (just sid)` or `read-post nothing` (Interface.agda:354-355).
 #[post("/get-tweet", data = "<body>")]
 pub fn get_tweet(db: &State<Db>, body: &str) -> ApiResponse {
-	let Some(lines) = parse::lines(body) else {
+	if let Some((token, target)) = parse::two(body) {
+		let (Some(sid), Some(pid)) = (session(token), post(target)) else {
+			return bad_request();
+		};
+		return posts::read_post(db, Some(sid), pid).into();
+	}
+	let Some(target) = parse::one(body) else {
 		return bad_request();
 	};
-	let (sid, pid) = match *lines.as_slice() {
-		[target] => match post(target) {
-			Some(pid) => (None, pid),
-			None => return bad_request(),
-		},
-		[token, target] => match (session(token), post(target)) {
-			(Some(sid), Some(pid)) => (Some(sid), pid),
-			_ => return bad_request(),
-		},
-		_ => return bad_request(),
+	let Some(pid) = post(target) else {
+		return bad_request();
 	};
-	posts::read_post(db, sid, pid).into()
+	posts::read_post(db, None, pid).into()
 }
 
 /// `global-timeline`: `read-global-timeline msid n` (Interface.agda:356).
 #[post("/global-timeline", data = "<body>")]
 pub fn global_timeline(db: &State<Db>, body: &str) -> ApiResponse {
-	let Some(lines) = parse::lines(body) else {
+	if let Some((token, length)) = parse::two(body) {
+		let (Some(sid), Some(len)) = (session(token), parse::length(length)) else {
+			return bad_request();
+		};
+		return timeline::global_timeline(db, Some(sid), len).into();
+	}
+	let Some(length) = parse::one(body) else {
 		return bad_request();
 	};
-	let (sid, len) = match *lines.as_slice() {
-		[length] => match parse::length(length) {
-			Some(len) => (None, len),
-			None => return bad_request(),
-		},
-		[token, length] => match (session(token), parse::length(length)) {
-			(Some(sid), Some(len)) => (Some(sid), len),
-			_ => return bad_request(),
-		},
-		_ => return bad_request(),
+	let Some(len) = parse::length(length) else {
+		return bad_request();
 	};
-	timeline::global_timeline(db, sid, len).into()
+	timeline::global_timeline(db, None, len).into()
 }
 
 /// `private-timeline`: `read-personal-timeline sid n` (Interface.agda:356).

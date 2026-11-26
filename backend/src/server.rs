@@ -48,34 +48,39 @@ impl Fairing for DateHeader {
 /// The server over `db`: the API under `/api`, the frontend at `/`.
 pub fn build(db: Db) -> Rocket<Build> {
 	let limits = Limits::default().limit("string", STRING_LIMIT.mebibytes());
-	rocket::custom(Config::figment().merge(("limits", limits)))
-		.manage(db)
-		.attach(DateHeader)
-		.mount(
-			"/api",
-			routes![
-				routes::post_tweet,
-				routes::post_reply,
-				routes::delete_tweet,
-				routes::like_tweet,
-				routes::unlike_tweet,
-				routes::follow_user,
-				routes::unfollow_user,
-				routes::get_tweet,
-				routes::global_timeline,
-				routes::private_timeline,
-				routes::login,
-				routes::logout,
-				routes::signup,
-			],
-		)
-		.mount(
-			"/",
-			routes![
-				assets::index,
-				assets::index_page,
-				assets::script,
-				assets::stylesheet,
-			],
-		)
+	rocket::custom(
+		Config::figment()
+			.merge(("ident", false))
+			.merge(("log_level", "critical"))
+			.merge(("limits", limits)),
+	)
+	.manage(db)
+	.attach(DateHeader)
+	.mount(
+		"/api",
+		routes![
+			routes::post_tweet,
+			routes::post_reply,
+			routes::delete_tweet,
+			routes::like_tweet,
+			routes::unlike_tweet,
+			routes::follow_user,
+			routes::unfollow_user,
+			routes::get_tweet,
+			routes::global_timeline,
+			routes::private_timeline,
+			routes::login,
+			routes::logout,
+			routes::signup,
+		],
+	)
+	.mount(
+		"/",
+		routes![
+			assets::index,
+			assets::index_page,
+			assets::script,
+			assets::stylesheet,
+		],
+	)
 }
