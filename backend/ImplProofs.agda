@@ -1767,10 +1767,14 @@ read-denied-private before {pst = pst} vs peq vis nf =
 --------------------------------------------------------------------------------
 -- P10: read-post anonymously (Twitter.agda:550-554)
 --
--- There is deliberately no theorem for an anonymous read of an absent,
--- `followers-only` or deleted post: `Step` has no rule for those commands, so
--- the engine's `denied` answer is a documented functional choice, tested in
--- `tests/engine_posts.rs` but not proved here.
+-- A readable post is `read-post-anonymously`. An unreadable one is
+-- `failed-access` (Twitter.agda:464-468) applied VACUOUSLY:
+-- `extract-sid (read-post nothing pid) = nothing` (Twitter.agda:196), and a
+-- `nothing` can never be a `just sid`, so the premise of `failed-access`
+-- ("every non-`nothing` extracted session is invalid") holds trivially. Hence
+-- an anonymous read of an absent, `followers-only` or deleted post is
+-- `expired` in EVERY world -- not `denied`. Tested by
+-- `anonymous_reads_of_unreadable_posts_expire` in `tests/engine_posts.rs`.
 --------------------------------------------------------------------------------
 
 read-anonymous :
@@ -1780,6 +1784,13 @@ read-anonymous :
   Post.status pst ≡ live →
   Step before (read-post nothing pid) before (return-post pst)
 read-anonymous before peq vis st = read-post-anonymously peq vis st
+
+-- The unreadable case: `failed-access` fires vacuously, whatever the world.
+read-anonymous-expired :
+  ∀ (before : World) (pid : PostId) →
+  Step before (read-post nothing pid) before expired
+read-anonymous-expired before pid =
+  failed-access (λ {sid} eq → ⊥-elim (nothing≢just eq))
 
 --------------------------------------------------------------------------------
 -- P11: failed-access for the post commands (Twitter.agda:464-468)

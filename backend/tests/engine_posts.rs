@@ -17,11 +17,14 @@
 //! State is seeded through `formal_twitter::store`, never through the engine,
 //! so the snapshot deltas are attributable to the command under test alone.
 //!
-//! DOCUMENTED DEVIATION: `read-post nothing` only has a `Step` for a public,
-//! live post (`read-post-anonymously`, Twitter.agda:550-554). The spec never
-//! says what an anonymous read of an absent, `followers-only` or deleted post
-//! answers, so P9's negative cases are functional tests only: they pin the
-//! engine to `Denied` and have no Agda theorem.
+//! `read-post nothing` is also covered on the failing side, and not by a
+//! "deviation": `extract-sid (read-post msid _) = msid` (Twitter.agda:196) is
+//! `nothing` here, so the premise of `failed-access` (Twitter.agda:464-468) --
+//! "for every `sid`, `extract-sid cmd ≡ just sid` implies no valid session" --
+//! is VACUOUS for this command, since `nothing ≢ just sid`. Hence
+//! `Step before (read-post nothing pid) before expired` is derivable in every
+//! world, and an anonymous read of an absent, `followers-only` or deleted post
+//! answers `Expired` (proved as `read-anonymous-expired`), not `Denied`.
 
 use diesel::QueryableByName;
 use diesel::RunQueryDsl;
@@ -432,6 +435,8 @@ fn reply_to_public_parent_creates_reply(name: Name, other: Name, body: Body) -> 
 	let order_before = newest_first(&db);
 
 	let pid = created(publish(&db, SID, &body.0, Some(PARENT)).expect("publish"));
+	// `successful-reply` requires a fresh post (Twitter.agda:400-422: `pid ≢ ppid`).
+	assert_ne!(pid, PARENT, "a reply never reuses its parent's id");
 
 	// `new-reply` of an `everyone` parent: the account's default visibility.
 	let post = post_of(&db, pid).expect("new reply is stored");
@@ -503,6 +508,8 @@ fn reply_to_followed_private_parent_is_private(name: Name, other: Name, body: Bo
 	let order_before = newest_first(&db);
 
 	let pid = created(publish(&db, SID, &body.0, Some(PARENT)).expect("publish"));
+	// `successful-reply` requires a fresh post (Twitter.agda:400-422: `pid ≢ ppid`).
+	assert_ne!(pid, PARENT, "a reply never reuses its parent's id");
 
 	let post = post_of(&db, pid).expect("new reply is stored");
 	assert_eq!(post.author, name.0);
@@ -929,9 +936,10 @@ fn read_absent_post_is_denied(name: Name, other: Name) -> TestResult {
 // ---------------------------------------------------------------------------
 // P9: read-post anonymously -- `read-post-anonymously` (Twitter.agda:550-554)
 //
-// DOCUMENTED DEVIATION: only the public, live case has a `Step`. The negative
-// cases below pin the engine to `denied` but have no Agda theorem, because the
-// spec says nothing about them.
+// The readable case is `read-post-anonymously`; the unreadable cases are
+// `failed-access` (Twitter.agda:464-468), whose premise is vacuous because
+// `extract-sid (read-post nothing pid) = nothing` (Twitter.agda:196). Agda:
+// `read-anonymous` and `read-anonymous-expired`.
 // ---------------------------------------------------------------------------
 
 /// `read-post-anonymously`: a public live post is returned with its author,
@@ -962,10 +970,13 @@ fn read_public_post_anonymously(name: Name, other: Name, pad: Pad) -> TestResult
 	TestResult::passed()
 }
 
-/// Anonymous reads of an absent, `followers-only` or deleted post are `denied`
-/// and change nothing. Functional only -- see the deviation note above.
+/// Anonymous reads of an absent, `followers-only` or deleted post are
+/// `Expired` and change nothing: `extract-sid (read-post nothing pid) = nothing`
+/// (Twitter.agda:196), so `failed-access` (Twitter.agda:464-468) applies
+/// vacuously and `Step before (read-post nothing pid) before expired` holds
+/// (Agda: `read-anonymous-expired`).
 #[test]
-fn anonymous_reads_of_unreadable_posts_are_denied() {
+fn anonymous_reads_of_unreadable_posts_expire() {
 	let db = database();
 	seed_account(&db, "ada");
 	seed_post(&db, PARENT, "ada", "secret", Visibility::FollowersOnly);
@@ -976,14 +987,14 @@ fn anonymous_reads_of_unreadable_posts_are_denied() {
 	for pid in [ABSENT, PARENT, STRANGER] {
 		assert_eq!(
 			read_post(&db, None, pid).expect("read-post"),
-			EngineResult::Denied,
+			EngineResult::Expired,
 			"anonymous read of {pid:?}"
 		);
 	}
 	assert_eq!(
 		world(&db),
 		before,
-		"a denied read must not change the world"
+		"an expired read must not change the world"
 	);
 }
 
@@ -1092,8 +1103,8 @@ fn replies_are_prepended_in_arrival_order() {
 	);
 }
 
-/// A deleted post still owns its id: a fresh publish gets a different one, and
-/// the tombstone keeps its parent and likes.
+/// A deleted post still owns its id: a fresh publish gets a different one, the
+/// tombstone keeps its status and likes, and unrelated replies are untouched.
 #[test]
 fn delete_keeps_the_tombstone() {
 	let db = database();
@@ -1101,6 +1112,7 @@ fn delete_keeps_the_tombstone() {
 	seed_session(&db, SID, "ada");
 	seed_post(&db, PARENT, "ada", "hello", Visibility::Everyone);
 	seed_post(&db, OWN, "ada", "mine", Visibility::Everyone);
+	seed_reply(&db, REPLY_1, "ada", "reply", Visibility::Everyone, PARENT);
 	seed_like(&db, OWN, "bob");
 
 	assert_eq!(delete(&db, SID, OWN).unwrap(), EngineResult::Success);
@@ -1108,5 +1120,9 @@ fn delete_keeps_the_tombstone() {
 	assert_ne!(fresh, OWN, "a tombstone still occupies its id");
 	assert_eq!(post_of(&db, OWN).unwrap().status, PostStatus::Deleted);
 	assert_eq!(like_count(&db, OWN), 1);
-	assert_eq!(replies_of(&db, PARENT), Vec::<PostId>::new());
+	assert_eq!(
+		replies_of(&db, PARENT),
+		vec![REPLY_1],
+		"a top-level publish adds no reply"
+	);
 }
