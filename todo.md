@@ -5,11 +5,11 @@
 - [x] T8a: Frontend redesign — layout, two timeline tabs, tweet cards, detail with replies.
   Merged `0dad6e1`.
 - [x] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. Merged `eec038b`.
-- [ ] C1: Cache commonly read public data. (C1a public tweet cache merged `c91d9d6`; C1b timeline
-  caches pending.)
+- [x] C1: Cache commonly read public data. Merged `c5b4447` (C1a public tweet cache `c91d9d6`;
+  C1b timeline id caches `860602c`).
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
-  valid AND shrinkable generated world state. (Q1a infra+time `48514db`; Q1b auth/social `4a9f6af`,
-  posts/timeline `d938c35`; Q1c cleanup pending.)
+  valid AND shrinkable generated world state. (Q1a `48514db`; Q1b auth/social `4a9f6af`, posts/
+  timeline `d938c35`; harness `946d164`; Q1c cleanup in progress.)
 - [x] B1: Database query batching/query fusion. Merged `1e69ed4`.
 
 ## In progress
@@ -27,12 +27,14 @@
   world tests (1-post/empty) and a temporary failing-property demo confirmed.
 - [x] B1/T6e: DONE/merged `1e69ed4` (`e8b3caa`). get-tweet 4→3 / 3→2, reply 5→3, like 3→2, bound
   `LIMIT`; 168 tests then; no worst-case regression.
-- [ ] C1b: timeline id caches running in `wt-c1b` (branch `task/c1b-timeline-cache`).
-- [ ] Q1c: cleanup (harness messages, duplicate test, bound-limit store test, bench labels) after C1b.
+- [x] C1b: DONE/merged `c5b4447` (`860602c`). Timeline warm: personal ~39×, anon ~500×, render
+  burst 5.5×; 205 tests; dead-cache/invalidation mutations fail the property.
+- [ ] Q1c: cleanup running in `wt-q1c` (harness message fidelity, duplicate/double assertions,
+  `personal_timeline_for` bound tests, cache docs/memory bound, bench labels).
 
 ## State
-- Branch `maki-loop-3`, HEAD `946d164`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, Q1-harness, C1a, B1.
-- All tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
+- Branch `maki-loop-3`, HEAD `c5b4447`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b, Q1a, Q1b, Q1-harness, C1a, B1, C1b.
+- 205 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
