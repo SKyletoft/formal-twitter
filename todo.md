@@ -14,9 +14,11 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T6: benchmark engine + HTTP, report hotspots, create perf tasks. Worktree `wt-t6`
-  (branch `task/t6-bench`, from f4d17b5). Benchmark harness may be committed for reproducibility.
-- [ ] Spec-change audit: confirm `spec/` unchanged and implementation still matches.
+- [ ] T6-perf-db (T6a+T6d+T6g): `PRAGMA synchronous=NORMAL`, fuse `active_user`+`get_account` in
+  `publish`, release `lto="thin"`. Worktree `wt-perf1` (branch `task/t6-perf-db`, from 81ceeba).
+- [ ] T6-perf-timeline (T6c): rewrite personal (and private-global) timeline queries; next after perf-db.
+- [x] T6 benchmarks: DONE (harness merged 81ceeba; commit 4468155).
+- [x] Spec-change audit: CLEAN (spec unchanged during implementation; all Commands/Actions/Results/Steps covered).
 - [ ] T4: DONE/merged f4d17b5 (tests 666b348/c8a256b/13ccdf6, impl 2497f7e, hardening f451d17).
   Verification + code review PASSED; `nix build` runs the test suite; `nix run` smoke green.
 - [ ] T4 plan: ACCEPTED with amendments (see "T4 plan"). Blocked on T2+T3 engine.
@@ -37,9 +39,9 @@
   absent/deleted/private-unfollowed.
 
 ## State as of 2026-11-26
-- `maki-loop-3` HEAD f4d17b5: T5, T2a, T2b, T3a, T3b, T4 all merged. Full engine + HTTP interface complete.
-- `wt-t6` at f4d17b5, branch `task/t6-bench` (benchmarks/perf).
-- `wt-t4` removed after merge (branch `task/t4-http` retained).
+- `maki-loop-3` HEAD 81ceeba: engine + HTTP complete + benchmark harness (T6).
+- `wt-perf1` at 81ceeba, branch `task/t6-perf-db` (T6a+T6d+T6g).
+- `wt-t6` removed after merge (branch `task/t6-bench` retained).
 
 
 ## Done (cont.)
@@ -65,7 +67,17 @@
 - [x] T3a: social. Merged 6a28a0d (tests/proofs 7f70c9e, impl 14b043f).
 - [x] T3b: timelines. Merged b00d15e (tests/proofs be49628, impl 8427c53).
 - [x] T4: HTTP interface. Merged f4d17b5 (tests 666b348/c8a256b/13ccdf6, impl 2497f7e, hardening f451d17).
-- [ ] T6: Benchmarks + performance hardening (create new tasks from results). IN PROGRESS.
+- [x] T6 benchmarks: harness merged 81ceeba. Results: writes ~1.8 ms dominated by fsync (in-memory
+  7-26 µs; empty txn 365 ns); reads get-tweet 32 µs, private global 16 µs, anon global 10 µs;
+  personal timeline 42.6 µs at 20k but 1.37 ms with sparse follows (100k: 3.51 ms); HTTP
+  signup 6.8 µs / post 26 µs / get 40 µs / personal-timeline 103 µs.
+- [ ] T6a (S, 20-50× writes): `PRAGMA synchronous=NORMAL` with WAL. IMPLEMENTING.
+- [ ] T6c (M-L, 10-20× personal timeline): per-author top-n via `idx_posts_author_seq` +
+  window function, identical result list. NEXT.
+- [ ] T6d (S): fold `active_user`+`get_account` into one query in `publish`. IMPLEMENTING.
+- [ ] T6g (S): release `lto="thin"`. IMPLEMENTING.
+- Deferred: T6b read connection pool (r2d2; `:memory:` tests would need shared-cache, medium risk),
+  T6e read_post query fusion, T6f body-path allocations, T6h partial index (small gains).
 
 ## Assumptions (recorded)
 - T2 was split into T2a (auth, the current uncommitted work) and T2b (post lifecycle); the
