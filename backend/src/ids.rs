@@ -8,6 +8,16 @@ use crate::model::{DbError, PostId, SessionId};
 /// Bounded number of random candidates tried before giving up.
 const MAX_ATTEMPTS: usize = 100;
 
+/// Largest id the API may write into a bare JSON number: 2^53 - 1.
+///
+/// `show-tweets` (Interface.agda:219-222) writes timeline and reply ids as
+/// unquoted JSON numbers. JSON numbers above 2^53 are not exactly
+/// representable by JavaScript clients (`JSON.parse` silently rounds them), so
+/// such an id could not be round-tripped by the frontend. `CreateNew` only
+/// asks for a *fresh* id, never for the whole `Nat` range, so drawing from the
+/// exactly representable range costs nothing.
+const MAX_SAFE_ID: i64 = (1 << 53) - 1;
+
 #[derive(QueryableByName)]
 struct ExistsRow {
 	#[diesel(sql_type = Integer)]
@@ -29,7 +39,7 @@ fn id_in_use(
 fn allocate(c: &mut SqliteConnection, table: &'static str) -> Result<i64, DbError> {
 	let mut rng = rand::rng();
 	for _ in 0..MAX_ATTEMPTS {
-		let candidate = rng.random_range(1..=i64::MAX);
+		let candidate = rng.random_range(1..=MAX_SAFE_ID);
 		if !id_in_use(c, table, candidate)? {
 			return Ok(candidate);
 		}

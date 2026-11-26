@@ -17,6 +17,8 @@
 					rust-analyzer
 					sqlite
 					custom-agda
+					# Dev-only: `node --check frontend/app.js` in tests.
+					nodejs
 				];
 				custom-agda = pkgs.agda.withPackages (p: with p; [
 					standard-library
