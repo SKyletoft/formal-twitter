@@ -14,10 +14,11 @@
 - [x] Baseline `cargo check` passes (hello world, rocket+diesel resolved).
 
 ## In progress
-- [ ] T4: implementation green on `wt-t4` (HEAD 13ccdf6); verification gate PASSED (116 tests ×3,
-  Agda --safe, clippy/fmt, `nix build` with checks, `nix run` smoke). Code-review gate running.
-- [ ] Next after T4 merge: T6 benchmarks/perf + spec-change audit.
-- [ ] T3b: DONE/merged b00d15e (tests/proofs be49628, impl 8427c53).
+- [ ] T6: benchmark engine + HTTP, report hotspots, create perf tasks. Worktree `wt-t6`
+  (branch `task/t6-bench`, from f4d17b5). Benchmark harness may be committed for reproducibility.
+- [ ] Spec-change audit: confirm `spec/` unchanged and implementation still matches.
+- [ ] T4: DONE/merged f4d17b5 (tests 666b348/c8a256b/13ccdf6, impl 2497f7e, hardening f451d17).
+  Verification + code review PASSED; `nix build` runs the test suite; `nix run` smoke green.
 - [ ] T4 plan: ACCEPTED with amendments (see "T4 plan"). Blocked on T2+T3 engine.
 
 ## T2b plan (accepted)
@@ -36,9 +37,9 @@
   absent/deleted/private-unfollowed.
 
 ## State as of 2026-11-26
-- `maki-loop-3` HEAD b00d15e: T5, T2a, T2b, T3a, T3b all merged; engine complete.
-- `wt-t4` at 13ccdf6, branch `task/t4-http` (implementation green; code review in progress).
-- `wt-t3b` removed after merge (branch `task/t3b-engine-timelines` retained).
+- `maki-loop-3` HEAD f4d17b5: T5, T2a, T2b, T3a, T3b, T4 all merged. Full engine + HTTP interface complete.
+- `wt-t6` at f4d17b5, branch `task/t6-bench` (benchmarks/perf).
+- `wt-t4` removed after merge (branch `task/t4-http` retained).
 
 
 ## Done (cont.)
@@ -63,14 +64,8 @@
 - [x] T2b: post lifecycle. Merged db56bde (tests/proofs 60fa369/6cff937, impl 31578c7).
 - [x] T3a: social. Merged 6a28a0d (tests/proofs 7f70c9e, impl 14b043f).
 - [x] T3b: timelines. Merged b00d15e (tests/proofs be49628, impl 8427c53).
-- [ ] T4: HTTP interface (routes/parse/respond/server/main, embedded assets, flake, integration tests). IN PROGRESS.
-- [ ] T3b: `engine/timeline.rs` (personal/private-global/anonymous-global) + P7-P9.
-- [ ] T3-impl + review.
-- [ ] T4a: parse+respond+routes+server+main (Rocket).
-- [ ] T4b: embedded assets (3-file allowlist) + flake.
-- [ ] T4c: integration tests.
-- [ ] T5: merged 28b5937.
-- [ ] T6: Benchmarks + performance hardening.
+- [x] T4: HTTP interface. Merged f4d17b5 (tests 666b348/c8a256b/13ccdf6, impl 2497f7e, hardening f451d17).
+- [ ] T6: Benchmarks + performance hardening (create new tasks from results). IN PROGRESS.
 
 ## Assumptions (recorded)
 - T2 was split into T2a (auth, the current uncommitted work) and T2b (post lifecycle); the
@@ -87,6 +82,10 @@
 - T3: `store::newest_first(n)` applies `LIMIT` before visibility filtering; never use it to
   build a timeline (spec filters then takes). Use the dedicated timeline queries.
 - T2b/T3: `newest-first` and reply lists include deleted posts; reply lists are newest-first.
+- T4 implementation assumptions: leading-zero numerals accepted (`"007"` = 7); ids > `i64::MAX`
+  yield 400 `bad_request`; non-UTF-8 / over-16-MiB bodies get Rocket's default 400 (unspecified);
+  `nix build` keeps `doCheck` so the build runs the full test suite; responses carry no `Server`
+  header and Rocket logs only at critical level.
 - Commit trailer on every commit: `Co-authored-by: maki@deepseek-v4.1-flash <maki@deepseek-v4.1-flash>`.
 
 ## T4 plan (accepted, amendments)
