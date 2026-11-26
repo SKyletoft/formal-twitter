@@ -33,6 +33,7 @@
 use crate::db::Db;
 use crate::engine::result::EngineResult;
 use crate::model::{DbError, SessionId};
+use crate::store;
 
 /// Spec `read-personal-timeline sid n` (Twitter.agda:557-566),
 /// `get-personal-timeline`.
@@ -44,15 +45,21 @@ use crate::model::{DbError, SessionId};
 /// entries. An inactive session answers `Expired` (`failed-access`,
 /// Twitter.agda:464-468).
 pub fn personal_timeline(db: &Db, session_id: SessionId, n: u32) -> Result<EngineResult, DbError> {
-	let _ = (db, session_id, n);
-	todo!("T3b skeleton")
+	db.read(|c| {
+		let Some(username) = store::active_user(c, session_id)? else {
+			return Ok(EngineResult::Expired);
+		};
+		Ok(EngineResult::ReturnedTimeline(
+			store::personal_timeline_for(c, &username, n)?,
+		))
+	})
 }
 
 /// Spec `read-global-timeline msid n` (Twitter.agda:568-585),
 /// `get-private-global-timeline` / `get-public-global-timeline`.
 ///
 /// With a session, returns the `n` newest posts the user can read
-/// (`CanReadPost`, Twitter.agda:158-179): `live` and either `everyone`, or
+/// (`CanReadPost`, Twitter.agda:168-188): `live` and either `everyone`, or
 /// `followers-only` and followed by the session's user. With `None` it returns
 /// the `n` newest `is-post-public` posts (Twitter.agda:342-357): `live` and
 /// `everyone`, whatever the follow table says. Both are in
@@ -63,6 +70,17 @@ pub fn global_timeline(
 	session_id: Option<SessionId>,
 	n: u32,
 ) -> Result<EngineResult, DbError> {
-	let _ = (db, session_id, n);
-	todo!("T3b skeleton")
+	db.read(|c| match session_id {
+		Some(sid) => {
+			let Some(username) = store::active_user(c, sid)? else {
+				return Ok(EngineResult::Expired);
+			};
+			Ok(EngineResult::ReturnedTimeline(store::global_timeline_for(
+				c, &username, n,
+			)?))
+		}
+		None => Ok(EngineResult::ReturnedTimeline(store::public_timeline(
+			c, n,
+		)?)),
+	})
 }
