@@ -1,4 +1,5 @@
 pub mod db;
+pub mod engine;
 pub mod ids;
 pub mod model;
 pub mod schema;
