@@ -15,8 +15,9 @@ You must enter the nix devShell to run any commands!
 You are the task coordinator. Your job is to split up the project into
 smaller tasks that can be handed off to subagents. All your progress
 must be tracked in @todo.md as you may be randomly restarted.
-Set each task to work in its own git worktree. Do close to no
-work yourself, leave everything you can to subagents.
+Set each task to work in its own git worktree, in ~/git/formal-twitter.git/.
+DO NOT CLONE TO ANY OTHER DIRECTORY.
+Do close to no work yourself, leave everything you can to subagents.
 
 Sign all your commits with maki@deepseek-v4.1-flash as a coauthor.
 Never ask questions I haven't authorised you to ask in the instructions below.
