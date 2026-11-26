@@ -4,7 +4,7 @@
 - [x] T7: Send a `time-passes` event every couple of minutes. Merged `8d83761`.
 - [x] T8a: Frontend redesign — layout, two timeline tabs, tweet cards, detail with replies.
   Merged `0dad6e1`.
-- [ ] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. In progress.
+- [x] T8b: Frontend actions — like/unlike, follow/unfollow, post/reply/delete. Merged `eec038b`.
 - [ ] C1: Cache commonly read public data (in-memory; total invalidation on every write; DB stays
   the source of truth before serving).
 - [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
@@ -14,18 +14,17 @@
 ## In progress
 - [x] T8a: DONE/merged `0dad6e1` (`fbc3220` + JSON-safe-id fix `c9e0aca`). Post-merge gate: 136
   tests, Agda, lint, `nix build`, HTTP + timer smokes all green.
-- [ ] T8b: implementation running in `wt-t8b` (branch `task/t8b-frontend-actions`).
-- [ ] C1a: plan ACCEPTED. Public-data cache in `Db` (public tweet views + anonymous global timeline),
-  total invalidation at the end of every `Db::write`, cache-vs-DB property tests, no new Agda proof
-  (the cache introduces no spec `Step`). NEXT after T8b.
+- [x] T8b: DONE/merged `eec038b` (`4405ef3` + CSS/UX fix `53c2a6d`). 136 tests, DOM stub 73/73,
+  live smoke 44/44.
+- [ ] C1a: implementation `4b1b4a9` reviewed (cache behaviour correct; warm anon 46 ns, render
+  burst 3.4×). Test-strengthening fix (assert real hits/invalidations) running in `wt-c1a`.
+- [ ] Q1a: implementation `057c42c`; reply-order blocker fix (seq-desc alignment) running in `wt-q1a`.
 - [ ] B1/T6e: query fusion (`read_post`, reply `publish`, bound `LIMIT`); after C1a.
 - [ ] C1b: timeline id caches; after B1.
-- [ ] Q1a/Q1b/Q1c: `WorldState` generator/shrinker/materialiser + pilot, then migrate all engine
-  suites. One `Db` per `#[test]`, reset per case; no DB construction inside properties. Q1a can run
-  in parallel with C1a (src vs tests); Q1b after.
+- [ ] Q1b: migrate remaining engine suites to `WorldState` (after Q1a; can run parallel with B1).
 
 ## State
-- Branch `maki-loop-3`, HEAD `0dad6e1`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a.
+- Branch `maki-loop-3`, HEAD `eec038b`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7, T8a, T8b.
 - 136 tests green; `agda --safe` clean; `nix build` (checks) + `nix run` smoke green; T7 timer verified.
 
 ## Working rules (from AGENTS.md)
