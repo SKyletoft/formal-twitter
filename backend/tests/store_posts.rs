@@ -5,8 +5,11 @@
 //! and Agda proofs. The spec-level behaviour they support is property tested
 //! in `tests/engine_posts.rs`.
 
+use diesel::RunQueryDsl;
+use diesel::sql_types::Text;
+
 use formal_twitter::db::Db;
-use formal_twitter::model::{Post, PostId, PostStatus, SessionId, Visibility};
+use formal_twitter::model::{DbError, Post, PostId, PostStatus, SessionId, Visibility};
 use formal_twitter::store;
 
 const PASSWORD: &str = "secret";
@@ -104,6 +107,87 @@ fn active_user_is_none_for_revoked_unknown_and_accountless_sessions() {
 	assert_eq!(active_user(&db, REVOKED), None);
 	assert_eq!(active_user(&db, UNUSED), None);
 	assert_eq!(active_user(&db, SessionId(103)), None);
+}
+
+// ---------------------------------------------------------------------------
+// active_account
+// ---------------------------------------------------------------------------
+
+fn active_account(db: &Db, sid: SessionId) -> Option<(String, Visibility)> {
+	db.read(|c| store::active_account(c, sid))
+		.expect("active account")
+}
+
+/// `create_account` only ever makes `everyone` accounts, so a
+/// `followers-only` one is set directly.
+fn set_default_visibility(db: &Db, name: &str, vis: Visibility) {
+	let text = match vis {
+		Visibility::Everyone => "everyone",
+		Visibility::FollowersOnly => "followers-only",
+	};
+	db.write(|c| {
+		diesel::sql_query("UPDATE accounts SET default_visibility = ? WHERE username = ?")
+			.bind::<Text, _>(text)
+			.bind::<Text, _>(name)
+			.execute(c)
+			.map(|_| ())
+			.map_err(DbError)
+	})
+	.expect("set default visibility");
+}
+
+#[test]
+fn active_account_reports_the_active_sessions_username_and_visibility() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	assert_eq!(
+		active_account(&db, SID),
+		Some(("ada".to_string(), Visibility::Everyone))
+	);
+
+	set_default_visibility(&db, "ada", Visibility::FollowersOnly);
+	assert_eq!(
+		active_account(&db, SID),
+		Some(("ada".to_string(), Visibility::FollowersOnly)),
+		"the account's current default-visibility, not a copy taken at login"
+	);
+}
+
+#[test]
+fn active_account_is_none_for_revoked_unknown_and_accountless_sessions() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	seed_session(&db, REVOKED, "ada");
+	db.write(|c| store::revoke_session(c, REVOKED)).unwrap();
+	seed_session(&db, SessionId(103), "ghost");
+
+	assert_eq!(
+		active_account(&db, SID),
+		Some(("ada".to_string(), Visibility::Everyone))
+	);
+	assert_eq!(active_account(&db, REVOKED), None);
+	assert_eq!(active_account(&db, UNUSED), None);
+	assert_eq!(active_account(&db, SessionId(103)), None);
+}
+
+#[test]
+fn active_account_agrees_with_active_user() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_session(&db, SID, "ada");
+	seed_session(&db, REVOKED, "bob");
+	db.write(|c| store::revoke_session(c, REVOKED)).unwrap();
+	seed_session(&db, SessionId(103), "ghost");
+	for sid in [SID, REVOKED, UNUSED, SessionId(103)] {
+		assert_eq!(
+			active_account(&db, sid).map(|(name, _)| name),
+			active_user(&db, sid),
+			"the two helpers must agree on the user"
+		);
+	}
 }
 
 // ---------------------------------------------------------------------------

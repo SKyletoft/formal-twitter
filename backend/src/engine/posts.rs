@@ -36,18 +36,16 @@ pub fn publish(
 	parent: Option<PostId>,
 ) -> Result<EngineResult, DbError> {
 	db.write(|c| {
-		let Some(username) = store::active_user(c, session_id)? else {
-			return Ok(EngineResult::Expired);
-		};
-		// `ValidSession` carries the account (Twitter.agda:150-157), so this is
-		// an invariant; a missing row still must not panic.
-		let Some(account) = store::get_account(c, &username)? else {
+		// One query for both halves of the session's authority: `ValidSession`
+		// carries the account (Twitter.agda:150-157), so a missing account is
+		// impossible; the join keeps it total and answers `Expired` regardless.
+		let Some((username, default_visibility)) = store::active_account(c, session_id)? else {
 			return Ok(EngineResult::Expired);
 		};
 		match parent {
 			None => {
 				let pid = crate::ids::allocate_post_id(c)?;
-				store::insert_post(c, pid, &username, text, account.default_visibility)?;
+				store::insert_post(c, pid, &username, text, default_visibility)?;
 				Ok(EngineResult::CreatedPost(pid))
 			}
 			Some(ppid) => {
@@ -58,7 +56,7 @@ pub fn publish(
 					return Ok(EngineResult::Denied);
 				}
 				let visibility = match ppost.visibility {
-					Visibility::Everyone => account.default_visibility,
+					Visibility::Everyone => default_visibility,
 					Visibility::FollowersOnly => {
 						if !store::is_following(c, &username, &ppost.author)? {
 							return Ok(EngineResult::Denied);

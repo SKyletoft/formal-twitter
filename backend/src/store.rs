@@ -54,6 +54,14 @@ struct SessionRow {
 }
 
 #[derive(QueryableByName)]
+struct ActiveAccountRow {
+	#[diesel(sql_type = Text)]
+	username: String,
+	#[diesel(sql_type = Text)]
+	default_visibility: String,
+}
+
+#[derive(QueryableByName)]
 struct PostRow {
 	#[diesel(sql_type = BigInt)]
 	id: i64,
@@ -85,12 +93,6 @@ struct ExistsRow {
 struct CountRow {
 	#[diesel(sql_type = BigInt)]
 	count: i64,
-}
-
-#[derive(QueryableByName)]
-struct UsernameRow {
-	#[diesel(sql_type = Text)]
-	username: String,
 }
 
 #[derive(QueryableByName)]
@@ -190,19 +192,35 @@ pub fn get_session(c: &mut SqliteConnection, sid: SessionId) -> Result<SessionSt
 	}
 }
 
-/// The user behind `sid` iff the session is `active` and its account exists.
+/// The account behind `sid` iff the session is `active` and its account exists,
+/// read in one query: the username and the account's `default-visibility`.
 ///
 /// `only-valid-sessions` (Twitter.agda) makes the account existence an
 /// invariant; the join keeps the helper total regardless.
-pub fn active_user(c: &mut SqliteConnection, sid: SessionId) -> Result<Option<String>, DbError> {
-	let rows: Vec<UsernameRow> = diesel::sql_query(
-		"SELECT s.username AS username FROM sessions s \
-		JOIN accounts a ON a.username = s.username \
-		WHERE s.id = ? AND s.status = 'active'",
+pub fn active_account(
+	c: &mut SqliteConnection,
+	sid: SessionId,
+) -> Result<Option<(String, Visibility)>, DbError> {
+	let rows: Vec<ActiveAccountRow> = diesel::sql_query(
+		"SELECT accounts.username AS username, \
+		accounts.default_visibility AS default_visibility FROM sessions \
+		JOIN accounts ON accounts.username = sessions.username \
+		WHERE sessions.id = ? AND sessions.status = 'active'",
 	)
 	.bind::<BigInt, _>(sid.0)
 	.load(c)?;
-	Ok(rows.into_iter().next().map(|row| row.username))
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => Ok(Some((
+			row.username,
+			parse_visibility(&row.default_visibility)?,
+		))),
+	}
+}
+
+/// The user behind `sid` iff the session is `active` and its account exists.
+pub fn active_user(c: &mut SqliteConnection, sid: SessionId) -> Result<Option<String>, DbError> {
+	Ok(active_account(c, sid)?.map(|(username, _)| username))
 }
 
 pub fn revoke_session(c: &mut SqliteConnection, sid: SessionId) -> Result<(), DbError> {
