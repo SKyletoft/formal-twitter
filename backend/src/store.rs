@@ -503,14 +503,23 @@ pub fn personal_timeline_for(
 	user: &str,
 	n: u32,
 ) -> Result<Vec<PostId>, DbError> {
-	load_ids_for_user(
-		c,
-		format!(
-			"SELECT id FROM posts WHERE status = 'live' AND EXISTS(SELECT 1 FROM follows \
-			WHERE follows.follower = ? AND follows.followee = posts.author) \
-			ORDER BY seq DESC LIMIT {}",
-			i64::from(n)
-		),
-		user,
+	// Per-author top-n: a post in the global top n is necessarily within its
+	// author's top n, so `rn <= n` keeps exactly the posts the old scan kept.
+	// The join drives `idx_posts_author_seq` via the `follows` primary key,
+	// and the outer sort sees at most `n * (#followees)` rows.
+	let limit = i64::from(n);
+	let rows: Vec<IdRow> = diesel::sql_query(
+		"SELECT id FROM ( \
+			SELECT p.id AS id, p.seq AS seq, \
+			ROW_NUMBER() OVER (PARTITION BY p.author ORDER BY p.seq DESC) AS rn \
+			FROM posts p \
+			JOIN follows f ON f.followee = p.author AND f.follower = ? \
+			WHERE p.status = 'live' \
+		) WHERE rn <= ? ORDER BY seq DESC LIMIT ?",
 	)
+	.bind::<Text, _>(user)
+	.bind::<BigInt, _>(limit)
+	.bind::<BigInt, _>(limit)
+	.load(c)?;
+	Ok(rows.into_iter().map(|row| PostId(row.id)).collect())
 }
