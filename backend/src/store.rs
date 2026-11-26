@@ -113,6 +113,27 @@ struct PostViewRow {
 	likes: i64,
 }
 
+/// [`PostViewRow`] plus the `readable` flag of the fused read queries.
+#[derive(QueryableByName)]
+struct PostReadRow {
+	#[diesel(sql_type = BigInt)]
+	id: i64,
+	#[diesel(sql_type = Text)]
+	author: String,
+	#[diesel(sql_type = Text)]
+	text: String,
+	#[diesel(sql_type = Text)]
+	visibility: String,
+	#[diesel(sql_type = Text)]
+	status: String,
+	#[diesel(sql_type = Nullable<BigInt>)]
+	parent: Option<i64>,
+	#[diesel(sql_type = BigInt)]
+	likes: i64,
+	#[diesel(sql_type = Integer)]
+	readable: i32,
+}
+
 /// A post together with its like count, read in a single query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostView {
@@ -120,18 +141,72 @@ pub struct PostView {
 	pub likes: i64,
 }
 
-fn load_ids(c: &mut SqliteConnection, query: String) -> Result<Vec<PostId>, DbError> {
-	let rows: Vec<IdRow> = diesel::sql_query(query).load(c)?;
-	Ok(rows.into_iter().map(|row| PostId(row.id)).collect())
+/// A post's [`PostView`] together with whether the asking reader may read it.
+///
+/// `readable` is exactly the spec's `CanReadPost` (Twitter.agda:168-187) for
+/// the joined `follower`, respectively `is-post-public` (Twitter.agda:342-357)
+/// for the anonymous query; the view is returned either way so a caller can
+/// still tell an unreadable post from an absent one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadView {
+	pub view: PostView,
+	pub readable: bool,
 }
 
-fn load_ids_for_user(
-	c: &mut SqliteConnection,
-	query: String,
-	user: &str,
-) -> Result<Vec<PostId>, DbError> {
-	let rows: Vec<IdRow> = diesel::sql_query(query).bind::<Text, _>(user).load(c)?;
-	Ok(rows.into_iter().map(|row| PostId(row.id)).collect())
+#[derive(QueryableByName)]
+struct PublishRow {
+	#[diesel(sql_type = Text)]
+	username: String,
+	#[diesel(sql_type = Text)]
+	default_visibility: String,
+	#[diesel(sql_type = Nullable<Text>)]
+	parent_author: Option<String>,
+	#[diesel(sql_type = Nullable<Text>)]
+	parent_visibility: Option<String>,
+	#[diesel(sql_type = Nullable<Text>)]
+	parent_status: Option<String>,
+	#[diesel(sql_type = Integer)]
+	following: i32,
+}
+
+/// The parent of a reply, reduced to what `publish` needs to decide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentPost {
+	pub author: String,
+	pub visibility: Visibility,
+	pub status: PostStatus,
+	/// The session's user follows `author`.
+	pub following: bool,
+}
+
+/// Who is publishing and, when a parent was named, whether it exists and
+/// whether the publisher may read it -- all from one row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishContext {
+	pub username: String,
+	pub default_visibility: Visibility,
+	/// `None` both for a top-level post and for an absent parent post; the
+	/// caller knows which it asked for.
+	pub parent: Option<ParentPost>,
+}
+
+#[derive(QueryableByName)]
+struct LikeAccessRow {
+	#[diesel(sql_type = Text)]
+	username: String,
+	#[diesel(sql_type = Integer)]
+	readable: i32,
+}
+
+/// The user behind a session together with whether that user may read a post.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LikeAccess {
+	pub username: String,
+	pub readable: bool,
+}
+
+fn ids(rows: Vec<IdRow>) -> Vec<PostId> {
+	rows.into_iter().map(|row| PostId(row.id)).collect()
 }
 
 pub fn create_account(
@@ -365,6 +440,159 @@ pub fn post_view(c: &mut SqliteConnection, id: PostId) -> Result<Option<PostView
 	}
 }
 
+fn read_view(row: PostReadRow) -> Result<ReadView, DbError> {
+	Ok(ReadView {
+		view: PostView {
+			post: Post {
+				id: PostId(row.id),
+				author: row.author,
+				text: row.text,
+				visibility: parse_visibility(&row.visibility)?,
+				status: parse_post_status(&row.status)?,
+				parent: row.parent.map(PostId),
+			},
+			likes: row.likes,
+		},
+		readable: row.readable != 0,
+	})
+}
+
+/// [`post_view`] fused with `can_read_post` (Twitter.agda:168-187): the post's
+/// view and whether `user` may read it, in one query. `None` iff `id` is absent.
+///
+/// The `follows` join condition names the pair `(user, author)`, so at most one
+/// row of `f` matches and the `post_likes` join does not multiply: `f.follower`
+/// is constant within each `p.id` group, which is what makes the bare column in
+/// the `CASE` well defined.
+pub fn post_view_for(
+	c: &mut SqliteConnection,
+	user: &str,
+	id: PostId,
+) -> Result<Option<ReadView>, DbError> {
+	let rows: Vec<PostReadRow> = diesel::sql_query(
+		"SELECT p.id AS id, p.author AS author, p.text AS text, \
+		p.visibility AS visibility, p.status AS status, p.parent AS parent, \
+		COUNT(l.pid) AS likes, \
+		CASE WHEN p.status = 'live' \
+		AND (p.visibility = 'everyone' OR f.follower IS NOT NULL) \
+		THEN 1 ELSE 0 END AS readable \
+		FROM posts p \
+		LEFT JOIN post_likes l ON l.pid = p.id \
+		LEFT JOIN follows f ON f.follower = ? AND f.followee = p.author \
+		WHERE p.id = ? \
+		GROUP BY p.id, p.author, p.text, p.visibility, p.status, p.parent",
+	)
+	.bind::<Text, _>(user)
+	.bind::<BigInt, _>(id.0)
+	.load(c)?;
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => Ok(Some(read_view(row)?)),
+	}
+}
+
+/// [`post_view`] fused with `can_read_anonymous` (Twitter.agda:342-357): the
+/// post's view and whether it is public, in one query. `None` iff `id` is absent.
+pub fn post_view_anonymous(
+	c: &mut SqliteConnection,
+	id: PostId,
+) -> Result<Option<ReadView>, DbError> {
+	let rows: Vec<PostReadRow> = diesel::sql_query(
+		"SELECT p.id AS id, p.author AS author, p.text AS text, \
+		p.visibility AS visibility, p.status AS status, p.parent AS parent, \
+		COUNT(l.pid) AS likes, \
+		CASE WHEN p.status = 'live' AND p.visibility = 'everyone' \
+		THEN 1 ELSE 0 END AS readable \
+		FROM posts p LEFT JOIN post_likes l ON l.pid = p.id \
+		WHERE p.id = ? \
+		GROUP BY p.id, p.author, p.text, p.visibility, p.status, p.parent",
+	)
+	.bind::<BigInt, _>(id.0)
+	.load(c)?;
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => Ok(Some(read_view(row)?)),
+	}
+}
+
+/// Who is publishing `parent` (if any), in one query: the session's account,
+/// its `default-visibility`, and the parent post's author, visibility and
+/// status together with whether the publisher follows that author -- the three
+/// facts `publish` needs (Twitter.agda:387-430, `new-reply` at 213-217) and the
+/// `CanReadPost` premise of `successful-reply` (Twitter.agda:401-428).
+///
+/// `None` iff the session is not `active` or its account is gone: `Expired`.
+/// A named parent that is absent leaves every `parent_*` column `NULL`.
+pub fn publish_context(
+	c: &mut SqliteConnection,
+	sid: SessionId,
+	parent: Option<PostId>,
+) -> Result<Option<PublishContext>, DbError> {
+	let rows: Vec<PublishRow> = diesel::sql_query(
+		"SELECT s.username AS username, a.default_visibility AS default_visibility, \
+		p.author AS parent_author, p.visibility AS parent_visibility, \
+		p.status AS parent_status, \
+		EXISTS(SELECT 1 FROM follows f \
+		WHERE f.follower = s.username AND f.followee = p.author) AS following \
+		FROM sessions s JOIN accounts a ON a.username = s.username \
+		LEFT JOIN posts p ON p.id = ? \
+		WHERE s.id = ? AND s.status = 'active'",
+	)
+	.bind::<Nullable<BigInt>, _>(parent.map(|id| id.0))
+	.bind::<BigInt, _>(sid.0)
+	.load(c)?;
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => {
+			let parent = match (row.parent_author, row.parent_visibility, row.parent_status) {
+				(Some(author), Some(visibility), Some(status)) => Some(ParentPost {
+					author,
+					visibility: parse_visibility(&visibility)?,
+					status: parse_post_status(&status)?,
+					following: row.following != 0,
+				}),
+				_ => None,
+			};
+			Ok(Some(PublishContext {
+				username: row.username,
+				default_visibility: parse_visibility(&row.default_visibility)?,
+				parent,
+			}))
+		}
+	}
+}
+
+/// [`active_user`] fused with [`can_read_post`]: the session's user and whether
+/// that user may read `id`, in one query. `None` iff the session is not
+/// `active` (or its account is gone) -- the `failed-access` case
+/// (Twitter.agda:464-468); `Some(_)` with `readable == false` is `Denied`.
+pub fn like_access(
+	c: &mut SqliteConnection,
+	sid: SessionId,
+	id: PostId,
+) -> Result<Option<LikeAccess>, DbError> {
+	let rows: Vec<LikeAccessRow> = diesel::sql_query(
+		"SELECT s.username AS username, \
+		CASE WHEN p.id IS NOT NULL AND p.status = 'live' \
+		AND (p.visibility = 'everyone' OR f.follower IS NOT NULL) \
+		THEN 1 ELSE 0 END AS readable \
+		FROM sessions s JOIN accounts a ON a.username = s.username \
+		LEFT JOIN posts p ON p.id = ? \
+		LEFT JOIN follows f ON f.follower = s.username AND f.followee = p.author \
+		WHERE s.id = ? AND s.status = 'active'",
+	)
+	.bind::<BigInt, _>(id.0)
+	.bind::<BigInt, _>(sid.0)
+	.load(c)?;
+	match rows.into_iter().next() {
+		None => Ok(None),
+		Some(row) => Ok(Some(LikeAccess {
+			username: row.username,
+			readable: row.readable != 0,
+		})),
+	}
+}
+
 /// Soft-delete `id` iff `author` owns it, returning the pre-image.
 ///
 /// `None` covers both "absent" and "not the author": the spec's
@@ -461,24 +689,22 @@ pub fn like_count(c: &mut SqliteConnection, id: PostId) -> Result<i64, DbError> 
 }
 
 pub fn newest_first(c: &mut SqliteConnection, n: u32) -> Result<Vec<PostId>, DbError> {
-	load_ids(
-		c,
-		format!(
-			"SELECT id FROM posts ORDER BY seq DESC LIMIT {}",
-			i64::from(n)
-		),
-	)
+	// The limit is bound, not formatted in: one prepared statement serves every
+	// `n`, so no SQL string is built per call and nothing is interpolated.
+	let rows: Vec<IdRow> = diesel::sql_query("SELECT id FROM posts ORDER BY seq DESC LIMIT ?")
+		.bind::<BigInt, _>(i64::from(n))
+		.load(c)?;
+	Ok(ids(rows))
 }
 
 pub fn public_timeline(c: &mut SqliteConnection, n: u32) -> Result<Vec<PostId>, DbError> {
-	load_ids(
-		c,
-		format!(
-			"SELECT id FROM posts WHERE status = 'live' AND visibility = 'everyone' \
-			ORDER BY seq DESC LIMIT {}",
-			i64::from(n)
-		),
+	let rows: Vec<IdRow> = diesel::sql_query(
+		"SELECT id FROM posts WHERE status = 'live' AND visibility = 'everyone' \
+		ORDER BY seq DESC LIMIT ?",
 	)
+	.bind::<BigInt, _>(i64::from(n))
+	.load(c)?;
+	Ok(ids(rows))
 }
 
 pub fn global_timeline_for(
@@ -486,16 +712,15 @@ pub fn global_timeline_for(
 	user: &str,
 	n: u32,
 ) -> Result<Vec<PostId>, DbError> {
-	load_ids_for_user(
-		c,
-		format!(
-			"SELECT id FROM posts WHERE status = 'live' AND (visibility = 'everyone' \
-			OR EXISTS(SELECT 1 FROM follows WHERE follows.follower = ? \
-			AND follows.followee = posts.author)) ORDER BY seq DESC LIMIT {}",
-			i64::from(n)
-		),
-		user,
+	let rows: Vec<IdRow> = diesel::sql_query(
+		"SELECT id FROM posts WHERE status = 'live' AND (visibility = 'everyone' \
+		OR EXISTS(SELECT 1 FROM follows WHERE follows.follower = ? \
+		AND follows.followee = posts.author)) ORDER BY seq DESC LIMIT ?",
 	)
+	.bind::<Text, _>(user)
+	.bind::<BigInt, _>(i64::from(n))
+	.load(c)?;
+	Ok(ids(rows))
 }
 
 pub fn personal_timeline_for(

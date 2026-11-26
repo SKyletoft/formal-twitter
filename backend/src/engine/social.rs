@@ -73,13 +73,16 @@ pub fn unfollow(db: &Db, session_id: SessionId, followee: &str) -> Result<Engine
 /// takes precedence over both `Success` and `Denied`.
 pub fn like(db: &Db, session_id: SessionId, post_id: PostId) -> Result<EngineResult, DbError> {
 	db.write(|c| {
-		let Some(username) = store::active_user(c, session_id)? else {
+		// One query for both halves of the premise: the session's user and
+		// `CanReadPost` (Twitter.agda:168-187). `None` is `failed-access`
+		// (Twitter.agda:464-468), which precedes `Denied`.
+		let Some(access) = store::like_access(c, session_id, post_id)? else {
 			return Ok(EngineResult::Expired);
 		};
-		if !store::can_read_post(c, &username, post_id)? {
+		if !access.readable {
 			return Ok(EngineResult::Denied);
 		}
-		store::add_like(c, post_id, &username)?;
+		store::add_like(c, post_id, &access.username)?;
 		Ok(EngineResult::Success)
 	})
 }
@@ -98,13 +101,15 @@ pub fn like(db: &Db, session_id: SessionId, post_id: PostId) -> Result<EngineRes
 /// `Success` and `Denied`.
 pub fn unlike(db: &Db, session_id: SessionId, post_id: PostId) -> Result<EngineResult, DbError> {
 	db.write(|c| {
-		let Some(username) = store::active_user(c, session_id)? else {
+		// As `like`: one fused query for the user and `CanReadPost`
+		// (Twitter.agda:168-187), read over the before world.
+		let Some(access) = store::like_access(c, session_id, post_id)? else {
 			return Ok(EngineResult::Expired);
 		};
-		if !store::can_read_post(c, &username, post_id)? {
+		if !access.readable {
 			return Ok(EngineResult::Denied);
 		}
-		store::remove_like(c, post_id, &username)?;
+		store::remove_like(c, post_id, &access.username)?;
 		Ok(EngineResult::Success)
 	})
 }
