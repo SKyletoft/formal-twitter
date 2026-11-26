@@ -1206,12 +1206,15 @@ fn print_hotspots() {
 	println!("  3. `insert_post`/`insert_reply` compute `COALESCE(MAX(seq),0)+1` per insert: a");
 	println!("     unique-index seek plus one write per row, so bulk seeding is O(n log n).");
 	println!("  4. `ids::allocate` draws a random i64 and probes `EXISTS` until free: one extra");
+	println!("     query per publish, and per login for the session id.");
 	println!("  5. Timelines filter the whole seq-ordered list before `take n`, so `n` bounds");
 	println!("     the answer and never the scan. The personal timeline keeps that cheap with");
 	println!("     a per-author `ROW_NUMBER()` window joined through `follows` (index-backed");
 	println!("     on both sides) and an outer `ORDER BY seq DESC LIMIT n`, so it reads at");
 	println!("     most `n * (#followees)` rows; a warm cache hit skips the query entirely,");
 	println!("     and the anonymous form's hit does not even take the database lock.");
+	println!("  6. read-post uses the fused view: post_view_for / post_view_anonymous");
+	println!("     (LEFT JOIN) replace the separate can-read + view queries;");
 	println!("     cold `read-post` is the fused view (body, likes and `CanReadPost` in one");
 	println!("     row) plus the session probe and `replies_of`; the SQL is a fixed string");
 	println!("     with bound parameters, not `format!`ed. A live `everyone` tweet answers");

@@ -371,11 +371,14 @@ fn personal_timeline_excludes_own_without_self_follow() {
 }
 
 /// `personal_timeline_for` binds `n` twice -- the per-author
-/// `ROW_NUMBER() ... <= n` window and the outer `LIMIT n` -- so the boundary
-/// values must be right at both binds: `n = 0` is empty, `n = 1` is exactly the
-/// newest followed post (the window keeps one row per author, the outer limit
-/// one overall), and `n` larger than every followed author's posts returns the
-/// whole filtered list in `newest-first` order.
+/// `ROW_NUMBER() ... <= n` window and the outer `LIMIT n` -- but only the
+/// outer `LIMIT n` is observable: the window's `rn <= n` keeps at most one row
+/// per author, which is semantically equivalent to plain filtering once the
+/// outer limit truncates the merged result. `n = 0` is empty, `n = 1` is
+/// exactly the newest followed post and catches a missing outer limit (without
+/// it, the window alone would return one row per followed author), and `n`
+/// larger than every followed author's posts returns the whole filtered list
+/// in `newest-first` order.
 #[test]
 fn personal_timeline_honours_n_at_both_window_binds() {
 	let mut c = conn();

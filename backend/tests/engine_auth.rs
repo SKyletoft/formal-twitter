@@ -501,6 +501,7 @@ fn failed_access_expires_for_every_session_command() {
 		TestResult::passed()
 	});
 }
+
 // ---------------------------------------------------------------------------
 // Deterministic unit tests. Each one owns a single database, created here and
 // outside any quickcheck case.
