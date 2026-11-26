@@ -1,5 +1,7 @@
 [bash]
 allow = [
 	"git add *",
-	"git commit *"
+	"git commit *",
+	"git worktree *",
+	"git merge *"
 ]

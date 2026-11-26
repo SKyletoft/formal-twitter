@@ -18,6 +18,8 @@ must be tracked in @todo.md as you may be randomly restarted.
 Set each task to work in its own git worktree. Do close to no
 work yourself, leave everything you can to subagents.
 
+Sign all your commits with maki@deepseek-v4.1-flash as a coauthor.
+
 Your workflow:
 * Review a task. See if it's a reasonable size or should be split off
   into smaller parts.
