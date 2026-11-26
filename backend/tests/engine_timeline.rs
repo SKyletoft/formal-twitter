@@ -890,3 +890,144 @@ fn timelines_expire_for_inactive_sessions(generated: GeneratedWorld) -> TestResu
 	);
 	TestResult::passed()
 }
+
+// ---------------------------------------------------------------------------
+// Sparse-follows regression (T6c).
+//
+// The personal timeline used to scan `idx_posts_seq` and evaluate an
+// `EXISTS(follows)` predicate once per post, which costs O(#posts) no matter
+// how few authors the user follows. It is now a per-author top-n window over
+// the follow join. The answer must still be exactly `get-personal-timeline`
+// (Twitter.agda:557-566): `take n` of the `live` posts of followed authors,
+// newest-first.
+// ---------------------------------------------------------------------------
+
+const SPARSE_POSTS: usize = 5_000;
+const SPARSE_AUTHORS: usize = 50;
+const SPARSE_FOLLOWED: usize = 17;
+const SPARSE_BASE: i64 = 10_000;
+const SPARSE_ME: &str = "me";
+
+/// Author `i % 50` of the sparse world: `author00` .. `author49`.
+fn sparse_author(i: usize) -> String {
+	format!("author{:02}", i % SPARSE_AUTHORS)
+}
+
+/// Seeds ~5 000 posts across 50 authors in a single transaction, interleaving
+/// `followers-only`, replies and soft-deleted posts, and makes `me` follow
+/// exactly one author. Returns `(id, author, live)` per post in `seq` order.
+fn seed_sparse_world(db: &Db) -> Vec<(PostId, String, bool)> {
+	db.write(|conn| {
+		store::create_account(conn, SPARSE_ME, PASSWORD)?;
+		for a in 0..SPARSE_AUTHORS {
+			store::create_account(conn, &format!("author{a:02}"), PASSWORD)?;
+		}
+		store::activate_session(conn, SID, SPARSE_ME)?;
+		for i in 0..SPARSE_POSTS {
+			let id = PostId(SPARSE_BASE + i as i64);
+			let author = sparse_author(i);
+			let vis = if i % 7 == 0 {
+				Visibility::FollowersOnly
+			} else {
+				Visibility::Everyone
+			};
+			let text = format!("post {i}");
+			if i % 13 == 0 {
+				store::insert_reply(conn, id, &author, &text, vis, PostId(SPARSE_BASE))?;
+			} else {
+				store::insert_post(conn, id, &author, &text, vis)?;
+			}
+			if i % 11 == 0 {
+				store::soft_delete_post(conn, id)?;
+			}
+		}
+		store::add_follow(conn, SPARSE_ME, &sparse_author(SPARSE_FOLLOWED))?;
+		Ok(())
+	})
+	.expect("seed sparse world");
+	(0..SPARSE_POSTS)
+		.map(|i| {
+			(
+				PostId(SPARSE_BASE + i as i64),
+				sparse_author(i),
+				i % 11 != 0,
+			)
+		})
+		.collect()
+}
+
+#[test]
+fn sparse_follows_personal_timeline_is_the_followed_authors_top_n() {
+	let db = database();
+	let seeded = seed_sparse_world(&db);
+	let followed = sparse_author(SPARSE_FOLLOWED);
+
+	// Preconditions: the world really is sparse for `me`.
+	assert_eq!(seeded.len(), SPARSE_POSTS);
+	let mut authors: Vec<&str> = seeded.iter().map(|(_, a, _)| a.as_str()).collect();
+	authors.sort_unstable();
+	authors.dedup();
+	assert_eq!(authors.len(), SPARSE_AUTHORS);
+	assert!(
+		seeded.iter().any(|(_, _, live)| !live),
+		"the world contains deleted posts"
+	);
+	for a in 0..SPARSE_AUTHORS {
+		assert_eq!(
+			follows(&db, SPARSE_ME, &format!("author{a:02}")),
+			a == SPARSE_FOLLOWED,
+			"`me` follows exactly one author"
+		);
+	}
+
+	// The expected answer, derived from the seed alone (newest-first is the
+	// reverse of insertion order because `seq` increases monotonically).
+	let expected_all: Vec<PostId> = seeded
+		.iter()
+		.rev()
+		.filter(|(_, author, live)| *live && *author == followed)
+		.map(|(pid, _, _)| *pid)
+		.collect();
+	assert!(
+		expected_all.len() > 10,
+		"the followed author has more than ten live posts"
+	);
+
+	// The engine agrees with the whole characterization ...
+	assert_eq!(
+		returned(personal_timeline(&db, SID, u32::MAX).expect("timeline")),
+		expected_all
+	);
+	assert_eq!(
+		returned(personal_timeline(&db, SID, u32::MAX).expect("timeline")),
+		expected_personal(&db, SPARSE_ME, u32::MAX),
+		"the answer is `filter follows-post-author (filter live newest-first)`"
+	);
+
+	// ... and with `take n` for the interesting bounds.
+	let over = expected_all.len() as u32 + 1;
+	for n in [0u32, 1, 10, over, u32::MAX] {
+		let ids = returned(personal_timeline(&db, SID, n).expect("timeline"));
+		let want = expected_all[..expected_all.len().min(n as usize)].to_vec();
+		assert_eq!(ids, want, "n = {n}");
+		assert_eq!(ids, expected_personal(&db, SPARSE_ME, n), "n = {n}");
+		assert!(ids.len() as u64 <= u64::from(n));
+		// No post of a non-followed author, and every entry is live.
+		for pid in &ids {
+			let post = post_of(&db, *pid).expect("seeded post");
+			assert_eq!(post.author, followed);
+			assert_eq!(post.status, PostStatus::Live);
+		}
+	}
+
+	// Explicitly: published-by-others posts are absent.
+	let others: Vec<PostId> = seeded
+		.iter()
+		.filter(|(_, author, _)| *author != followed)
+		.map(|(pid, _, _)| *pid)
+		.collect();
+	let answer = returned(personal_timeline(&db, SID, u32::MAX).expect("timeline"));
+	for pid in &others {
+		assert!(!answer.contains(pid), "post by a non-followed author");
+	}
+}
