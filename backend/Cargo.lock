@@ -391,10 +391,13 @@ version = "0.1.0"
 dependencies = [
  "diesel",
  "diesel_migrations",
+ "httpdate",
  "quickcheck",
  "quickcheck_macros",
  "rand",
  "rocket",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

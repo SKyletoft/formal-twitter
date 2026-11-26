@@ -33,9 +33,8 @@
 						cp -r ${./frontend} ../frontend
 					'';
 					cargoLock.lockFile = "${src}/Cargo.lock";
-					postInstall = ''
-						cp -r ${./frontend} $out/frontend
-					'';
+					buildInputs = [ pkgs.sqlite ];
+					meta.mainProgram = "formal-twitter";
 				};
 			}
 		);
