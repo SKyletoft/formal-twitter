@@ -5,9 +5,125 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Formal Twitter</title>
 	<link rel="stylesheet" href="style.css">
-	<script src="app.js"></script>
+	<script src="app.js" defer></script>
 </head>
 <body>
-	todo
+	<header>
+		<h1>Formal Twitter</h1>
+		<p class="session">Session: <strong id="session-state">logged out</strong></p>
+	</header>
+
+	<main>
+		<section class="log-panel">
+			<h2>Responses</h2>
+			<p class="hint">Nothing is loaded automatically. Every request you send is reported here.</p>
+			<ul id="log" aria-live="polite" aria-label="response log"></ul>
+			<button type="button" id="clear-log" class="secondary">Clear log</button>
+		</section>
+
+		<div class="grid">
+			<section>
+				<h2>Signup</h2>
+				<form id="signup-form">
+					<label for="signup-username">Username</label>
+					<input id="signup-username" name="username" autocomplete="username" required>
+					<label for="signup-password">Password</label>
+					<input id="signup-password" name="password" type="password" autocomplete="new-password" required>
+					<button type="submit">Sign up</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Login</h2>
+				<form id="login-form">
+					<label for="login-username">Username</label>
+					<input id="login-username" name="username" autocomplete="username" required>
+					<label for="login-password">Password</label>
+					<input id="login-password" name="password" type="password" autocomplete="current-password" required>
+					<button type="submit">Log in</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Logout</h2>
+				<p class="hint">Forget the session token on this device.</p>
+				<button type="button" id="logout-button" data-needs-token>Log out</button>
+			</section>
+
+			<section>
+				<h2>Post tweet</h2>
+				<form id="post-tweet-form">
+					<label for="post-text">Text</label>
+					<textarea id="post-text" name="text" rows="3" required></textarea>
+					<button type="submit" data-needs-token>Post</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Reply</h2>
+				<form id="post-reply-form">
+					<label for="reply-text">Text</label>
+					<textarea id="reply-text" name="text" rows="3" required></textarea>
+					<label for="reply-id">Tweet id</label>
+					<input id="reply-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
+					<button type="submit" data-needs-token>Reply</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Delete tweet</h2>
+				<form id="delete-tweet-form">
+					<label for="delete-id">Tweet id</label>
+					<input id="delete-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
+					<button type="submit" data-needs-token>Delete</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Like</h2>
+				<form id="like-form">
+					<label for="like-id">Tweet id</label>
+					<input id="like-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
+					<button type="submit" data-needs-token>Like</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Unlike</h2>
+				<form id="unlike-form">
+					<label for="unlike-id">Tweet id</label>
+					<input id="unlike-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
+					<button type="submit" data-needs-token>Unlike</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Follow</h2>
+				<form id="follow-form">
+					<label for="follow-username">Username</label>
+					<input id="follow-username" name="username" autocomplete="off" required>
+					<button type="submit" data-needs-token>Follow</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Unfollow</h2>
+				<form id="unfollow-form">
+					<label for="unfollow-username">Username</label>
+					<input id="unfollow-username" name="username" autocomplete="off" required>
+					<button type="submit" data-needs-token>Unfollow</button>
+				</form>
+			</section>
+
+			<section>
+				<h2>Get tweet</h2>
+				<form id="get-tweet-form">
+					<label for="get-id">Tweet id</label>
+					<input id="get-id" name="id" inputmode="numeric" pattern="[0-9]+" required>
+					<button type="submit">Fetch</button>
+				</form>
+			</section>
+		</div>
+	</main>
 </body>
 </html>

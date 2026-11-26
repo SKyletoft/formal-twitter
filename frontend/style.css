@@ -1,0 +1,211 @@
+/* Formal Twitter, dependency free frontend. */
+
+:root {
+	--bg: #101418;
+	--panel: #182028;
+	--line: #2b3a46;
+	--text: #e6edf3;
+	--muted: #9bb0c0;
+	--accent: #4aa3df;
+	--ok: #6fdc8c;
+	--error: #ff8080;
+	--info: #d8c46a;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	padding: 1rem;
+	background: var(--bg);
+	color: var(--text);
+	font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.5rem;
+	border-bottom: 1px solid var(--line);
+	padding-bottom: 0.75rem;
+	margin-bottom: 1rem;
+}
+
+h1 {
+	margin: 0;
+	font-size: 1.4rem;
+	letter-spacing: 0.02em;
+}
+
+h2 {
+	margin: 0 0 0.5rem;
+	font-size: 1rem;
+	color: var(--accent);
+}
+
+main {
+	display: grid;
+	gap: 1rem;
+	max-width: 72rem;
+	margin: 0 auto;
+}
+
+.session {
+	margin: 0;
+	color: var(--muted);
+}
+
+.hint {
+	margin: 0 0 0.5rem;
+	color: var(--muted);
+	font-size: 0.85rem;
+}
+
+.grid {
+	display: grid;
+	gap: 1rem;
+	grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+}
+
+section {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 0.75rem;
+}
+
+form {
+	display: grid;
+	gap: 0.4rem;
+}
+
+label {
+	color: var(--muted);
+	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+input,
+textarea {
+	width: 100%;
+	padding: 0.45rem 0.55rem;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	font: inherit;
+}
+
+input:focus,
+textarea:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+textarea {
+	resize: vertical;
+	min-height: 3.5rem;
+}
+
+button {
+	padding: 0.45rem 0.8rem;
+	background: var(--accent);
+	color: #07161f;
+	border: 0;
+	border-radius: 4px;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+	filter: brightness(1.1);
+}
+
+button:disabled {
+	background: var(--line);
+	color: var(--muted);
+	cursor: not-allowed;
+}
+
+button.secondary {
+	background: transparent;
+	border: 1px solid var(--line);
+	color: var(--muted);
+	margin-top: 0.5rem;
+}
+
+.log-panel {
+	display: grid;
+	gap: 0.25rem;
+}
+
+#log {
+	list-style: none;
+	margin: 0;
+	padding: 0.25rem;
+	max-height: 16rem;
+	overflow-y: auto;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	background: var(--bg);
+}
+
+#log:empty::before {
+	content: "no responses yet";
+	display: block;
+	padding: 0.25rem 0.35rem;
+	color: var(--muted);
+	font-size: 0.85rem;
+}
+
+.entry {
+	display: grid;
+	grid-template-columns: 6.5rem 1fr;
+	gap: 0.5rem;
+	padding: 0.2rem 0.35rem;
+	border-bottom: 1px solid rgba(43, 58, 70, 0.6);
+	font-size: 0.88rem;
+}
+
+.entry:last-child {
+	border-bottom: 0;
+}
+
+.entry .stamp {
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.entry .message {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.entry.ok .message {
+	color: var(--ok);
+}
+
+.entry.error .message {
+	color: var(--error);
+}
+
+.entry.info .message {
+	color: var(--info);
+}
+
+@media (max-width: 30rem) {
+	body {
+		padding: 0.5rem;
+	}
+
+	.entry {
+		grid-template-columns: 1fr;
+		gap: 0;
+	}
+}
