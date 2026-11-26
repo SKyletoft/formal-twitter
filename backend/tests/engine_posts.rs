@@ -728,7 +728,6 @@ fn read_logged_in_returns_a_readable_post() {
 fn read_logged_in_is_denied_for_unreadable_posts() {
 	check(|db: &Db, world: &WorldState, _: ()| -> TestResult {
 		let (seeded, sid, user) = with_actor(world);
-		let absent = absent_post(&seeded);
 		let (seeded, gone) = existing_or_added(
 			&seeded,
 			|post| post.status == PostStatus::Deleted,
@@ -754,6 +753,14 @@ fn read_logged_in_is_denied_for_unreadable_posts() {
 					Visibility::FollowersOnly,
 				)
 			},
+		);
+		// Take the absent id only now: `with_post` allocates with the same
+		// `absent_post`, so an id computed before the extensions above could
+		// name a post this test just added.
+		let absent = absent_post(&seeded);
+		assert!(
+			!seeded.posts.contains_key(&absent),
+			"the absent id is genuinely unused"
 		);
 		reseed(db, world, &seeded);
 		// Preconditions: the two existing targets really are unreadable.
@@ -824,10 +831,10 @@ fn read_anonymous_returns_a_public_live_post() {
 fn read_anonymous_expires_for_unreadable_posts() {
 	check(|db: &Db, world: &WorldState, _: ()| -> TestResult {
 		let (seeded, _, user) = with_actor(world);
-		let absent = absent_post(&seeded);
 		let (seeded, secret) = existing_or_added(
 			&seeded,
-			|post| post.visibility == Visibility::FollowersOnly,
+			// `live`, so this cannot coincide with the deleted `gone` below.
+			|post| post.status == PostStatus::Live && post.visibility == Visibility::FollowersOnly,
 			|| {
 				post(
 					&unfollowed_author(&seeded, &user),
@@ -846,6 +853,14 @@ fn read_anonymous_expires_for_unreadable_posts() {
 					Visibility::Everyone,
 				))
 			},
+		);
+		// Take the absent id only now: `with_post` allocates with the same
+		// `absent_post`, so an id computed before the extensions above could
+		// name a post this test just added.
+		let absent = absent_post(&seeded);
+		assert!(
+			!seeded.posts.contains_key(&absent),
+			"the absent id is genuinely unused"
 		);
 		reseed(db, world, &seeded);
 
@@ -985,10 +1000,21 @@ fn read_post_reports_the_like_count_and_the_seq_ordered_replies() {
 /// `followers-only`.
 #[test]
 fn reply_visibility_comes_from_the_parent_when_it_is_followers_only() {
-	// `bob`'s default is `followers-only` and `bob` follows `ada`, so the
-	// `everyone` parent keeps the default.
-	let world = fixture();
+	let mut world = fixture();
+	// `eve`'s default is the permissive visibility, unlike `bob`'s
+	// `followers-only`; both follow `ada`, so both parents below are readable.
+	world
+		.accounts
+		.insert("eve".to_string(), account("pw-eve", Visibility::Everyone));
+	world
+		.sessions
+		.insert(SessionId(7), SessionStatus::Active("eve".to_string()));
+	world.follows.insert(("eve".to_string(), "ada".to_string()));
+	world.validate().expect("the extended world is valid");
+	let (world, parent) = with_post(&world, post("ada", "secret", Visibility::FollowersOnly));
 	let db = seeded(&world);
+
+	// `bob`'s default is `followers-only`, so the `everyone` parent keeps it.
 	let pid = created(publish(&db, SessionId(100), "reply", Some(PostId(200))).expect("publish"));
 	let expected = posted_world(
 		&world,
@@ -1002,24 +1028,9 @@ fn reply_visibility_comes_from_the_parent_when_it_is_followers_only() {
 
 	// A `followers-only` parent forces `followers-only` for an account whose
 	// default is the permissive one.
-	let mut world = empty_world();
-	world.accounts.insert(
-		"ada".to_string(),
-		account("pw-ada", Visibility::FollowersOnly),
-	);
-	world
-		.accounts
-		.insert("eve".to_string(), account("pw-eve", Visibility::Everyone));
-	world
-		.sessions
-		.insert(SessionId(7), SessionStatus::Active("eve".to_string()));
-	world.follows.insert(("eve".to_string(), "ada".to_string()));
-	let (world, parent) = with_post(&world, post("ada", "secret", Visibility::FollowersOnly));
-	let db = seeded(&world);
-
 	let pid = created(publish(&db, SessionId(7), "reply", Some(parent)).expect("publish"));
 	let expected = posted_world(
-		&world,
+		&expected,
 		pid,
 		PostState {
 			parent: Some(parent),

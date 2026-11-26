@@ -357,8 +357,6 @@ fn private_global_timeline_is_the_readable_live_posts() {
 #[test]
 fn public_global_timeline_is_the_public_live_posts() {
 	check(|db: &Db, world: &WorldState, bound: Bound| -> TestResult {
-		reseed(db, world, world);
-
 		let ids = returned(global_timeline(db, None, bound.0).expect("timeline"));
 		let expected = public_global_expected(world, bound.0);
 		assert_eq!(ids, expected, "take n of the public live posts");
@@ -428,18 +426,6 @@ fn timelines_take_n_after_filtering() {
 			returned(global_timeline(db, None, 0).expect("timeline")).is_empty(),
 			"n = 0 yields the empty public global timeline"
 		);
-
-		for (all, n) in [
-			(&personal_all, personal_all.len() as u32 + 1),
-			(&private_all, private_all.len() as u32 + 1),
-			(&public_all, public_all.len() as u32 + 1),
-		] {
-			assert_eq!(
-				all.len(),
-				all.len().min(n as usize),
-				"precondition: n is above the list"
-			);
-		}
 
 		// `n` above the length saturates on the whole filtered list.
 		let over_personal = personal_all.len() as u32 + 1;
