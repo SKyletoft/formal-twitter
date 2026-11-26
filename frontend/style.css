@@ -16,6 +16,14 @@
 	color-scheme: dark light;
 }
 
+/* Visibility is toggled with the `hidden` attribute, but the author rules
+   below set `display` on the very same elements (`.composer`, `.auth-form`,
+   `.signed-in`); without this rule they would beat the user agent's
+   `[hidden] { display: none }`. */
+[hidden] {
+	display: none !important;
+}
+
 @media (prefers-color-scheme: light) {
 	:root {
 		--bg: #f7f8fb;
@@ -328,6 +336,93 @@ ol.timeline {
 	text-decoration: underline;
 }
 
+/* ---------- action buttons ---------- */
+
+button.action {
+	padding: 0.2rem 0.65rem;
+	font-size: 0.78rem;
+	color: var(--text);
+	background: var(--surface-2);
+	border-color: var(--border);
+}
+
+button.action[aria-pressed="true"] {
+	color: var(--accent-text);
+	background: var(--accent);
+	border-color: transparent;
+}
+
+button.action.danger {
+	color: var(--danger);
+	border-color: var(--danger);
+}
+
+.tweet-actions:empty {
+	display: none;
+}
+
+.tweet-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+
+.tweet-note {
+	margin: 0.45rem 0 0;
+	font-size: 0.8rem;
+	color: var(--danger);
+	overflow-wrap: anywhere;
+}
+
+/* ---------- composers ---------- */
+
+.composer {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	margin: 0 0 1rem;
+	padding: 0.75rem 0.9rem;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.composer-label {
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: var(--muted);
+}
+
+.composer-row {
+	display: flex;
+	gap: 0.5rem;
+	align-items: center;
+}
+
+.composer-row input {
+	flex: 1 1 auto;
+	min-width: 0;
+	font: inherit;
+	font-size: 0.9rem;
+	padding: 0.4rem 0.6rem;
+	color: var(--text);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+}
+
+.composer-hint {
+	margin: 0;
+	font-size: 0.72rem;
+	color: var(--muted);
+}
+
+.composer .status {
+	margin: 0;
+	min-height: 0;
+}
+
 .tweet-unavailable {
 	margin: 0;
 	padding: 0.75rem 0.9rem;
@@ -401,5 +496,13 @@ ul.log li.ok {
 
 	.tab-hint {
 		display: none;
+	}
+
+	.composer-row {
+		flex-wrap: wrap;
+	}
+
+	.composer-row input {
+		flex-basis: 100%;
 	}
 }
