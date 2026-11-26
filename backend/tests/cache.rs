@@ -10,6 +10,7 @@
 
 use formal_twitter::db::Db;
 use formal_twitter::engine::EngineResult;
+use formal_twitter::engine::auth::revoke_token;
 use formal_twitter::engine::posts::{delete, publish, read_post};
 use formal_twitter::engine::social::{follow, like, unfollow, unlike};
 use formal_twitter::engine::time::time_passes;
@@ -94,6 +95,21 @@ fn database_body(db: &Db, pid: PostId) -> PublicPost {
 		})
 	})
 	.expect("database body")
+}
+
+/// `true` iff `pid` is now `live` and `everyone`: the only shape a body may be
+/// cached in, because only that body is the same for every reader
+/// (`is-post-public`, Twitter.agda:342-357).
+fn is_live_public(db: &Db, pid: PostId) -> bool {
+	db.read(|c| {
+		let Some(post) = store::get_post(c, pid)? else {
+			return Ok(false);
+		};
+		Ok(post.status == PostStatus::Live
+			&& post.visibility == Visibility::Everyone
+			&& store::can_read_anonymous(c, pid)?)
+	})
+	.expect("live+public check")
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +210,46 @@ fn time_passes_drops_the_cache_and_keeps_the_body_readable_anonymously() {
 	assert_eq!(db.cache_get(PUBLIC), None, "time-passes is a write");
 	assert_eq!(read(&db, Some(ALICE_SID), PUBLIC), EngineResult::Expired);
 	assert_eq!(read(&db, None, PUBLIC), before);
+}
+
+#[test]
+fn revoking_a_session_drops_the_cache_and_the_post_stays_readable_anonymously() {
+	let db = seeded();
+	let before = read(&db, Some(ALICE_SID), PUBLIC);
+	assert!(db.cache_get(PUBLIC).is_some());
+
+	expect_success(revoke_token(&db, ALICE_SID), "revoke-token");
+	assert_eq!(db.cache_get(PUBLIC), None, "a logout is a write");
+	assert_eq!(
+		read(&db, Some(ALICE_SID), PUBLIC),
+		EngineResult::Expired,
+		"the session check precedes the cache"
+	);
+	assert_eq!(
+		read(&db, None, PUBLIC),
+		before,
+		"an anonymous reader still gets the same body"
+	);
+	assert_eq!(db.cache_get(PUBLIC), Some(database_body(&db, PUBLIC)));
+
+	// A revoked session stays revoked (`Expired`, world untouched), but the
+	// command still runs in one write transaction, so the cache is dropped.
+	expect_success(revoke_token(&db, BOB_SID), "revoke-token");
+	assert_eq!(db.cache_get(PUBLIC), None, "a logout is a write");
+	read(&db, None, PUBLIC);
+	assert!(
+		db.cache_get(PUBLIC).is_some(),
+		"a later read fills the cache"
+	);
+	assert_eq!(
+		revoke_token(&db, BOB_SID).expect("revoke-token"),
+		EngineResult::Expired
+	);
+	assert_eq!(
+		db.cache_get(PUBLIC),
+		None,
+		"an already revoked logout still invalidates"
+	);
 }
 
 #[test]
@@ -500,8 +556,18 @@ fn cached_reads_always_match_uncached_reads(steps: Vec<Step>) -> TestResult {
 	let mut cached = cached;
 	let mut plain = plain;
 	for step in steps.into_iter().take(8) {
+		// The post the step acts on, resolved *before* the step runs. `publish`
+		// allocates its own id, so its target is the id the result reports.
+		let before = match step.op {
+			Op::Publish => None,
+			_ => Some(cached.post(step.target)),
+		};
 		let got = apply(&mut cached, step);
 		let want = apply(&mut plain, step);
+		let target = before.or(match &got {
+			EngineResult::CreatedPost(pid) => Some(*pid),
+			_ => None,
+		});
 		assert_eq!(
 			outcome(&got, &cached),
 			outcome(&want, &plain),
@@ -512,6 +578,64 @@ fn cached_reads_always_match_uncached_reads(steps: Vec<Step>) -> TestResult {
 			world(&plain),
 			"{step:?} left a different world"
 		);
+
+		// The cache must react to the step itself, right now. A cache that never
+		// stores anything, or that keeps entries across writes, is still
+		// *consistent*, so agreement alone cannot see it: these assertions are
+		// what make a dead cache fail. They run before `assert_all_reads_agree`,
+		// which repopulates the cache and would hide a missing invalidation.
+		//
+		// Mutation-checked: answering `None` from `cache_get`, dropping the
+		// invalidation in `Db::write`, or removing the public-only guard in
+		// `read_post` each makes one of these fail.
+		//
+		// Every mutating `Op` is one spec `Step` and one `Db::write`; only `Read`
+		// is not. Kept exhaustive so a new `Op` cannot skip its bookkeeping.
+		let mutating = match step.op {
+			Op::Publish
+			| Op::Reply
+			| Op::Like
+			| Op::Unlike
+			| Op::Delete
+			| Op::Follow
+			| Op::Unfollow => true,
+			Op::Read => false,
+		};
+		if !mutating {
+			let target = target.expect("a read always has a target");
+			let live_public = is_live_public(&cached.db, target);
+			if live_public && matches!(got, EngineResult::ReturnedPost { .. }) {
+				// A hit serves it, a miss inserts it: either way it is cached
+				// now.
+				assert!(
+					cached.db.cache_get(target).is_some(),
+					"{step:?}: returned {target:?} but left it uncached"
+				);
+			}
+			if !live_public {
+				// A private, deleted or absent post is never inserted, and any
+				// entry from an earlier read was dropped by the write that made
+				// it unreadable.
+				assert!(
+					cached.db.cache_get(target).is_none(),
+					"{step:?}: {target:?} is not live+everyone but is cached"
+				);
+			}
+			// `Expired`/`Denied` on a public target asserts nothing: an earlier
+			// read may legitimately have left its (still correct) body cached.
+		} else {
+			// Every mutating command is one `Db::write`, and a write empties the
+			// cache -- including the writes that change no row (`Denied` results
+			// and no-op logouts).
+			assert!(
+				cached
+					.posts
+					.iter()
+					.all(|pid| cached.db.cache_get(*pid).is_none()),
+				"{step:?} did not invalidate the cache"
+			);
+		}
+
 		assert_cache_matches_database(&cached);
 		assert_all_reads_agree(&cached, &plain);
 	}
