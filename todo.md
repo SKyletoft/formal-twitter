@@ -1,32 +1,26 @@
 # todo.md — formal-twitter
 
 ## Tasks
-- [ ] T7: Send a `time-passes` event every couple of minutes.
-  - Engine `time_passes` (revoke all active sessions) + Agda `session-timeout` proof + quickcheck.
-  - Background timer in `main` only (env-configurable, default ~120 s) so tests and in-process
-    `server::build` never revoke sessions mid-test.
+- [x] T7: Send a `time-passes` event every couple of minutes. Merged `8d83761`.
 - [ ] T8a: Frontend redesign — layout, two timeline tabs (global/followed), tweet cards,
   tweet detail with replies.
 - [ ] T8b: Frontend actions — like/unlike, follow/unfollow, reply composer; depends on T8a.
-- [ ] Cache commonly read public data.
-- [ ] Redo all quickcheck properties. You may not create a new database within the test. The test should take in a world state and you need to create a valid AND shrinkable world state to pass to quickcheck properties.
-- [ ] Database query batching? Without destroying worst case latency.
+- [ ] C1: Cache commonly read public data (in-memory only; invalidate on every write; the DB stays
+  the source of truth before serving).
+- [ ] Q1: Redo all quickcheck properties: no new database inside a property; properties take a
+  valid AND shrinkable generated world state.
+- [ ] B1: Database query batching without destroying worst-case latency.
 
 ## In progress
-- [ ] T7: plan ACCEPTED. Tests+proofs running in `wt-t7` (branch `task/t7-time-passes`).
-  Key plan: `engine::time::time_passes` = one write calling `store::revoke_all_sessions`; proof
-  `time-passes-success` over `timed-out-world`; timer spawned ONLY in `main` (env
-  `FORMAL_TWITTER_TIME_PASSES_SECS`, default 120, 0 disables; `Db` becomes cloneable via
-  `Arc<Mutex<_>>`); quickcheck active/revoked/unused + idempotence.
-- [ ] T8a: plan ACCEPTED. Implementation+tests running in `wt-t8a` (branch
-  `task/t8a-frontend-browse`). Hash-routed single-column SPA; tabs Global/Following; timeline ids +
-  bounded `get-tweet` fan-out (20, mapLimit 6); cards; tweet detail with replies; keep 3 frontend
-  files; add nodejs to the devShell for `node --check`; extend `http_static` string assertions.
-- [ ] T8b: blocked on T8a (like/unlike, follow/unfollow, reply/post/delete, 401/403 UX).
+- [x] T7: DONE/merged `8d83761` (tests/proofs `bceac91`, impl `3f818e9`). 132 tests; timer smoke ok.
+- [ ] T8a: implementation `fbc3220` reviewed; blocking JSON-id precision defect (ids > 2^53).
+  Root-cause fix running: allocate PostId/SessionId in `1..=2^53-1`, frontend safe-integer guards,
+  regression tests. Worktree `wt-t8a`.
+- [ ] T8b: blocked on T8a.
+- [ ] C1/Q1/B1: queued; plan after T8b.
 
 ## State
-- Branch `maki-loop-3`, HEAD `ee8176c`. All earlier tasks merged: T1 persistence, T2a auth,
-  T2b posts, T3a social, T3b timelines, T4 HTTP/static/`nix run`, T5 frontend, T6 benchmarks+perf.
+- Branch `maki-loop-3`, HEAD `8d83761`. Merged: T1, T2a, T2b, T3a, T3b, T4, T5, T6, T7.
 
 ## Working rules (from AGENTS.md)
 - Run commands inside `nix develop --command ...`.
