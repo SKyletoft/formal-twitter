@@ -7,6 +7,7 @@
 //! `failed-access` case (Twitter.agda:464-468).
 
 pub mod auth;
+pub mod posts;
 pub mod result;
 
 pub use crate::db::Db;
