@@ -1,8 +1,8 @@
 # todo.md — formal-twitter
 
 ## Tasks
-<!-- Add new tasks here as `- [ ] T<n>: ...`. Prefer small, independently mergeable tasks. -->
-- [ ] (none)
+- [ ] Send time-passes event every couple of minutes.
+- [ ] Redo frontend to look more like a reasonable twitter interface. Two timelines (one global one followed) (maybe in tabs?) Like buttons on tweets, follow/unfollow buttons on usernames. Replies when you click on a tweet and so on.
 
 ## In progress
 - (none)
