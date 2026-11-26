@@ -11,10 +11,12 @@
 //!   statistics per request.
 //!
 //! A third section reports how the timeline and `read-post` queries scale with
-//! the number of posts (1 000 / 20 000 / 100 000), and a fourth how the public
-//! post cache changes `read-post`: cache disabled (the pre-cache path), cold
-//! (dropped before every measured call) and warm (filled by the previous call),
-//! for one `get-tweet` and for a 21-read timeline render burst.
+//! the number of posts (1 000 / 20 000 / 100 000), and a fourth how the caches
+//! change the reads: cache disabled (the pre-cache path), cold (dropped before
+//! every measured call) and warm (filled by the previous call), for one
+//! `get-tweet`, for each of the three timeline forms, and for a 21-read
+//! timeline render burst -- including the C1b variant that renders all three
+//! timelines plus the 20 tweets.
 //!
 //! Seeding goes through `store` and `ids` exactly like the integration tests do,
 //! in a single `db.write` transaction, so every row is committed before the
@@ -615,6 +617,30 @@ fn render_burst(db: &Db, session: Option<SessionId>, tweets: &[PostId]) {
 	}
 }
 
+/// The C1b render: all three timeline forms plus one `get-tweet` per tweet the
+/// private timeline shows. With the timeline cache warm, the three id lists are
+/// hits and only the rendered bodies can miss.
+fn render_burst_c1b(db: &Db, session: SessionId, tweets: &[PostId]) {
+	expect_timeline(
+		timeline::personal_timeline(db, session, TIMELINE_LENGTH),
+		"burst-c1b-personal",
+	);
+	expect_timeline(
+		timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
+		"burst-c1b-private",
+	);
+	expect_timeline(
+		timeline::global_timeline(db, None, TIMELINE_LENGTH),
+		"burst-c1b-anon",
+	);
+	for pid in tweets {
+		expect_returned(
+			posts::read_post(db, Some(session), *pid),
+			"burst-c1b-get-tweet",
+		);
+	}
+}
+
 /// The cache scenarios, measured on the same file-backed database and the same
 /// data as the engine table above:
 ///
@@ -680,6 +706,98 @@ fn cache_report(db: &Db, uncached: &Db, seeded: &Seeded) -> Vec<Row> {
 		"cache: get-tweet anonymous (warm)",
 		measure(|| expect_post(posts::read_post(db, None, target), "get-tweet-anon-warm")),
 	));
+	// C1b: the timeline id lists, cold (dropped before every call) and warm
+	// (filled by the immediately preceding call).
+	rows.push(Row::new(
+		"cache: personal tl n=20 (no cache)",
+		measure(|| {
+			expect_timeline(
+				timeline::personal_timeline(uncached, session, TIMELINE_LENGTH),
+				"personal-no-cache",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: personal tl n=20 (cold)",
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::personal_timeline(db, session, TIMELINE_LENGTH),
+					"personal-cold",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: personal tl n=20 (warm)",
+		measure(|| {
+			expect_timeline(
+				timeline::personal_timeline(db, session, TIMELINE_LENGTH),
+				"personal-warm",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: private global n=20 (no cache)",
+		measure(|| {
+			expect_timeline(
+				timeline::global_timeline(uncached, Some(session), TIMELINE_LENGTH),
+				"private-no-cache",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: private global n=20 (cold)",
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
+					"private-cold",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: private global n=20 (warm)",
+		measure(|| {
+			expect_timeline(
+				timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
+				"private-warm",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: anonymous global n=20 (no cache)",
+		measure(|| {
+			expect_timeline(
+				timeline::global_timeline(uncached, None, TIMELINE_LENGTH),
+				"anon-no-cache",
+			)
+		}),
+	));
+	rows.push(Row::new(
+		"cache: anonymous global n=20 (cold)",
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::global_timeline(db, None, TIMELINE_LENGTH),
+					"anon-cold",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: anonymous global n=20 (warm)",
+		measure(|| {
+			expect_timeline(
+				timeline::global_timeline(db, None, TIMELINE_LENGTH),
+				"anon-warm",
+			)
+		}),
+	));
 	rows.push(Row::new(
 		"cache: render burst 1+20 (no cache)",
 		measure(|| render_burst(uncached, Some(session), &tweets)),
@@ -694,6 +812,21 @@ fn cache_report(db: &Db, uncached: &Db, seeded: &Seeded) -> Vec<Row> {
 	rows.push(Row::new(
 		"cache: render burst 1+20 (warm)",
 		measure(|| render_burst(db, Some(session), &tweets)),
+	));
+	rows.push(Row::new(
+		"cache: render burst C1b 3tl+20 (no cache)",
+		measure(|| render_burst_c1b(uncached, session, &tweets)),
+	));
+	rows.push(Row::new(
+		"cache: render burst C1b 3tl+20 (cold)",
+		measure_with_reset(
+			|| render_burst_c1b(db, session, &tweets),
+			|| db.clear_cache_for_tests(),
+		),
+	));
+	rows.push(Row::new(
+		"cache: render burst C1b 3tl+20 (warm)",
+		measure(|| render_burst_c1b(db, session, &tweets)),
 	));
 	rows
 }
@@ -901,26 +1034,37 @@ const SCALING_HEADERS: [&str; 4] = [
 
 fn scaling_measure(db: &Db, session: SessionId, target: PostId) -> [Duration; 4] {
 	[
-		measure(|| {
-			expect_timeline(
-				timeline::personal_timeline(db, session, TIMELINE_LENGTH),
-				"scaling-personal",
-			)
-		})
+		// The cache is dropped outside the timed region for the timeline columns
+		// too, so they keep measuring the database path rather than C1b hits.
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::personal_timeline(db, session, TIMELINE_LENGTH),
+					"scaling-personal",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		)
 		.median,
-		measure(|| {
-			expect_timeline(
-				timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
-				"scaling-private",
-			)
-		})
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
+					"scaling-private",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		)
 		.median,
-		measure(|| {
-			expect_timeline(
-				timeline::global_timeline(db, None, TIMELINE_LENGTH),
-				"scaling-anon",
-			)
-		})
+		measure_with_reset(
+			|| {
+				expect_timeline(
+					timeline::global_timeline(db, None, TIMELINE_LENGTH),
+					"scaling-anon",
+				)
+			},
+			|| db.clear_cache_for_tests(),
+		)
 		.median,
 		// The cache is dropped outside the timed region, so the column keeps
 		// measuring the database path rather than a warm cache hit.
