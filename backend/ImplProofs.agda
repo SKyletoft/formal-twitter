@@ -2,15 +2,18 @@ open import Agda.Builtin.Bool                     using (Bool; true; false)
 open import Agda.Builtin.Maybe
 open import Agda.Builtin.Nat                      using (Nat)
 open import Data.Empty                            using (⊥; ⊥-elim)
-open import Data.List                             using (List; []; _∷_; length)
+open import Data.List                             using (List; []; _∷_; length;
+                                                         take; filter; filterᵇ)
 open import Data.Product                          using (_,_; proj₁; proj₂; ∃-syntax)
 open import Data.String                           using (String; _≟_)
+open import Function                              using (_∘_)
 open import Data.Sum                              using (_⊎_; inj₁; inj₂)
 open import Data.Unit                             using (⊤; tt)
 open import Relation.Binary.Definitions           using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym;
                                                          subst; trans)
-open import Relation.Nullary.Decidable.Core        using (Dec; yes; no)
+open import Relation.Nullary.Decidable.Core        using (Dec; yes; no; does)
+open import Relation.Unary                        using (Pred; Decidable)
 open import Relation.Nullary.Negation.Core        using (¬_)
 
 open import Helpers
@@ -2336,3 +2339,439 @@ unlike-expired :
   Step before (unlike sid pid) before expired
 unlike-expired before {sid} {pid} ¬act =
   failed-access-inactive before (unlike sid pid) sid refl ¬act
+-- ---------------------------------------------------------------------------
+-- P15: timelines (Twitter.agda:557-585)
+--
+-- The three timeline rules read
+--   `take n ∘ filterᵇ (follows-post-author before user) ∘ filter
+--    (can-read-post before sid) ∘ newest-first`  (personal),
+--   `take n ∘ filter (can-read-post before sid) ∘ newest-first` (private
+--    global), and `take n ∘ filter (is-post-public before) ∘ newest-first`
+--    (public global).
+-- The engine instead evaluates the simple test its SQL two-column filters
+-- express: `*-allowed`, a `Bool` over the looked-up post row and the follow
+-- table.  `filter-dec-eq`, `filterᵇ-cong` and `filterᵇ-and` turn the spec's
+-- filters into `filterᵇ` of a `Bool` predicate, and `personal-pointwise`,
+-- `global-pointwise` and `public-pointwise` show that predicate agrees with
+-- `personal-allowed` / `global-allowed` / `public-allowed` -- the exact list
+-- the Rust tests compute.  `personal-timeline`, `private-global-timeline`
+-- and `public-global-timeline` are then the spec's three rules rewritten by
+-- `personal-char` / `global-char` / `public-char`, and
+-- `personal-timeline-expired` / `private-global-timeline-expired` are
+-- `failed-access` for an inactive session.  `read-global-timeline nothing`
+-- is tokenless (`extract-sid` is `nothing`), so it never expires.
+-- ---------------------------------------------------------------------------
+
+vis-b : Visibility → Bool
+vis-b everyone       = true
+vis-b followers-only = false
+
+status-b : PostStatus → Bool
+status-b live    = true
+status-b deleted = false
+
+and-b : Bool → Bool → Bool
+and-b true  b = b
+and-b false _ = false
+
+or-b : Bool → Bool → Bool
+or-b true  _ = true
+or-b false b = b
+
+and-b-false-right : (b : Bool) → and-b b false ≡ false
+and-b-false-right true  = refl
+and-b-false-right false = refl
+
+or-b-true-right : (b : Bool) → or-b b true ≡ true
+or-b-true-right true  = refl
+or-b-true-right false = refl
+
+and-b-true-left : (b c : Bool) → and-b b c ≡ true → b ≡ true
+and-b-true-left true  c h = refl
+and-b-true-left false c ()
+
+and-b-true-right : (b c : Bool) → and-b b c ≡ true → c ≡ true
+and-b-true-right true  c h = h
+and-b-true-right false c ()
+
+or-b-true-left :
+  (b c : Bool) → or-b b c ≡ true → (b ≡ true) ⊎ ((b ≡ false) × (c ≡ true))
+or-b-true-left true  c h = inj₁ refl
+or-b-true-left false c h = inj₂ (refl , h)
+
+bool-false : (b : Bool) → (b ≡ true → ⊥) → b ≡ false
+bool-false true  ¬t = ⊥-elim (¬t refl)
+bool-false false ¬t = refl
+
+status-b-live : (s : PostStatus) → status-b s ≡ true → s ≡ live
+status-b-live live    h = refl
+status-b-live deleted ()
+
+vis-b-everyone : (v : Visibility) → vis-b v ≡ true → v ≡ everyone
+vis-b-everyone everyone       h = refl
+vis-b-everyone followers-only ()
+
+vis-b-followers : (v : Visibility) → vis-b v ≡ false → v ≡ followers-only
+vis-b-followers everyone       h = ⊥-elim (false≢true (sym h))
+vis-b-followers followers-only h = refl
+
+-- The simple characterizations the engine's SQL computes.
+personal-ok : World → String → Maybe Post → Bool
+personal-ok w user nothing                            = false
+personal-ok w user (just (post a txt v s lk rp par)) = and-b (status-b s) (World.follows w user a)
+
+global-ok : World → String → Maybe Post → Bool
+global-ok w user nothing                            = false
+global-ok w user (just (post a txt v s lk rp par)) =
+  and-b (status-b s) (or-b (vis-b v) (World.follows w user a))
+
+public-ok : Maybe Post → Bool
+public-ok nothing                            = false
+public-ok (just (post a txt v s lk rp par)) = and-b (status-b s) (vis-b v)
+
+personal-allowed : World → String → PostId → Bool
+personal-allowed w user pid = personal-ok w user (World.post-at w pid)
+
+global-allowed : World → String → PostId → Bool
+global-allowed w user pid = global-ok w user (World.post-at w pid)
+
+public-allowed : World → PostId → Bool
+public-allowed w pid = public-ok (World.post-at w pid)
+
+-- `follows-post-author` (Twitter.agda:366-369) as a function of the post row.
+follows-maybe : World → String → Maybe Post → Bool
+follows-maybe w user nothing                            = false
+follows-maybe w user (just (post a txt v s lk rp par)) = World.follows w user a
+
+follows-maybe-just : (w : World) (user : String) (p : Post) →
+  follows-maybe w user (just p) ≡ World.follows w user (Post.author p)
+follows-maybe-just w user (post a txt v s lk rp par) = refl
+
+follows-post-author-eq : (w : World) (user : String) (pid : PostId) →
+  follows-post-author w user pid ≡ follows-maybe w user (World.post-at w pid)
+follows-post-author-eq w user pid with World.post-at w pid
+... | nothing = refl
+... | just p  = refl
+
+follows-post-author-just :
+  (w : World) (user : String) (pid : PostId) (p : Post) →
+  World.post-at w pid ≡ just p →
+  follows-post-author w user pid ≡ World.follows w user (Post.author p)
+follows-post-author-just w user pid p eq =
+  trans (follows-post-author-eq w user pid)
+        (trans (cong (follows-maybe w user) eq) (follows-maybe-just w user p))
+
+-- filter over a Decidable predicate = filterᵇ over its decision.
+filter-dec-eq : ∀ {a p} {A : Set a} {P : A → Set p} (P? : Decidable P) (xs : List A) →
+  filter P? xs ≡ filterᵇ (λ x → does (P? x)) xs
+filter-dec-eq P? [] = refl
+filter-dec-eq P? (x ∷ xs) with does (P? x)
+... | true  = cong (x ∷_) (filter-dec-eq P? xs)
+... | false = filter-dec-eq P? xs
+
+filterᵇ-true : ∀ {a} {A : Set a} (p : A → Bool) (x : A) (xs : List A) →
+  p x ≡ true → filterᵇ p (x ∷ xs) ≡ x ∷ filterᵇ p xs
+filterᵇ-true p x xs eq with p x
+... | true  = refl
+... | false = ⊥-elim (false≢true eq)
+
+filterᵇ-false : ∀ {a} {A : Set a} (p : A → Bool) (x : A) (xs : List A) →
+  p x ≡ false → filterᵇ p (x ∷ xs) ≡ filterᵇ p xs
+filterᵇ-false p x xs eq with p x
+... | true  = ⊥-elim (false≢true (sym eq))
+... | false = refl
+
+filterᵇ-cong : ∀ {a} {A : Set a} (p q : A → Bool) (xs : List A) →
+  (∀ x → p x ≡ q x) → filterᵇ p xs ≡ filterᵇ q xs
+filterᵇ-cong p q [] eq = refl
+filterᵇ-cong p q (x ∷ xs) eq with p x in ep
+... | true  = trans (cong (x ∷_) (filterᵇ-cong p q xs eq))
+                    (sym (filterᵇ-true q x xs (trans (sym (eq x)) ep)))
+... | false = trans (filterᵇ-cong p q xs eq)
+                    (sym (filterᵇ-false q x xs (trans (sym (eq x)) ep)))
+
+and-f : ∀ {a} {A : Set a} (p q : A → Bool) → A → Bool
+and-f p q z = and-b (p z) (q z)
+
+filterᵇ-and-cons :
+  ∀ {a} {A : Set a} (p q : A → Bool) (x : A) (xs : List A) (b c : Bool) →
+  q x ≡ b → p x ≡ c →
+  filterᵇ p (filterᵇ q xs) ≡ filterᵇ (and-f p q) xs →
+  filterᵇ p (filterᵇ q (x ∷ xs)) ≡ filterᵇ (and-f p q) (x ∷ xs)
+filterᵇ-and-cons p q x xs false c eqq eqp ih =
+  trans (cong (filterᵇ p) (filterᵇ-false q x xs eqq))
+        (trans ih
+               (sym (filterᵇ-false (and-f p q) x xs
+                          (trans (cong (λ z → and-b (p x) z) eqq)
+                                 (and-b-false-right (p x))))))
+filterᵇ-and-cons p q x xs true c eqq eqp ih with c
+... | true =
+  trans (cong (filterᵇ p) (filterᵇ-true q x xs eqq))
+        (trans (filterᵇ-true p x (filterᵇ q xs) eqp)
+               (trans (cong (x ∷_) ih)
+                      (sym (filterᵇ-true (and-f p q) x xs
+                             (trans (cong (λ z → and-b z (q x)) eqp)
+                                    (cong (and-b true) eqq))))))
+... | false =
+  trans (cong (filterᵇ p) (filterᵇ-true q x xs eqq))
+        (trans (filterᵇ-false p x (filterᵇ q xs) eqp)
+               (trans ih
+                      (sym (filterᵇ-false (and-f p q) x xs
+                             (cong (λ z → and-b z (q x)) eqp)))))
+
+filterᵇ-and : ∀ {a} {A : Set a} (p q : A → Bool) (xs : List A) →
+  filterᵇ p (filterᵇ q xs) ≡ filterᵇ (and-f p q) xs
+filterᵇ-and p q [] = refl
+filterᵇ-and p q (x ∷ xs) =
+  filterᵇ-and-cons p q x xs (q x) (p x) refl refl (filterᵇ-and p q xs)
+
+does-eq : ∀ {a} {A : Set a} (P? : Dec A) (p : Bool) →
+  (A → p ≡ true) → (¬ A → p ≡ false) → does P? ≡ p
+does-eq (yes a) p A→true ¬A→false = sym (A→true a)
+does-eq (no ¬a) p A→true ¬A→false = sym (¬A→false ¬a)
+
+-- `CanReadPost` implies the simple (private-global) characterization.
+can-read-true :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  CanReadPost w sid pid →
+  global-ok w user (World.post-at w pid) ≡ true
+can-read-true w sid pid {acc} {user} vs
+  (post-is-public {post = post a txt v s lk rp par} vs' peq refl refl)
+  rewrite peq = refl
+can-read-true w sid pid {acc} {user} vs
+  (post-is-private {acc = acc'} {user = user'} {post = post a txt v s lk rp par}
+                   vs' peq refl refl f) =
+  subst (λ m → global-ok w user m ≡ true) (sym peq)
+        (subst (λ b → and-b true (or-b false b) ≡ true) (sym follows-eq) refl)
+  where
+    u-eq : user ≡ user'
+    u-eq = active-inj (trans (sym (ValidSession.session-unchanged vs))
+                             (ValidSession.session-unchanged vs'))
+
+    follows-eq : World.follows w user a ≡ true
+    follows-eq = trans (cong (λ z → World.follows w z a) u-eq) f
+
+-- ... and conversely.
+can-read-global-m :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user → (m : Maybe Post) →
+  World.post-at w pid ≡ m →
+  global-ok w user m ≡ true →
+  CanReadPost w sid pid
+can-read-global-m w sid pid {acc} {user} vs nothing eq h =
+  ⊥-elim (false≢true h)
+can-read-global-m w sid pid {acc} {user} vs (just (post a txt v s lk rp par)) eq h =
+  go (or-b-true-left (vis-b v) (World.follows w user a) rest)
+  where
+    st-true : status-b s ≡ true
+    st-true = and-b-true-left (status-b s) (or-b (vis-b v) (World.follows w user a)) h
+
+    s-live : s ≡ live
+    s-live = status-b-live s st-true
+
+    rest : or-b (vis-b v) (World.follows w user a) ≡ true
+    rest = and-b-true-right (status-b s) (or-b (vis-b v) (World.follows w user a)) h
+
+    go : (vis-b v ≡ true) ⊎ ((vis-b v ≡ false) × (World.follows w user a ≡ true))
+       → CanReadPost w sid pid
+    go (inj₁ ev)          = post-is-public vs eq (vis-b-everyone v ev) s-live
+    go (inj₂ (nv , fv))   = post-is-private vs eq (vis-b-followers v nv) s-live fv
+
+can-read-global :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  global-ok w user (World.post-at w pid) ≡ true →
+  CanReadPost w sid pid
+can-read-global w sid pid vs =
+  can-read-global-m w sid pid vs (World.post-at w pid) refl
+
+can-read-false :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  ¬ CanReadPost w sid pid →
+  global-ok w user (World.post-at w pid) ≡ false
+can-read-false w sid pid {acc} {user} vs ¬can =
+  bool-false (global-ok w user (World.post-at w pid))
+             (λ h → ¬can (can-read-global w sid pid vs h))
+
+global-pointwise :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  does (can-read-post w sid pid) ≡ global-allowed w user pid
+global-pointwise w sid pid {acc} {user} vs =
+  does-eq (can-read-post w sid pid) (global-ok w user (World.post-at w pid))
+          (can-read-true w sid pid vs) (can-read-false w sid pid vs)
+
+personal-bool : (f st tv c : Bool) →
+  c ≡ and-b st (or-b tv f) → and-b f c ≡ and-b st f
+personal-bool f st tv c h with f
+... | false = sym (and-b-false-right st)
+... | true  = trans h (cong (and-b st) (or-b-true-right tv))
+
+personal-pointwise-just :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user → (p : Post) →
+  World.post-at w pid ≡ just p →
+  and-b (World.follows w user (Post.author p)) (does (can-read-post w sid pid))
+  ≡ and-b (status-b (Post.status p)) (World.follows w user (Post.author p))
+personal-pointwise-just w sid pid {acc} {user} vs
+  (post a txt v s lk rp par) eq =
+  personal-bool (World.follows w user a) (status-b s) (vis-b v)
+                (does (can-read-post w sid pid))
+                (trans (global-pointwise w sid pid vs)
+                       (cong (global-ok w user) eq))
+
+personal-step-m :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user → (m : Maybe Post) →
+  World.post-at w pid ≡ m →
+  and-b (follows-maybe w user m) (does (can-read-post w sid pid))
+  ≡ personal-ok w user m
+personal-step-m w sid pid {acc} {user} vs nothing eq = refl
+personal-step-m w sid pid {acc} {user} vs (just (post a txt v s lk rp par)) eq =
+  personal-pointwise-just w sid pid vs (post a txt v s lk rp par) eq
+
+personal-step :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  and-b (follows-maybe w user (World.post-at w pid)) (does (can-read-post w sid pid))
+  ≡ personal-ok w user (World.post-at w pid)
+personal-step w sid pid vs = personal-step-m w sid pid vs (World.post-at w pid) refl
+
+personal-pointwise :
+  (w : World) (sid : SessionId) (pid : PostId) {acc : Account} {user : String} →
+  ValidSession w sid acc user →
+  and-b (follows-post-author w user pid) (does (can-read-post w sid pid))
+  ≡ personal-allowed w user pid
+personal-pointwise w sid pid {acc} {user} vs =
+  trans (cong (λ z → and-b z (does (can-read-post w sid pid)))
+              (follows-post-author-eq w user pid))
+        (personal-step w sid pid vs)
+
+-- `is-post-public` (Twitter.agda:342-357) is the `public-ok` characterization.
+public-true :
+  (w : World) (pid : PostId) →
+  (∃[ p ] (World.post-at w pid ≡ just p)
+         × (Post.visibility p ≡ everyone) × (Post.status p ≡ live)) →
+  public-ok (World.post-at w pid) ≡ true
+public-true w pid (post a txt v s lk rp par , peq , vis , stp)
+  rewrite peq | vis | stp = refl
+
+public-can-read-m :
+  (w : World) (pid : PostId) (m : Maybe Post) →
+  World.post-at w pid ≡ m →
+  public-ok m ≡ true →
+  ∃[ p ] (World.post-at w pid ≡ just p)
+        × (Post.visibility p ≡ everyone) × (Post.status p ≡ live)
+public-can-read-m w pid nothing eq h = ⊥-elim (false≢true h)
+public-can-read-m w pid (just (post a txt v s lk rp par)) eq h =
+  ( post a txt v s lk rp par
+  , eq
+  , vis-b-everyone v (and-b-true-right (status-b s) (vis-b v) h)
+  , status-b-live s (and-b-true-left (status-b s) (vis-b v) h) )
+
+public-can-read :
+  (w : World) (pid : PostId) →
+  public-ok (World.post-at w pid) ≡ true →
+  ∃[ p ] (World.post-at w pid ≡ just p)
+        × (Post.visibility p ≡ everyone) × (Post.status p ≡ live)
+public-can-read w pid = public-can-read-m w pid (World.post-at w pid) refl
+
+public-pointwise :
+  (w : World) (pid : PostId) →
+  does (is-post-public w pid) ≡ public-allowed w pid
+public-pointwise w pid =
+  does-eq (is-post-public w pid) (public-ok (World.post-at w pid))
+          (public-true w pid)
+          (λ ¬a → bool-false (public-ok (World.post-at w pid))
+                             (λ h → ¬a (public-can-read w pid h)))
+
+-- The three characterizations: the spec's filter expression equals the simple one.
+personal-char :
+  ∀ {w sid acc user} → ValidSession w sid acc user →
+  filterᵇ (follows-post-author w user)
+          (filter (can-read-post w sid) (World.newest-first w))
+  ≡ filterᵇ (personal-allowed w user) (World.newest-first w)
+personal-char {w} {sid} {acc} {user} vs =
+  trans (cong (filterᵇ (follows-post-author w user))
+              (filter-dec-eq (can-read-post w sid) (World.newest-first w)))
+        (trans (filterᵇ-and (follows-post-author w user)
+                            (λ pid → does (can-read-post w sid pid))
+                            (World.newest-first w))
+               (filterᵇ-cong (λ pid → and-b (follows-post-author w user pid)
+                                          (does (can-read-post w sid pid)))
+                             (personal-allowed w user)
+                             (World.newest-first w)
+                             (λ pid → personal-pointwise w sid pid vs)))
+
+global-char :
+  ∀ {w sid acc user} → ValidSession w sid acc user →
+  filter (can-read-post w sid) (World.newest-first w)
+  ≡ filterᵇ (global-allowed w user) (World.newest-first w)
+global-char {w} {sid} {acc} {user} vs =
+  trans (filter-dec-eq (can-read-post w sid) (World.newest-first w))
+        (filterᵇ-cong (λ pid → does (can-read-post w sid pid))
+                      (global-allowed w user)
+                      (World.newest-first w)
+                      (λ pid → global-pointwise w sid pid vs))
+
+public-char :
+  (w : World) →
+  filter (is-post-public w) (World.newest-first w)
+  ≡ filterᵇ (public-allowed w) (World.newest-first w)
+public-char w =
+  trans (filter-dec-eq (is-post-public w) (World.newest-first w))
+        (filterᵇ-cong (λ pid → does (is-post-public w pid))
+                      (public-allowed w)
+                      (World.newest-first w)
+                      (public-pointwise w))
+
+-- P15: the timelines (Twitter.agda:557-585).
+personal-timeline :
+  ∀ {before n sid acc user} → ValidSession before sid acc user →
+  Step before (read-personal-timeline sid n) before
+    (returned-timeline
+       (take n (filterᵇ (personal-allowed before user) (World.newest-first before))))
+personal-timeline {before} {n} {sid} {acc} {user} vs =
+  subst (λ xs → Step before (read-personal-timeline sid n) before
+                  (returned-timeline (take n xs)))
+        (personal-char vs)
+        (get-personal-timeline {n = n} vs)
+
+private-global-timeline :
+  ∀ {before n sid acc user} → ValidSession before sid acc user →
+  Step before (read-global-timeline (just sid) n) before
+    (returned-timeline
+       (take n (filterᵇ (global-allowed before user) (World.newest-first before))))
+private-global-timeline {before} {n} {sid} {acc} {user} vs =
+  subst (λ xs → Step before (read-global-timeline (just sid) n) before
+                  (returned-timeline (take n xs)))
+        (global-char vs)
+        (get-private-global-timeline {n = n} vs)
+
+public-global-timeline :
+  ∀ {before n} →
+  Step before (read-global-timeline nothing n) before
+    (returned-timeline
+       (take n (filterᵇ (public-allowed before) (World.newest-first before))))
+public-global-timeline {before} {n} =
+  subst (λ xs → Step before (read-global-timeline nothing n) before
+                  (returned-timeline (take n xs)))
+        (public-char before)
+        (get-public-global-timeline {n = n})
+
+-- An inactive session expires both session-carrying timelines.
+personal-timeline-expired :
+  ∀ (before : World) {sid : SessionId} {n : Nat} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (read-personal-timeline sid n) before expired
+personal-timeline-expired before {sid} {n} ¬act =
+  failed-access-inactive before (read-personal-timeline sid n) sid refl ¬act
+
+private-global-timeline-expired :
+  ∀ (before : World) {sid : SessionId} {n : Nat} →
+  (∀ {user} → World.session-at before sid ≡ active user → ⊥) →
+  Step before (read-global-timeline (just sid) n) before expired
+private-global-timeline-expired before {sid} {n} ¬act =
+  failed-access-inactive before (read-global-timeline (just sid) n) sid refl ¬act
