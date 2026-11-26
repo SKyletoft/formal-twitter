@@ -27,9 +27,11 @@
 //! nix develop --command bash -c 'cd backend && cargo run --release --example bench'
 //! ```
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use diesel::SqliteConnection;
+use diesel::connection::{Instrumentation, InstrumentationEvent};
 
 use formal_twitter::db::Db;
 use formal_twitter::engine::{EngineResult, auth, posts, social, timeline};
@@ -65,6 +67,67 @@ const RENDER_GET_TWEETS: usize = 20;
 
 fn username(index: usize) -> String {
 	format!("u{index:04}")
+}
+
+/* ---------- statement counting ---------- */
+
+/// Whether [`StatementCounter`] is collecting; `false` outside a counted call,
+/// so the timing sections pay one relaxed load per statement and nothing else.
+static COUNTING: AtomicBool = AtomicBool::new(false);
+/// Statements seen while [`COUNTING`] was set.
+static STATEMENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// A diesel [`Instrumentation`] that counts the SQL statements a command issues.
+///
+/// Only `StartQuery` events for `SELECT`/`INSERT`/`UPDATE`/`DELETE` are counted:
+/// the transaction frames (`BEGIN`/`COMMIT`) and the connection's `PRAGMA`s are
+/// counted out, so the number reported is the number of round trips the command
+/// makes to the database, not the transaction overhead around them.
+#[derive(Debug)]
+struct StatementCounter;
+
+impl Instrumentation for StatementCounter {
+	fn on_connection_event(&mut self, event: InstrumentationEvent<'_>) {
+		if !COUNTING.load(Ordering::Relaxed) {
+			return;
+		}
+		if let InstrumentationEvent::StartQuery { query, .. } = event {
+			let sql = query.to_string();
+			let sql = sql.trim_start();
+			let counted = ["SELECT", "INSERT", "UPDATE", "DELETE"].iter().any(|verb| {
+				sql.len() >= verb.len() && sql[..verb.len()].eq_ignore_ascii_case(verb)
+			});
+			if counted {
+				STATEMENTS.fetch_add(1, Ordering::Relaxed);
+			}
+		}
+	}
+}
+
+/// Installs [`StatementCounter`] on the connection behind `db`.
+fn count_statements(db: &Db) {
+	db.read::<()>(|c| {
+		diesel::Connection::set_instrumentation(c, StatementCounter);
+		Ok(())
+	})
+	.expect("install statement counter");
+}
+
+/// The statements `op` issues, on a connection [`count_statements`] instrumented.
+fn counted<T>(op: impl FnOnce() -> T) -> (T, usize) {
+	STATEMENTS.store(0, Ordering::SeqCst);
+	COUNTING.store(true, Ordering::SeqCst);
+	let value = op();
+	COUNTING.store(false, Ordering::SeqCst);
+	(value, STATEMENTS.load(Ordering::SeqCst))
+}
+
+fn print_statements(title: &str, rows: &[(String, usize)]) {
+	println!("\n{title}");
+	println!("{:<36} {:>6}", "scenario", "stmts");
+	for (scenario, statements) in rows {
+		println!("{scenario:<36} {statements:>6}");
+	}
 }
 
 /* ---------- seeding ---------- */
@@ -635,6 +698,99 @@ fn cache_report(db: &Db, uncached: &Db, seeded: &Seeded) -> Vec<Row> {
 	rows
 }
 
+/* ---------- statement counts ---------- */
+
+/// The database round trips each command makes, counted from diesel's
+/// [`InstrumentationEvent::StartQuery`] events on the same database and data.
+///
+/// Runs after the timing tables because it writes (`publish`, `like`, `follow`)
+/// and would otherwise disturb them.
+fn statement_report(db: &Db, seeded: &Seeded) -> Vec<(String, usize)> {
+	let session = seeded.session;
+	let target = seeded.target;
+	let spare = seeded.spare;
+	let mut rows: Vec<(String, usize)> = Vec::new();
+
+	// `read-post`, cold and warm, with and without a session. The spare post is
+	// used rather than the target: `engine_report`'s reply scenario can push the
+	// target past `CACHE_MAX_REPLIES`, after which its body is deliberately not
+	// cached and the warm rows would not be warm.
+	db.clear_cache_for_tests();
+	let (_, cold) = counted(|| {
+		expect_returned(posts::read_post(db, Some(session), spare), "stmt-get-tweet");
+	});
+	rows.push(("get-tweet session (cold)".to_owned(), cold));
+	let (_, warm) = counted(|| {
+		expect_returned(posts::read_post(db, Some(session), spare), "stmt-get-tweet");
+	});
+	rows.push(("get-tweet session (warm)".to_owned(), warm));
+
+	db.clear_cache_for_tests();
+	let (_, cold) = counted(|| {
+		expect_returned(posts::read_post(db, None, spare), "stmt-get-tweet-anon");
+	});
+	rows.push(("get-tweet anonymous (cold)".to_owned(), cold));
+	let (_, warm) = counted(|| {
+		expect_returned(posts::read_post(db, None, spare), "stmt-get-tweet-anon");
+	});
+	rows.push(("get-tweet anonymous (warm)".to_owned(), warm));
+
+	let (_, count) = counted(|| {
+		expect_created(
+			posts::publish(db, session, "statement-count post", None),
+			"stmt-publish",
+		);
+	});
+	rows.push(("publish".to_owned(), count));
+	let (_, count) = counted(|| {
+		expect_created(
+			posts::publish(db, session, "statement-count reply", Some(target)),
+			"stmt-publish-reply",
+		);
+	});
+	rows.push(("publish reply".to_owned(), count));
+
+	social::unlike(db, session, spare).expect("reset unlike");
+	let (_, count) = counted(|| expect_success(social::like(db, session, spare), "stmt-like"));
+	rows.push(("like".to_owned(), count));
+	let (_, count) = counted(|| expect_success(social::unlike(db, session, spare), "stmt-unlike"));
+	rows.push(("unlike".to_owned(), count));
+
+	let followee = username(500);
+	social::unfollow(db, session, &followee).expect("reset unfollow");
+	let (_, count) =
+		counted(|| expect_success(social::follow(db, session, &followee), "stmt-follow"));
+	rows.push(("follow".to_owned(), count));
+	let (_, count) = counted(|| {
+		expect_success(social::unfollow(db, session, &followee), "stmt-unfollow");
+	});
+	rows.push(("unfollow".to_owned(), count));
+
+	let (_, count) = counted(|| {
+		expect_timeline(
+			timeline::personal_timeline(db, session, TIMELINE_LENGTH),
+			"stmt-personal",
+		);
+	});
+	rows.push(("personal timeline n=20".to_owned(), count));
+	let (_, count) = counted(|| {
+		expect_timeline(
+			timeline::global_timeline(db, Some(session), TIMELINE_LENGTH),
+			"stmt-private-global",
+		);
+	});
+	rows.push(("private global n=20".to_owned(), count));
+	let (_, count) = counted(|| {
+		expect_timeline(
+			timeline::global_timeline(db, None, TIMELINE_LENGTH),
+			"stmt-anon-global",
+		);
+	});
+	rows.push(("anonymous global n=20".to_owned(), count));
+
+	rows
+}
+
 /* ---------- HTTP scenarios ---------- */
 
 fn request_body(lines: &[&str]) -> String {
@@ -855,6 +1011,8 @@ fn main() {
 	let uncached = Db::new_uncached(&path).expect("uncached handle to the same database");
 	let cache = cache_report(&db, &uncached, &seeded);
 	let engine = engine_report(&db, &seeded);
+	count_statements(&db);
+	let statements = statement_report(&db, &seeded);
 	let http = http_report();
 	let scaling = scaling_report();
 
@@ -863,6 +1021,10 @@ fn main() {
 		&cache,
 	);
 	print_table("engine (warmup + 15 samples, adaptive batch)", &engine);
+	print_statements(
+		"statements per command (SELECT/INSERT/UPDATE/DELETE, cache dropped before cold rows)",
+		&statements,
+	);
 	print_table(
 		&format!("http ({HTTP_SAMPLES} requests per scenario, in-memory db, 500 posts)"),
 		&http,
@@ -880,9 +1042,9 @@ fn print_hotspots() {
 	println!("  1. One `Mutex<SqliteConnection>` in `Db` serialises every request: reads and");
 	println!("     writes queue on one connection, so throughput is one core's SQL at best.");
 	println!("     Rocket's handlers are synchronous, so each request also parks a worker.");
-	println!("  2. Every engine command opens a transaction (`BEGIN`/`COMMIT`) and is 2-4 round");
-	println!("     trips: `active_user` + the work. `publish` adds `get_account`, and a reply");
-	println!("     adds `get_post` + `is_following`: one post costs 3-5 queries plus an id probe.");
+	println!("  2. Every engine command opens a transaction (`BEGIN`/`COMMIT`): the statement");
+	println!("     counts above are the round trips on top of that, 1-3 each after the query");
+	println!("     fusion, so the transaction frames are a large share of a short command.");
 	println!("  3. `insert_post`/`insert_reply` compute `COALESCE(MAX(seq),0)+1` per insert: a");
 	println!("     unique-index seek plus one write per row, so bulk seeding is O(n log n).");
 	println!("  4. `ids::allocate` draws a random i64 and probes `EXISTS` until free: one extra");
@@ -890,10 +1052,11 @@ fn print_hotspots() {
 	println!("  5. Timelines filter the whole seq-ordered list until `n` matches survive: the");
 	println!("     personal timeline scans ~users/followed-authors posts per answer through a");
 	println!("     correlated `EXISTS`, so cost tracks match density, not `n`.");
-	println!("  6. `post_view` LEFT-JOINs `post_likes` and groups; `read_post` runs it plus");
-	println!("     `can_read_post` and `replies_of`, i.e. three queries for one tweet, each");
-	println!("     rebuilding a `format!`ed SQL string. A live `everyone` tweet skips all three");
-	println!("     on a warm cache hit, which is why the cache table's warm row is one session");
+	println!("  6. `post_view_for`/`post_view_anonymous` LEFT-JOIN `post_likes` and group, so a");
+	println!("     cold `read-post` is the fused view (body, likes and `CanReadPost` in one");
+	println!("     row) plus the session probe and `replies_of`; the SQL is a fixed string");
+	println!("     with bound parameters, not `format!`ed. A live `everyone` tweet answers");
+	println!("     from the warm cache instead, which is why the warm rows are one session");
 	println!("     probe and nothing else; any write drops the whole map, so a cold row pays");
 	println!("     the full database path plus the insertion.");
 	println!("  7. The rest is fixed overhead: `rand` for ids, `serde_json` for escaping,");

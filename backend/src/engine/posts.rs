@@ -29,6 +29,12 @@ use crate::store;
 /// (Twitter.agda:213-217). Answers `CreatedPost pid` with the fresh id, and
 /// `Denied` (leaving the world unchanged) when the parent cannot be read
 /// (`CanReadPost`, Twitter.agda:158-179).
+///
+/// The session's account and -- for a reply -- the parent's author, visibility,
+/// status and follow edge all come from one [`store::publish_context`] query,
+/// so the answer keeps the spec's precedence: a session that is not `active`
+/// is `Expired` before any parent is looked at, and only then can a missing,
+/// `deleted` or unreadable parent turn the answer into `Denied`.
 pub fn publish(
 	db: &Db,
 	session_id: SessionId,
@@ -36,39 +42,37 @@ pub fn publish(
 	parent: Option<PostId>,
 ) -> Result<EngineResult, DbError> {
 	db.write(|c| {
-		// One query for both halves of the session's authority: `ValidSession`
-		// carries the account (Twitter.agda:150-157), so a missing account is
-		// impossible; the join keeps it total and answers `Expired` regardless.
-		let Some((username, default_visibility)) = store::active_account(c, session_id)? else {
+		// One query for the whole decision: `ValidSession` carries the account
+		// (Twitter.agda:150-157), so a missing account is impossible; the join
+		// keeps it total and answers `Expired` regardless.
+		let Some(context) = store::publish_context(c, session_id, parent)? else {
 			return Ok(EngineResult::Expired);
 		};
-		match parent {
-			None => {
-				let pid = crate::ids::allocate_post_id(c)?;
-				store::insert_post(c, pid, &username, text, default_visibility)?;
-				Ok(EngineResult::CreatedPost(pid))
-			}
-			Some(ppid) => {
-				let Some(ppost) = store::get_post(c, ppid)? else {
-					return Ok(EngineResult::Denied);
-				};
+		let visibility = match (parent, context.parent) {
+			(None, _) => context.default_visibility,
+			// A named parent that has no row is `¬ CanReadPost`
+			// (`failed-reply`, Twitter.agda:424-428).
+			(Some(_), None) => return Ok(EngineResult::Denied),
+			(Some(_), Some(ppost)) => {
 				if ppost.status != PostStatus::Live {
 					return Ok(EngineResult::Denied);
 				}
-				let visibility = match ppost.visibility {
-					Visibility::Everyone => default_visibility,
-					Visibility::FollowersOnly => {
-						if !store::is_following(c, &username, &ppost.author)? {
-							return Ok(EngineResult::Denied);
-						}
-						Visibility::FollowersOnly
-					}
-				};
-				let pid = crate::ids::allocate_post_id(c)?;
-				store::insert_reply(c, pid, &username, text, visibility, ppid)?;
-				Ok(EngineResult::CreatedPost(pid))
+				match ppost.visibility {
+					Visibility::Everyone => context.default_visibility,
+					// `CanReadPost` needs the follow edge for `followers-only`.
+					Visibility::FollowersOnly if ppost.following => Visibility::FollowersOnly,
+					Visibility::FollowersOnly => return Ok(EngineResult::Denied),
+				}
+			}
+		};
+		let pid = crate::ids::allocate_post_id(c)?;
+		match parent {
+			None => store::insert_post(c, pid, &context.username, text, visibility)?,
+			Some(ppid) => {
+				store::insert_reply(c, pid, &context.username, text, visibility, ppid)?;
 			}
 		}
+		Ok(EngineResult::CreatedPost(pid))
 	})
 }
 
@@ -139,6 +143,11 @@ fn is_public(post: &Post) -> bool {
 /// over `Denied`/`ReturnedPost` (T7 revokes sessions). The cache adds no `Step`
 /// to the spec: it only recomputes the answer these same theorems define, and
 /// `tests/cache.rs` checks it against an uncached `Db`.
+///
+/// On a miss the body, its like count and the readability decision come from
+/// one fused query ([`store::post_view_for`] / [`store::post_view_anonymous`]),
+/// so `Denied`/`Expired` and `ReturnedPost` are decided from the same row the
+/// body is built from; only the reply list needs a second query.
 pub fn read_post(
 	db: &Db,
 	session_id: Option<SessionId>,
@@ -152,21 +161,25 @@ pub fn read_post(
 			return Ok(returned_post(body));
 		}
 		return db.read(|c| {
-			if !store::can_read_anonymous(c, post_id)? {
+			// Sampled before the database read below, and checked by `cache_put`
+			// against the generation the write transaction moved: a write racing
+			// in between keeps its invalidation.
+			let sampled = db.cache_generation();
+			// One query for both the body and `is-post-public`
+			// (Twitter.agda:342-357): absent and unreadable answer the same
+			// `Expired`, since `read-post nothing` extracts no session.
+			let Some(read) = store::post_view_anonymous(c, post_id)? else {
+				return Ok(EngineResult::Expired);
+			};
+			if !read.readable {
 				return Ok(EngineResult::Expired);
 			}
-			let sampled = db.cache_generation();
-			match store::post_view(c, post_id)? {
-				Some(view) => {
-					let public = is_public(&view.post);
-					let body = public_body(c, view)?;
-					if public {
-						db.cache_put(sampled, post_id, body.clone());
-					}
-					Ok(returned_post(body))
-				}
-				None => Ok(EngineResult::Expired),
+			let public = is_public(&read.view.post);
+			let body = public_body(c, read.view)?;
+			if public {
+				db.cache_put(sampled, post_id, body.clone());
 			}
+			Ok(returned_post(body))
 		});
 	};
 	db.read(|c| {
@@ -184,14 +197,17 @@ pub fn read_post(
 		// against the generation the write transaction moved: a write racing in
 		// between keeps its invalidation. No cache lock is held across the I/O.
 		let sampled = db.cache_generation();
-		if !store::can_read_post(c, &username, post_id)? {
-			return Ok(EngineResult::Denied);
-		}
-		let Some(view) = store::post_view(c, post_id)? else {
+		// One query for the body, its like count and `CanReadPost`
+		// (Twitter.agda:168-187). An absent post is unreadable: `Denied`, the
+		// same answer the spec's `cant-read-post-*` rules give.
+		let Some(read) = store::post_view_for(c, &username, post_id)? else {
 			return Ok(EngineResult::Denied);
 		};
-		let public = is_public(&view.post);
-		let body = public_body(c, view)?;
+		if !read.readable {
+			return Ok(EngineResult::Denied);
+		}
+		let public = is_public(&read.view.post);
+		let body = public_body(c, read.view)?;
 		// `Denied` and `Expired` are never cached, and neither is a
 		// `followers-only` body: it depends on who is asking.
 		if public {

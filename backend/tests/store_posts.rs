@@ -362,3 +362,359 @@ fn delete_own_is_none_for_foreign_and_absent_posts() {
 	assert_eq!(delete_own(&db, ABSENT, "ada"), None, "absent");
 	assert_eq!(status_of(&db, POST), PostStatus::Live);
 }
+
+// ---------------------------------------------------------------------------
+// post_view_for / post_view_anonymous (fused read queries)
+// ---------------------------------------------------------------------------
+
+fn post_view_for(db: &Db, user: &str, id: PostId) -> Option<store::ReadView> {
+	db.read(|c| store::post_view_for(c, user, id))
+		.expect("post view for")
+}
+
+fn post_view_anonymous(db: &Db, id: PostId) -> Option<store::ReadView> {
+	db.read(|c| store::post_view_anonymous(c, id))
+		.expect("post view anonymous")
+}
+
+fn publish_context(
+	db: &Db,
+	sid: SessionId,
+	parent: Option<PostId>,
+) -> Option<store::PublishContext> {
+	db.read(|c| store::publish_context(c, sid, parent))
+		.expect("publish context")
+}
+
+fn like_access(db: &Db, sid: SessionId, id: PostId) -> Option<store::LikeAccess> {
+	db.read(|c| store::like_access(c, sid, id))
+		.expect("like access")
+}
+
+#[test]
+fn post_view_for_reports_readability_and_the_body_together() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_post(&db, POST, "ada", "public", Visibility::Everyone);
+	seed_post(&db, OTHER, "ada", "secret", Visibility::FollowersOnly);
+	db.write(|c| store::add_like(c, POST, "bob")).unwrap();
+
+	let read = post_view_for(&db, "bob", POST).expect("public post exists");
+	assert!(read.readable, "live everyone");
+	assert_eq!(read.view.post.text, "public");
+	assert_eq!(read.view.likes, 1, "the like count comes from the same row");
+
+	assert!(
+		!post_view_for(&db, "bob", OTHER)
+			.expect("private post exists")
+			.readable,
+		"followers-only, unfollowed"
+	);
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	assert!(
+		post_view_for(&db, "bob", OTHER)
+			.expect("private post exists")
+			.readable,
+		"followers-only, followed"
+	);
+	// A follow in the other direction grants nothing.
+	assert!(!post_view_for(&db, "ada", OTHER).expect("own post").readable);
+}
+
+#[test]
+fn post_view_for_marks_deleted_posts_unreadable_and_absent_posts_none() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_post(&db, POST, "ada", "gone", Visibility::Everyone);
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	db.write(|c| store::soft_delete_post(c, POST)).unwrap();
+
+	let read = post_view_for(&db, "ada", POST).expect("the row remains");
+	assert!(!read.readable, "deleted, even for the author");
+	assert_eq!(read.view.post.status, PostStatus::Deleted);
+	assert_eq!(post_view_for(&db, "ada", ABSENT), None, "absent");
+}
+
+#[test]
+fn post_view_for_agrees_with_can_read_post_and_post_view() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_post(&db, POST, "ada", "public", Visibility::Everyone);
+	seed_post(&db, OTHER, "ada", "secret", Visibility::FollowersOnly);
+	seed_reply(&db, REPLY, "bob", "reply", Visibility::FollowersOnly, POST);
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	db.write(|c| store::add_like(c, REPLY, "ada")).unwrap();
+	db.write(|c| store::soft_delete_post(c, REPLY)).unwrap();
+
+	for id in [POST, OTHER, REPLY, ABSENT] {
+		for user in ["ada", "bob", "carol"] {
+			let read = post_view_for(&db, user, id);
+			if can_read_post(&db, user, id) {
+				assert!(
+					read.as_ref().is_some_and(|r| r.readable),
+					"readable must agree with can_read_post ({user}, {id:?})"
+				);
+			} else {
+				assert!(
+					read.as_ref().is_none_or(|r| !r.readable),
+					"unreadable must agree with can_read_post ({user}, {id:?})"
+				);
+			}
+			assert_eq!(
+				read.map(|r| r.view),
+				post_view(&db, id),
+				"the view must be the plain post view"
+			);
+		}
+	}
+}
+
+#[test]
+fn post_view_anonymous_is_the_fused_is_post_public() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_post(&db, POST, "ada", "public", Visibility::Everyone);
+	seed_post(&db, OTHER, "ada", "secret", Visibility::FollowersOnly);
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	db.write(|c| store::add_like(c, POST, "bob")).unwrap();
+
+	let read = post_view_anonymous(&db, POST).expect("public post exists");
+	assert!(read.readable);
+	assert_eq!(read.view.likes, 1);
+	assert!(
+		!post_view_anonymous(&db, OTHER)
+			.expect("private post exists")
+			.readable,
+		"a follow edge does not make a post public"
+	);
+	assert_eq!(post_view_anonymous(&db, ABSENT), None);
+
+	db.write(|c| store::soft_delete_post(c, POST)).unwrap();
+	assert!(
+		!post_view_anonymous(&db, POST)
+			.expect("row remains")
+			.readable,
+		"deleted"
+	);
+}
+
+// ---------------------------------------------------------------------------
+// publish_context
+// ---------------------------------------------------------------------------
+
+#[test]
+fn publish_context_without_a_parent_carries_the_account_default() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	set_default_visibility(&db, "ada", Visibility::FollowersOnly);
+
+	let context = publish_context(&db, SID, None).expect("active session");
+	assert_eq!(context.username, "ada");
+	assert_eq!(context.default_visibility, Visibility::FollowersOnly);
+	assert_eq!(context.parent, None);
+}
+
+#[test]
+fn publish_context_reports_an_absent_parent_as_no_parent() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+
+	let context = publish_context(&db, SID, Some(ABSENT)).expect("active session");
+	assert_eq!(
+		context.parent, None,
+		"a named but absent parent leaves the parent columns NULL"
+	);
+}
+
+#[test]
+fn publish_context_reports_the_parent_author_visibility_and_status() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_session(&db, SID, "bob");
+	seed_post(&db, POST, "ada", "parent", Visibility::FollowersOnly);
+	seed_post(&db, OTHER, "ada", "gone", Visibility::Everyone);
+	db.write(|c| store::soft_delete_post(c, OTHER)).unwrap();
+
+	let unfollowed = publish_context(&db, SID, Some(POST))
+		.expect("active session")
+		.parent
+		.expect("parent exists");
+	assert_eq!(unfollowed.author, "ada");
+	assert_eq!(unfollowed.visibility, Visibility::FollowersOnly);
+	assert_eq!(unfollowed.status, PostStatus::Live);
+	assert!(!unfollowed.following);
+
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	let followed = publish_context(&db, SID, Some(POST))
+		.expect("active session")
+		.parent
+		.expect("parent exists");
+	assert!(
+		followed.following,
+		"the follow edge is read in the same query"
+	);
+
+	let deleted = publish_context(&db, SID, Some(OTHER))
+		.expect("active session")
+		.parent
+		.expect("a tombstone is still a parent");
+	assert_eq!(deleted.status, PostStatus::Deleted);
+}
+
+#[test]
+fn publish_context_is_none_for_revoked_unknown_and_accountless_sessions() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	seed_session(&db, REVOKED, "ada");
+	db.write(|c| store::revoke_session(c, REVOKED)).unwrap();
+	seed_session(&db, SessionId(103), "ghost");
+
+	assert!(publish_context(&db, SID, None).is_some());
+	assert_eq!(publish_context(&db, REVOKED, None), None);
+	assert_eq!(publish_context(&db, UNUSED, None), None);
+	assert_eq!(publish_context(&db, SessionId(103), None), None);
+}
+
+// ---------------------------------------------------------------------------
+// like_access
+// ---------------------------------------------------------------------------
+
+#[test]
+fn like_access_fuses_the_session_and_readability() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_session(&db, SID, "bob");
+	seed_post(&db, POST, "ada", "public", Visibility::Everyone);
+	seed_post(&db, OTHER, "ada", "secret", Visibility::FollowersOnly);
+
+	let public = like_access(&db, SID, POST).expect("active session");
+	assert_eq!(public.username, "bob");
+	assert!(public.readable);
+
+	assert!(
+		!like_access(&db, SID, OTHER)
+			.expect("active session")
+			.readable,
+		"followers-only, unfollowed"
+	);
+	db.write(|c| store::add_follow(c, "bob", "ada")).unwrap();
+	assert!(
+		like_access(&db, SID, OTHER)
+			.expect("active session")
+			.readable,
+		"followers-only, followed"
+	);
+	assert!(
+		!like_access(&db, SID, ABSENT)
+			.expect("active session")
+			.readable,
+		"absent is unreadable, not expired"
+	);
+}
+
+#[test]
+fn like_access_is_none_for_inactive_sessions() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	seed_session(&db, REVOKED, "ada");
+	db.write(|c| store::revoke_session(c, REVOKED)).unwrap();
+	seed_session(&db, SessionId(103), "ghost");
+	seed_post(&db, POST, "ada", "public", Visibility::Everyone);
+
+	assert!(like_access(&db, SID, POST).is_some());
+	assert_eq!(like_access(&db, REVOKED, POST), None);
+	assert_eq!(like_access(&db, UNUSED, POST), None);
+	assert_eq!(like_access(&db, SessionId(103), POST), None, "no account");
+}
+
+#[test]
+fn like_access_marks_deleted_posts_unreadable() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_session(&db, SID, "ada");
+	seed_post(&db, POST, "ada", "mine", Visibility::Everyone);
+	db.write(|c| store::soft_delete_post(c, POST)).unwrap();
+
+	assert!(
+		!like_access(&db, SID, POST)
+			.expect("active session")
+			.readable,
+		"deleted, even for the author"
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline limits (bound, not interpolated)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn newest_first_honours_a_bound_limit() {
+	let db = database();
+	seed_account(&db, "ada");
+	for id in 1..=3 {
+		seed_post(&db, PostId(id), "ada", "post", Visibility::Everyone);
+	}
+
+	assert_eq!(db.read(|c| store::newest_first(c, 0)).unwrap(), vec![]);
+	assert_eq!(
+		db.read(|c| store::newest_first(c, 1)).unwrap(),
+		vec![PostId(3)]
+	);
+	assert_eq!(
+		db.read(|c| store::newest_first(c, 2)).unwrap(),
+		vec![PostId(3), PostId(2)]
+	);
+	assert_eq!(
+		db.read(|c| store::newest_first(c, 10)).unwrap(),
+		vec![PostId(3), PostId(2), PostId(1)],
+		"a limit past the row count keeps every row"
+	);
+}
+
+#[test]
+fn filtered_timelines_honour_a_bound_limit() {
+	let db = database();
+	seed_account(&db, "ada");
+	seed_account(&db, "bob");
+	seed_account(&db, "carol");
+	seed_post(&db, PostId(1), "ada", "public", Visibility::Everyone);
+	seed_post(&db, PostId(2), "ada", "secret", Visibility::FollowersOnly);
+	seed_post(&db, PostId(3), "bob", "public", Visibility::Everyone);
+	db.write(|c| store::add_follow(c, "ada", "bob")).unwrap();
+	db.write(|c| store::add_follow(c, "carol", "ada")).unwrap();
+
+	assert_eq!(db.read(|c| store::public_timeline(c, 0)).unwrap(), vec![]);
+	assert_eq!(
+		db.read(|c| store::public_timeline(c, 2)).unwrap(),
+		vec![PostId(3), PostId(1)],
+		"the private post is filtered before the limit"
+	);
+	assert_eq!(
+		db.read(|c| store::global_timeline_for(c, "carol", 2))
+			.unwrap(),
+		vec![PostId(3), PostId(2)],
+		"carol follows ada, so ada's private post is included"
+	);
+	assert_eq!(
+		db.read(|c| store::global_timeline_for(c, "ada", 2))
+			.unwrap(),
+		vec![PostId(3), PostId(1)],
+		"ada does not see her own followers-only post in this timeline"
+	);
+	assert_eq!(
+		db.read(|c| store::global_timeline_for(c, "bob", 1))
+			.unwrap(),
+		vec![PostId(3)],
+		"bob follows nobody, so only public posts remain"
+	);
+}
