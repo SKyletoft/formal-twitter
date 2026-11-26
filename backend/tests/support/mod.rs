@@ -830,6 +830,14 @@ pub fn from_db(db: &Db) -> WorldState {
 /// handed to `QuickCheck` directly. The adapter also shrinks through the
 /// validity-preserving `WorldState::shrink` and reports the minimal failing
 /// world in the panic message.
+///
+/// quickcheck 1.1 calls `Testable::result` without `catch_unwind`, and Q1b
+/// properties assert, so a failing assertion would unwind straight out of the
+/// harness: no `TestResult` comes back, `first.is_failure()` is never reached
+/// and nothing shrinks. `WorldProperty::run` therefore wraps the whole case
+/// (reset, materialise, round-trip check, property) in `catch_unwind` and
+/// turns a panic into `TestResult::error`, so panicking properties shrink
+/// like ordinary failures.
 pub fn check<A>(prop: impl Fn(&Db, &WorldState, A) -> TestResult + 'static)
 where
 	A: Arbitrary + std::fmt::Debug + 'static,
@@ -840,6 +848,19 @@ where
 		marker: PhantomData,
 	};
 	QuickCheck::new().quickcheck(property);
+}
+
+/// The human-readable half of a caught panic payload. `assert!` and
+/// `panic!` carry a `&str` or a `String`; anything else is described
+/// generically.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+	if let Some(message) = payload.downcast_ref::<&str>() {
+		(*message).to_string()
+	} else if let Some(message) = payload.downcast_ref::<String>() {
+		message.clone()
+	} else {
+		"property panicked".to_string()
+	}
 }
 
 struct WorldProperty<F, A> {
@@ -855,15 +876,24 @@ where
 {
 	/// Reset the shared database, materialise `world`, verify the round-trip
 	/// and run the property. No database is created here.
+	///
+	/// Any panic -- from the materialiser's round-trip assertion or from the
+	/// property -- is caught and reported as a failing `TestResult`, so the
+	/// shrinker (which probes candidates through `run`) can shrink it.
 	fn run(&self, world: &WorldState, arg: &A) -> TestResult {
-		reset(&self.db);
-		materialise(&self.db, world);
-		assert_eq!(
-			from_db(&self.db),
-			*world,
-			"the materialiser must round-trip every generated world"
-		);
-		(self.prop)(&self.db, world, arg.clone())
+		match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			reset(&self.db);
+			materialise(&self.db, world);
+			assert_eq!(
+				from_db(&self.db),
+				*world,
+				"the materialiser must round-trip every generated world"
+			);
+			(self.prop)(&self.db, world, arg.clone())
+		})) {
+			Ok(test_result) => test_result,
+			Err(payload) => TestResult::error(panic_message(payload.as_ref())),
+		}
 	}
 
 	/// Greedily shrink the world, then the argument, while the property still
@@ -999,6 +1029,146 @@ mod tests {
 		assert!(
 			orphan.validate().is_err(),
 			"a missing reply must be rejected"
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Harness regression (Q1): a property must fail *through* the harness.
+//
+// quickcheck 1.1 hands `Testable::result` no `catch_unwind`, and every Q1b
+// property asserts, so before the fix a failing assertion unwound out of the
+// harness: `first.is_failure()` and `minimal_failure` never ran, so nothing
+// shrank and no minimal world was reported. `WorldProperty::run` now catches
+// the panic and reports a failing `TestResult`, which makes both reachable.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod harness_tests {
+	use super::*;
+
+	type Unit = ();
+
+	fn harness<F>(prop: F) -> WorldProperty<F, Unit>
+	where
+		F: Fn(&Db, &WorldState, Unit) -> TestResult + 'static,
+	{
+		WorldProperty {
+			db: Db::in_memory().expect("create the in-memory database"),
+			prop,
+			marker: PhantomData,
+		}
+	}
+
+	/// A *generated* world with at least `min_posts` posts. `Gen` is seeded
+	/// explicitly, so the same seed always regenerates the same world and the
+	/// tests are deterministic.
+	fn generated_world(min_posts: usize) -> (u64, WorldState) {
+		for seed in 0..400 {
+			let mut g = Gen::from_size_and_seed(6, seed);
+			let world = WorldState::arbitrary(&mut g);
+			if world.posts.len() >= min_posts {
+				return (seed, world);
+			}
+		}
+		panic!("the generator never produced {min_posts} posts");
+	}
+
+	fn payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+		if let Some(message) = payload.downcast_ref::<String>() {
+			message.clone()
+		} else if let Some(message) = payload.downcast_ref::<&str>() {
+			(*message).to_string()
+		} else {
+			panic!("unexpected panic payload");
+		}
+	}
+
+	/// A property that panics on any non-empty world (the Q1b `assert!` shape).
+	fn posts_must_be_empty(_db: &Db, world: &WorldState, _: Unit) -> TestResult {
+		assert!(world.posts.is_empty(), "expected a world without posts");
+		TestResult::passed()
+	}
+
+	/// (a) Panic containment: the assertion panic is turned into a failing
+	/// `TestResult` instead of unwinding out of `run`/`result`, and QuickCheck
+	/// reports the harness's minimal-world message rather than the raw panic.
+	#[test]
+	fn a_panicking_property_is_contained() {
+		// Through `run` on a world we know is non-empty.
+		let property = harness(posts_must_be_empty);
+		let (_, world) = generated_world(1);
+		let first =
+			std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| property.run(&world, &())))
+				.expect("the property panic must not leave `run`");
+		assert!(first.is_failure(), "a panic is reported as a failure");
+
+		// Through `Testable::result`: same seed, same world, panic contained
+		// and reported as a failure of the case.
+		let (seed, _) = generated_world(1);
+		let mut g = Gen::from_size_and_seed(6, seed);
+		let result =
+			std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| property.result(&mut g)))
+				.expect("the property panic must not leave `result`");
+		assert!(result.is_failure());
+
+		// Through `QuickCheck`: the only panic that escapes is quickcheck's
+		// own failure report, carrying the shrunken world. The property panics
+		// unconditionally, so the case fails whatever world is generated.
+		let property = harness(|_db: &Db, _world: &WorldState, _: Unit| -> TestResult {
+			panic!("boom");
+		});
+		let message = payload_message(
+			std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				QuickCheck::new().tests(1).quickcheck(property);
+			}))
+			.expect_err("quickcheck reports the failure"),
+		);
+		assert!(
+			message.contains("property failed; minimal world:"),
+			"quickcheck must report the harness's minimal world, got: {message}"
+		);
+	}
+
+	/// (b) Shrinking, panicking property: fails iff `posts` is non-empty, so
+	/// the minimal counterexample is exactly one post.
+	#[test]
+	fn b_panicking_property_shrinks_to_one_post() {
+		let property = harness(posts_must_be_empty);
+		let (_, world) = generated_world(2);
+		let (minimal, ()) = property.minimal_failure(&world, &());
+
+		assert_eq!(minimal.validate(), Ok(()), "shrinks stay valid");
+		assert_eq!(minimal.posts.len(), 1, "minimal world: {minimal:?}");
+		assert!(minimal.accounts.is_empty(), "minimal world: {minimal:?}");
+		assert!(minimal.sessions.is_empty(), "minimal world: {minimal:?}");
+		assert!(minimal.follows.is_empty(), "minimal world: {minimal:?}");
+		assert!(
+			property.run(&minimal, &()).is_failure(),
+			"the minimal world still fails: {minimal:?}"
+		);
+	}
+
+	/// (b) Shrinking, non-panicking property: a property that fails on any
+	/// world shrinks all the way to the empty world.
+	#[test]
+	fn b_always_failing_property_shrinks_to_the_empty_world() {
+		let property = harness(|_db: &Db, _world: &WorldState, _: Unit| TestResult::failed());
+		let (_, world) = generated_world(1);
+		let (minimal, ()) = property.minimal_failure(&world, &());
+
+		assert_eq!(minimal.validate(), Ok(()), "shrinks stay valid");
+		assert!(minimal.accounts.is_empty(), "minimal world: {minimal:?}");
+		assert!(minimal.sessions.is_empty(), "minimal world: {minimal:?}");
+		assert!(minimal.posts.is_empty(), "minimal world: {minimal:?}");
+		assert!(minimal.follows.is_empty(), "minimal world: {minimal:?}");
+		assert!(
+			minimal.newest_first.is_empty(),
+			"minimal world: {minimal:?}"
+		);
+		assert!(
+			property.run(&minimal, &()).is_failure(),
+			"the minimal world still fails: {minimal:?}"
 		);
 	}
 }
