@@ -436,3 +436,36 @@ fn db_read_see_committed_write() {
 	let found = db.read(|c| get_post(c, pid)).expect("read post");
 	assert!(found.is_some(), "committed write is visible to reads");
 }
+
+// ---------------------------------------------------------------------------
+// Replies survive deletion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn soft_delete_keeps_reply_listed() {
+	let mut c = conn();
+	let parent = allocate_post_id(&mut c).unwrap();
+	let reply = allocate_post_id(&mut c).unwrap();
+	insert_post(&mut c, parent, "a", "root", Visibility::Everyone).unwrap();
+	insert_reply(
+		&mut c,
+		reply,
+		"b",
+		"doomed reply",
+		Visibility::Everyone,
+		parent,
+	)
+	.unwrap();
+
+	soft_delete_post(&mut c, reply).unwrap();
+
+	assert_eq!(
+		replies_of(&mut c, parent).unwrap(),
+		vec![reply],
+		"deleting a reply preserves it in the parent's replies list"
+	);
+	let deleted = get_post(&mut c, reply)
+		.unwrap()
+		.expect("deleted reply retained");
+	assert_eq!(deleted.status, PostStatus::Deleted);
+}
