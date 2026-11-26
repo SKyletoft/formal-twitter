@@ -1,0 +1,9 @@
+DROP INDEX IF EXISTS idx_follows_followee;
+DROP INDEX IF EXISTS idx_posts_author_seq;
+DROP INDEX IF EXISTS idx_posts_parent_seq;
+DROP INDEX IF EXISTS idx_posts_seq;
+DROP TABLE IF EXISTS post_likes;
+DROP TABLE IF EXISTS follows;
+DROP TABLE IF EXISTS posts;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS accounts;

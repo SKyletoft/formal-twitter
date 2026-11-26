@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 rocket = "0.5.2"
-diesel = { version = "=2.4.0", features = ["sqlite"] }
+diesel = { version = "=2.4.0", features = ["sqlite", "r2d2", "returning_clauses_for_sqlite_3_35"] }
+diesel_migrations = { version = "2.4", features = ["sqlite"] }
+rand = "0.10"
 
 [dev-dependencies]
 quickcheck = "1.1.0"
