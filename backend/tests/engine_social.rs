@@ -1,293 +1,59 @@
-//! Property tests for the social actions engine (task T3a).
+//! Property and unit tests for the social actions engine (task T3a), migrated
+//! to the Q1 world-state harness (see `support`).
 //!
-//! Every property below is a direct rendering of a `Step` rule of
-//! `spec/Twitter.agda`; the matching Agda lemma lives in `ImplProofs.agda`
-//! (P12 `follows-world`/`follow-success`/`unfollows-world`/`unfollow-success`,
-//! P13 `liked-world`/`like-success`/`unliked-world`/`unlike-success` with
-//! `like-denied`/`unlike-denied`, and P14's four `*-expired` lemmas):
+//! Every property is a direct rendering of a `Step` rule of `spec/Twitter.agda`
+//! and is paired with the Agda lemma in `ImplProofs.agda` that states the same
+//! thing:
 //!
-//! * S1 `follow` is `follow-user` (Twitter.agda:655-664);
-//! * S2 `unfollow` is `unfollow-user` (Twitter.agda:666-675);
-//! * S3 `like` is `like-post` (Twitter.agda:587-613) and `failed-like-post`
-//!   (Twitter.agda:615-619);
-//! * S4 `unlike` is `unlike-post` (Twitter.agda:621-647) and
-//!   `failed-unlike-post` (Twitter.agda:649-653);
-//! * S5 all four commands on an inactive session are `failed-access`
-//!   (Twitter.agda:464-468).
+//! | property                                      | spec rule                    | Agda lemma        |
+//! |-----------------------------------------------|------------------------------|-------------------|
+//! | `follow_succeeds_and_sets_follow`             | `follow-user` 655-664        | `follow-success`  |
+//! | `follow_is_idempotent`                        | `add-follower` 371-375       | `follow-success`  |
+//! | `follow_unknown_user_succeeds`                | `follow-user` (no premise)   | `follow-success`  |
+//! | `unfollow_succeeds_and_clears_follow`         | `unfollow-user` 666-675      | `unfollow-success`|
+//! | `unfollow_never_followed_succeeds`            | `unfollow-user` (no premise) | `unfollow-success`|
+//! | `like_readable_post_succeeds`                 | `like-post` 587-613          | `like-success`    |
+//! | `like_already_liked_is_idempotent`            | `like-post` (no premise)     | `like-success`    |
+//! | `like_own_post_succeeds`                      | `like-post` (no premise)     | `like-success`    |
+//! | `like_{absent,deleted,private}_post_is_denied`| `failed-like-post` 615-619   | `like-denied`     |
+//! | `unlike_liked_post_succeeds`                  | `unlike-post` 621-647        | `unlike-success`  |
+//! | `unlike_never_liked_succeeds`                 | `unlike-post` (no premise)   | `unlike-success`  |
+//! | `unlike_{absent,deleted,private}_post_is_...` | `failed-unlike-post` 649-653 | `unlike-denied`   |
+//! | `social_commands_expire_without_valid_session`| `failed-access` 464-468      | `follow-expired`,
+//! |                                               |                              | `unfollow-expired`,
+//! |                                               |                              | `like-expired`,
+//! |                                               |                              | `unlike-expired`  |
 //!
-//! Every property asserts both halves of the spec's `Step`: the `Result`, and
-//! -- for the steps that change something -- the exact row delta, or, for
-//! `denied`/`expired`, that the whole persisted world is byte-for-byte
-//! unchanged. State is seeded through `formal_twitter::store`, never through
-//! the engine, so the deltas are attributable to the command under test alone.
+//! Harness shape:
+//!
+//! * **one** in-memory sqlite database per `#[test]`, created outside the
+//!   quickcheck cases by `support::check`;
+//! * every case resets it and materialises a freshly generated `WorldState`;
+//!   the property body receives `&Db` and `&WorldState` and never builds a
+//!   database;
+//! * a property that needs a shape the generator may not produce (an active
+//!   session, a readable post, a post that is already liked) derives the world
+//!   inside the body by cloning and mutating it, then re-materialises *that*
+//!   world through `load` -- still no database construction. No generated
+//!   world is discarded;
+//! * the expected world is computed from the before world, so "everything else
+//!   unchanged" is asserted by whole-world equality, and the per-post premises
+//!   of `like-post`/`unlike-post` by `assert_like_delta`.
 
-use diesel::QueryableByName;
-use diesel::RunQueryDsl;
-use diesel::sql_types::{BigInt, Text};
+mod support;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 use formal_twitter::db::Db;
 use formal_twitter::engine::EngineResult;
 use formal_twitter::engine::social::{follow, like, unfollow, unlike};
-use formal_twitter::model::{Post, PostId, SessionId, SessionStatus, Visibility};
-use formal_twitter::store;
+use formal_twitter::model::{PostId, PostStatus, SessionId, SessionStatus, Visibility};
 use quickcheck::{Arbitrary, Gen, TestResult};
-use quickcheck_macros::quickcheck;
+
+use support::{AccountState, PostState, WorldState, check, from_db, materialise, reset};
 
 // ---------------------------------------------------------------------------
-// Harness: an in-memory database, plus read-only views of it.
-//
-// Snapshots are sorted in Rust on the *composed* line, never in SQL: `'|'`
-// (0x7C) sorts after every letter and digit, so `ORDER BY` on one column and a
-// sort of `a|b|c` disagree whenever one field is a prefix of another. The
-// properties build their expected lines in Rust and sort them the same way.
-// ---------------------------------------------------------------------------
-
-const OTHER_PASSWORD: &str = "other-secret";
-
-fn database() -> Db {
-	Db::in_memory().expect("create in-memory database")
-}
-
-fn account_is_absent(db: &Db, username: &str) -> bool {
-	db.read(|conn| store::get_account(conn, username))
-		.expect("read account")
-		.is_none()
-}
-
-fn status_of(db: &Db, sid: SessionId) -> SessionStatus {
-	db.read(|conn| store::get_session(conn, sid))
-		.expect("read session")
-}
-
-fn post_of(db: &Db, pid: PostId) -> Option<Post> {
-	db.read(|conn| store::get_post(conn, pid))
-		.expect("read post")
-}
-
-fn replies_of(db: &Db, pid: PostId) -> Vec<PostId> {
-	db.read(|conn| store::replies_of(conn, pid))
-		.expect("read replies")
-}
-
-fn is_following(db: &Db, follower: &str, followee: &str) -> bool {
-	db.read(|conn| store::is_following(conn, follower, followee))
-		.expect("read follow")
-}
-
-fn is_liked(db: &Db, pid: PostId, user: &str) -> bool {
-	db.read(|conn| store::is_liked(conn, pid, user))
-		.expect("read like")
-}
-
-fn like_count(db: &Db, pid: PostId) -> i64 {
-	db.read(|conn| store::like_count(conn, pid))
-		.expect("read like count")
-}
-
-/// The whole `newest-first` order of the spec (Twitter.agda:74).
-fn newest_first(db: &Db) -> Vec<PostId> {
-	db.read(|conn| store::newest_first(conn, u32::MAX))
-		.expect("read newest-first")
-}
-
-#[derive(QueryableByName)]
-struct CountRow {
-	#[diesel(sql_type = BigInt)]
-	count: i64,
-}
-
-fn row_count(db: &Db, table: &str) -> i64 {
-	let sql = format!("SELECT COUNT(*) AS count FROM {table}");
-	db.read(|conn| {
-		let row: CountRow = diesel::sql_query(sql).get_result(conn)?;
-		Ok(row.count)
-	})
-	.expect("count query")
-}
-
-#[derive(QueryableByName)]
-struct LineRow {
-	#[diesel(sql_type = Text)]
-	line: String,
-}
-
-fn sorted_lines(db: &Db, sql: &str) -> Vec<String> {
-	let mut out = db
-		.read(|conn| {
-			let rows: Vec<LineRow> = diesel::sql_query(sql.to_owned()).load(conn)?;
-			Ok(rows
-				.into_iter()
-				.map(|row| row.line)
-				.collect::<Vec<String>>())
-		})
-		.expect("dump query");
-	out.sort_unstable();
-	out
-}
-
-fn accounts_snapshot(db: &Db) -> Vec<String> {
-	sorted_lines(
-		db,
-		"SELECT username || '|' || password || '|' || default_visibility AS line \
-		 FROM accounts",
-	)
-}
-
-fn sessions_snapshot(db: &Db) -> Vec<String> {
-	sorted_lines(
-		db,
-		"SELECT CAST(id AS TEXT) || '|' || status || '|' || username AS line \
-		 FROM sessions",
-	)
-}
-
-fn posts_snapshot(db: &Db) -> Vec<String> {
-	sorted_lines(
-		db,
-		"SELECT CAST(id AS TEXT) || '|' || author || '|' || text || '|' || visibility \
-		 || '|' || status || '|' || COALESCE(CAST(parent AS TEXT), '') AS line \
-		 FROM posts",
-	)
-}
-
-fn follows_snapshot(db: &Db) -> Vec<String> {
-	sorted_lines(
-		db,
-		"SELECT follower || '|' || followee AS line FROM follows",
-	)
-}
-
-fn likes_snapshot(db: &Db) -> Vec<String> {
-	sorted_lines(
-		db,
-		"SELECT CAST(pid AS TEXT) || '|' || user AS line FROM post_likes",
-	)
-}
-
-/// The whole persisted world rendered as text, table groups separated by
-/// markers. This is how the properties check the "everything else unchanged"
-/// premises of the spec's steps (e.g. Twitter.agda:607-612).
-fn world(db: &Db) -> Vec<String> {
-	let mut out = accounts_snapshot(db);
-	out.push("--sessions--".to_string());
-	out.extend(sessions_snapshot(db));
-	out.push("--posts--".to_string());
-	out.extend(posts_snapshot(db));
-	out.push("--follows--".to_string());
-	out.extend(follows_snapshot(db));
-	out.push("--likes--".to_string());
-	out.extend(likes_snapshot(db));
-	out
-}
-
-/// A `follows_snapshot` line.
-fn follow_line(follower: &str, followee: &str) -> String {
-	format!("{follower}|{followee}")
-}
-
-/// A `likes_snapshot` line.
-fn like_line(pid: PostId, user: &str) -> String {
-	format!("{}|{user}", pid.0)
-}
-
-/// `lines`, with `line` added when it is not already there, sorted the way
-/// every snapshot is sorted.
-fn with_line(lines: &[String], line: &str) -> Vec<String> {
-	let mut out = lines.to_vec();
-	if !out.iter().any(|present| present == line) {
-		out.push(line.to_string());
-	}
-	out.sort_unstable();
-	out
-}
-
-/// `lines`, with `line` removed, sorted the way every snapshot is sorted.
-fn without_line(lines: &[String], line: &str) -> Vec<String> {
-	let mut out: Vec<String> = lines
-		.iter()
-		.filter(|present| present.as_str() != line)
-		.cloned()
-		.collect();
-	out.sort_unstable();
-	out
-}
-
-// ---------------------------------------------------------------------------
-// Seeding. All state goes in through `store`, never through the engine.
-// ---------------------------------------------------------------------------
-
-fn seed_account(db: &Db, name: &str) {
-	assert!(
-		db.write(|conn| store::create_account(conn, name, OTHER_PASSWORD))
-			.expect("seed account"),
-		"precondition: {name} is a free username"
-	);
-}
-
-fn seed_session(db: &Db, sid: SessionId, name: &str) {
-	db.write(|conn| store::activate_session(conn, sid, name))
-		.expect("seed session");
-}
-
-fn seed_revoked_session(db: &Db, sid: SessionId, name: &str) {
-	seed_session(db, sid, name);
-	db.write(|conn| store::revoke_session(conn, sid))
-		.expect("revoke seeded session");
-}
-
-fn seed_post(db: &Db, id: PostId, author: &str, text: &str, vis: Visibility) {
-	db.write(|conn| store::insert_post(conn, id, author, text, vis))
-		.expect("seed post");
-}
-
-fn seed_reply(db: &Db, id: PostId, author: &str, text: &str, vis: Visibility, parent: PostId) {
-	db.write(|conn| store::insert_reply(conn, id, author, text, vis, parent))
-		.expect("seed reply");
-}
-
-fn seed_delete(db: &Db, id: PostId) {
-	db.write(|conn| store::soft_delete_post(conn, id))
-		.expect("seed deletion");
-}
-
-fn seed_follow(db: &Db, follower: &str, followee: &str) {
-	db.write(|conn| store::add_follow(conn, follower, followee))
-		.expect("seed follow");
-}
-
-fn seed_like(db: &Db, id: PostId, user: &str) {
-	db.write(|conn| store::add_like(conn, id, user))
-		.expect("seed like");
-}
-
-/// The shared seeded world: `user` -- with an active session `SID` and a
-/// revoked session `REVOKED_SID` -- and `author`, a public `PARENT` post by
-/// `author`, one reply to it and one like on it. No follow edge touches `user`
-/// or `author`, so whether a `followers-only` post is readable is decided by
-/// the individual test.
-fn seed_world(db: &Db, user: &str, author: &str) {
-	seed_account(db, user);
-	seed_account(db, author);
-	seed_session(db, SID, user);
-	seed_revoked_session(db, REVOKED_SID, user);
-	seed_post(db, PARENT, author, "parent", Visibility::Everyone);
-	seed_reply(db, REPLY_1, author, "reply", Visibility::Everyone, PARENT);
-	seed_like(db, PARENT, author);
-}
-
-/// The `denied` half of a `Step`: the answer, and a world that did not move.
-fn assert_denied(db: &Db, result: EngineResult, before: &[String]) {
-	assert_eq!(result, EngineResult::Denied);
-	assert_eq!(world(db), before, "a denied command changes nothing");
-}
-
-/// The `expired` half of a `Step`: the answer, and a world that did not move.
-fn assert_expired(db: &Db, result: EngineResult, before: &[String]) {
-	assert_eq!(result, EngineResult::Expired);
-	assert_eq!(world(db), before, "an expired command changes nothing");
-}
-
-// ---------------------------------------------------------------------------
-// Generated data: small strings over a line-safe alphabet.
+// Arguments generated alongside the world.
 // ---------------------------------------------------------------------------
 
 const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.!#$%&*";
@@ -296,22 +62,22 @@ fn small_string(g: &mut Gen) -> String {
 	let len = 1 + usize::arbitrary(g) % 8;
 	let mut out = String::with_capacity(len);
 	for _ in 0..len {
-		let index = usize::arbitrary(g) % ALPHABET.len();
-		out.push(ALPHABET[index] as char);
+		out.push(ALPHABET[usize::arbitrary(g) % ALPHABET.len()] as char);
 	}
 	out
 }
 
+/// A username candidate: made taken or free by the property.
 #[derive(Clone, Debug)]
 struct Name(String);
 
-/// A body of text, so the paths that carry one are exercised too.
+/// A post body, so the paths that carry text are exercised too.
 #[derive(Clone, Debug)]
 struct Body(String);
 
-/// A small selector, used to pick between the two post visibilities.
-#[derive(Clone, Debug)]
-struct Pick(u8);
+/// A selector into the generated world's sorted rows.
+#[derive(Clone, Copy, Debug)]
+struct Seed(usize);
 
 impl Arbitrary for Name {
 	fn arbitrary(g: &mut Gen) -> Self {
@@ -325,561 +91,1108 @@ impl Arbitrary for Body {
 	}
 }
 
-impl Arbitrary for Pick {
+impl Arbitrary for Seed {
 	fn arbitrary(g: &mut Gen) -> Self {
-		Pick(u8::arbitrary(g))
+		Seed(usize::arbitrary(g))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Seeded ids. Small constants keep the seeded world legible; `publish`
-// allocates its own ids from the whole i64 range, so it never reuses one.
+// World helpers: deterministic selection and the derived worlds a property
+// needs. All of them clone the generated world and mutate the clone.
 // ---------------------------------------------------------------------------
 
-const SID: SessionId = SessionId(100);
-const REVOKED_SID: SessionId = SessionId(101);
-const UNUSED_SID: SessionId = SessionId(102);
-const PARENT: PostId = PostId(200);
-const REPLY_1: PostId = PostId(201);
-const REPLY_2: PostId = PostId(202);
-const TARGET: PostId = PostId(300);
-const ABSENT: PostId = PostId(9_000_000);
-
-// ---------------------------------------------------------------------------
-// S1: follow -- `follow-user` (Twitter.agda:655-664)
-// ---------------------------------------------------------------------------
-
-/// `follow-user`: the session must be valid, the follower is its user, and the
-/// only thing that changes is `add-follower`. There is no premise on the
-/// followee, so following a username with no account is `Success` too
-/// (`follow_unknown_user_succeeds`). Every other follow pair, and every
-/// account, session, post and `newest-first` entry, is untouched.
-#[quickcheck]
-fn follow_succeeds_and_sets_follow(follower: Name, followee: Name, other: Name) -> TestResult {
-	if follower.0 == followee.0 || follower.0 == other.0 || followee.0 == other.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &follower.0, &other.0);
-	// An unrelated follow pair that must survive the command.
-	seed_follow(&db, &other.0, &follower.0);
-
-	let accounts_before = accounts_snapshot(&db);
-	let sessions_before = sessions_snapshot(&db);
-	let posts_before = posts_snapshot(&db);
-	let follows_before = follows_snapshot(&db);
-	let likes_before = likes_snapshot(&db);
-	let order_before = newest_first(&db);
-
-	assert_eq!(
-		follow(&db, SID, &followee.0).expect("follow"),
-		EngineResult::Success
-	);
-
-	assert!(is_following(&db, &follower.0, &followee.0));
-	assert!(is_following(&db, &other.0, &follower.0));
-	// Exactly one `follows` row may appear; nothing may disappear.
-	assert_eq!(row_count(&db, "follows"), 2);
-	assert_eq!(
-		follows_snapshot(&db),
-		with_line(&follows_before, &follow_line(&follower.0, &followee.0))
-	);
-	assert_eq!(accounts_snapshot(&db), accounts_before);
-	assert_eq!(sessions_snapshot(&db), sessions_before);
-	assert_eq!(posts_snapshot(&db), posts_before);
-	assert_eq!(likes_snapshot(&db), likes_before);
-	assert_eq!(newest_first(&db), order_before);
-	TestResult::passed()
+fn pick<T>(items: &[T], seed: usize) -> Option<&T> {
+	items.get(seed % items.len().max(1))
 }
 
-/// `add-follower` (Twitter.agda:371-375) is idempotent: following twice is
-/// still `success` and sets nothing else, so the world is unchanged.
-#[quickcheck]
-fn follow_is_idempotent(follower: Name, followee: Name, other: Name) -> TestResult {
-	if follower.0 == followee.0 || follower.0 == other.0 || followee.0 == other.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &follower.0, &other.0);
-	seed_follow(&db, &follower.0, &followee.0);
-	// Precondition: the edge is already there.
-	assert!(is_following(&db, &follower.0, &followee.0));
-	let before = world(&db);
-	assert_eq!(
-		follow(&db, SID, &followee.0).expect("follow"),
-		EngineResult::Success
-	);
-	assert_eq!(world(&db), before);
-	TestResult::passed()
+fn sorted_accounts(world: &WorldState) -> Vec<String> {
+	world.accounts.keys().cloned().collect()
 }
 
-/// `follow-user` has no premise on the followee, so following an account that
-/// does not exist is `success` and stores the edge.
-#[quickcheck]
-fn follow_unknown_user_succeeds(follower: Name, followee: Name) -> TestResult {
-	if follower.0 == followee.0 {
-		return TestResult::discard();
+fn sorted_posts(world: &WorldState) -> Vec<PostId> {
+	let mut ids: Vec<PostId> = world.posts.keys().copied().collect();
+	ids.sort_unstable_by_key(|pid| pid.0);
+	ids
+}
+
+fn sorted_sessions(world: &WorldState) -> Vec<(SessionId, SessionStatus)> {
+	let mut ids: Vec<SessionId> = world.sessions.keys().copied().collect();
+	ids.sort_unstable_by_key(|sid| sid.0);
+	ids.into_iter()
+		.map(|sid| (sid, world.session_status(sid)))
+		.collect()
+}
+
+/// `base`, with `'_'` appended until no account holds it: a followee or a
+/// follower that is a name no account has.
+fn free_username(world: &WorldState, base: &str) -> String {
+	let mut candidate = base.to_string();
+	while world.accounts.contains_key(&candidate) {
+		candidate.push('_');
 	}
-	let db = database();
-	seed_account(&db, &follower.0);
-	seed_session(&db, SID, &follower.0);
-	// Precondition: the followee has no account.
-	assert!(account_is_absent(&db, &followee.0));
-	let follows_before = follows_snapshot(&db);
+	candidate
+}
 
-	assert_eq!(
-		follow(&db, SID, &followee.0).expect("follow"),
-		EngineResult::Success
-	);
+/// A session id no row of `world` holds, i.e. `unused`.
+fn free_session_id(world: &WorldState, seed: usize) -> SessionId {
+	let mut id = 9_000_000 + (seed % 1_000) as i64;
+	while world.sessions.contains_key(&SessionId(id)) {
+		id += 1;
+	}
+	SessionId(id)
+}
 
-	assert!(is_following(&db, &follower.0, &followee.0));
-	assert_eq!(
-		follows_snapshot(&db),
-		with_line(&follows_before, &follow_line(&follower.0, &followee.0))
+/// A post id no row of `world` holds.
+fn free_post_id(world: &WorldState, seed: usize) -> PostId {
+	let mut id = 9_000_000 + (seed % 1_000) as i64;
+	while world.posts.contains_key(&PostId(id)) {
+		id += 1;
+	}
+	PostId(id)
+}
+
+/// `world` and a username it holds: the generated account at `seed` when there
+/// is one, otherwise `world` plus an account named after `base`.
+fn with_some_account(world: &WorldState, seed: usize, base: &str) -> (WorldState, String) {
+	if let Some(name) = pick(&sorted_accounts(world), seed) {
+		return (world.clone(), name.clone());
+	}
+	let name = free_username(world, base);
+	let mut next = world.clone();
+	next.accounts.insert(
+		name.clone(),
+		AccountState {
+			password: base.to_string(),
+			visibility: Visibility::Everyone,
+		},
 	);
-	TestResult::passed()
+	(next, name)
+}
+
+/// `world` and an active session -- the generated one at `seed`, or a fresh
+/// session for an account `world` keeps or gains -- together with its user.
+fn with_active_session(
+	world: &WorldState,
+	seed: usize,
+	base: &str,
+) -> (WorldState, SessionId, String) {
+	let active: Vec<(SessionId, String)> = sorted_sessions(world)
+		.into_iter()
+		.filter_map(|(sid, status)| match status {
+			SessionStatus::Active(user) => Some((sid, user)),
+			_ => None,
+		})
+		.collect();
+	if let Some((sid, user)) = pick(&active, seed) {
+		return (world.clone(), *sid, user.clone());
+	}
+	let (mut next, name) = with_some_account(world, seed, base);
+	let sid = free_session_id(&next, seed);
+	next.sessions
+		.insert(sid, SessionStatus::Active(name.clone()));
+	(next, sid, name)
+}
+
+/// `world` and a `revoked` session -- the first one it holds, or a fresh one.
+fn with_revoked_session(world: &WorldState, seed: usize) -> (WorldState, SessionId) {
+	if let Some((sid, _)) = sorted_sessions(world)
+		.into_iter()
+		.find(|(_, status)| matches!(status, SessionStatus::Revoked))
+	{
+		return (world.clone(), sid);
+	}
+	let sid = free_session_id(world, seed);
+	let mut next = world.clone();
+	next.sessions.insert(sid, SessionStatus::Revoked);
+	(next, sid)
+}
+
+/// Reset the shared database, materialise a world derived inside a property
+/// body and check the round-trip. No database is created here.
+fn load(db: &Db, world: &WorldState) {
+	world.validate().expect("a derived world is valid");
+	reset(db);
+	materialise(db, world);
+	assert_eq!(from_db(db), *world, "the derived world must round-trip");
+}
+
+fn account(password: &str, visibility: Visibility) -> AccountState {
+	AccountState {
+		password: password.to_string(),
+		visibility,
+	}
+}
+
+fn post(author: &str, text: &str) -> PostState {
+	PostState {
+		author: author.to_string(),
+		text: text.to_string(),
+		visibility: Visibility::Everyone,
+		status: PostStatus::Live,
+		likes: Vec::new(),
+		replies: Vec::new(),
+		parent: None,
+	}
+}
+
+/// `world` plus a fresh public `live` post by `author`.
+fn add_post(world: &WorldState, pid: PostId, author: &str, text: &str) -> WorldState {
+	let mut next = world.clone();
+	next.posts.insert(pid, post(author, text));
+	next.newest_first.push(pid);
+	next
+}
+
+/// Spec `CanReadPost` (Twitter.agda:158-179), read over `world`.
+fn readable_by(world: &WorldState, user: &str, pid: PostId) -> bool {
+	match world.posts.get(&pid) {
+		None => false,
+		Some(post) => {
+			post.status == PostStatus::Live
+				&& (post.visibility == Visibility::Everyone
+					|| world
+						.follows
+						.contains(&(user.to_string(), post.author.clone())))
+		}
+	}
+}
+
+/// `world` and a post the session's user can read: a generated readable post
+/// when there is one, otherwise a fresh public `live` post by the user.
+fn readable_post(world: &WorldState, seed: usize, user: &str, text: &str) -> (WorldState, PostId) {
+	let posts = sorted_posts(world);
+	if !posts.is_empty() {
+		let base = seed % posts.len();
+		for offset in 0..posts.len() {
+			let pid = posts[(base + offset) % posts.len()];
+			if readable_by(world, user, pid) {
+				return (world.clone(), pid);
+			}
+		}
+	}
+	let pid = free_post_id(world, seed);
+	(add_post(world, pid, user, text), pid)
+}
+
+/// `world` and a post that exists -- the generated one at `seed`, or a fresh
+/// public `live` post by `user`. The target of the mutating `unreadable` shapes.
+fn target_post(world: &WorldState, seed: usize, user: &str, text: &str) -> (WorldState, PostId) {
+	let posts = sorted_posts(world);
+	if let Some(pid) = pick(&posts, seed) {
+		return (world.clone(), *pid);
+	}
+	let pid = free_post_id(world, seed);
+	(add_post(world, pid, user, text), pid)
+}
+
+/// The three ways `CanReadPost` (Twitter.agda:158-179) fails.
+#[derive(Clone, Copy, Debug)]
+enum Unreadable {
+	/// No post with that id (`can-read-absent`).
+	Absent,
+	/// A `deleted` post (`can-read-deleted`).
+	Deleted,
+	/// A `live` `followers-only` post the user does not follow the author of
+	/// (`post-is-private` fails).
+	Private,
+}
+
+/// `world` and a post `user` cannot read, in the given shape.
+fn unreadable_post(
+	world: &WorldState,
+	seed: usize,
+	user: &str,
+	text: &str,
+	shape: Unreadable,
+) -> (WorldState, PostId) {
+	match shape {
+		Unreadable::Absent => (world.clone(), free_post_id(world, seed)),
+		Unreadable::Deleted => {
+			let (mut world, pid) = target_post(world, seed, user, text);
+			{
+				let post = world.posts.get_mut(&pid).expect("the target post exists");
+				post.status = PostStatus::Deleted;
+				post.visibility = Visibility::Everyone;
+			}
+			(world, pid)
+		}
+		Unreadable::Private => {
+			let (mut world, pid) = target_post(world, seed, user, text);
+			let author = world.posts[&pid].author.clone();
+			{
+				let post = world.posts.get_mut(&pid).expect("the target post exists");
+				post.status = PostStatus::Live;
+				post.visibility = Visibility::FollowersOnly;
+			}
+			world.follows.remove(&(user.to_string(), author));
+			(world, pid)
+		}
+	}
+}
+
+/// `likes` with `user` added, keeping the canonical (sorted, duplicate-free)
+/// order `Post.likes` has in the world and `like-add` produces.
+fn with_like(likes: &[String], user: &str) -> Vec<String> {
+	let mut out = likes.to_vec();
+	if let Err(index) = out.binary_search_by(|present| present.as_str().cmp(user)) {
+		out.insert(index, user.to_string());
+	}
+	out
+}
+
+/// `likes` with `user` removed, keeping the canonical order.
+fn without_like(likes: &[String], user: &str) -> Vec<String> {
+	likes
+		.iter()
+		.filter(|present| present.as_str() != user)
+		.cloned()
+		.collect()
+}
+
+/// The `like-post`/`unlike-post` premises that concern the world
+/// (Twitter.agda:601-612, 633-646): the target post keeps every field but its
+/// like list, `user`'s membership becomes `liked`, every other user's
+/// membership is unchanged, and no other post, account, session, follow or
+/// `newest-first` entry moves.
+fn assert_like_delta(
+	before: &WorldState,
+	after: &WorldState,
+	pid: PostId,
+	user: &str,
+	liked: bool,
+) {
+	let old = before
+		.posts
+		.get(&pid)
+		.expect("the target post exists before");
+	let new = after.posts.get(&pid).expect("the target post exists after");
+	assert_eq!(new.author, old.author, "the author is unchanged");
+	assert_eq!(new.text, old.text, "the text is unchanged");
+	assert_eq!(
+		new.visibility, old.visibility,
+		"the visibility is unchanged"
+	);
+	assert_eq!(new.status, old.status, "the status is unchanged");
+	assert_eq!(new.replies, old.replies, "the replies are unchanged");
+	assert_eq!(new.parent, old.parent, "the parent is unchanged");
+	assert_eq!(
+		new.likes.contains(&user.to_string()),
+		liked,
+		"the user's membership must be {liked}"
+	);
+	let mut members: BTreeSet<String> = old.likes.iter().cloned().collect();
+	members.extend(new.likes.iter().cloned());
+	for other in &members {
+		if other.as_str() == user {
+			continue;
+		}
+		assert_eq!(
+			old.likes.contains(other),
+			new.likes.contains(other),
+			"the membership of {other:?} is unchanged"
+		);
+	}
+	let expected = if liked {
+		with_like(&old.likes, user)
+	} else {
+		without_like(&old.likes, user)
+	};
+	assert_eq!(
+		new.likes, expected,
+		"the like list stays canonical (sorted, duplicate-free)"
+	);
+	assert_eq!(
+		after.accounts, before.accounts,
+		"the accounts are unchanged"
+	);
+	assert_eq!(
+		after.sessions, before.sessions,
+		"the sessions are unchanged"
+	);
+	assert_eq!(after.follows, before.follows, "the follows are unchanged");
+	assert_eq!(
+		after.newest_first, before.newest_first,
+		"newest-first is unchanged"
+	);
+	assert_eq!(
+		after.posts.len(),
+		before.posts.len(),
+		"no post was added or removed"
+	);
+	for (other_pid, post) in &before.posts {
+		if *other_pid != pid {
+			assert_eq!(
+				after.posts.get(other_pid),
+				Some(post),
+				"post {other_pid:?} is unchanged"
+			);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
-// S2: unfollow -- `unfollow-user` (Twitter.agda:666-675)
+// S1: follow -- `follow-user` (Twitter.agda:655-664) -- Agda `follow-success`.
 // ---------------------------------------------------------------------------
 
-/// `unfollow-user` removes exactly one edge and keeps everything else -- the
-/// other follow pairs, the accounts, the sessions, the posts and the
-/// `newest-first` order.
-#[quickcheck]
-fn unfollow_succeeds_and_clears_follow(follower: Name, followee: Name, other: Name) -> TestResult {
-	if follower.0 == followee.0 || follower.0 == other.0 || followee.0 == other.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &follower.0, &other.0);
-	seed_follow(&db, &follower.0, &followee.0);
-	seed_follow(&db, &other.0, &follower.0);
-	// Precondition: the edge to remove exists.
-	assert!(is_following(&db, &follower.0, &followee.0));
+/// `follow-user`: the follower is the session's user, `follows` gains exactly
+/// `(follower, followee)`, and every account, session, post, like and
+/// `newest-first` entry is copied unchanged. There is no premise on the
+/// followee, so a name with no account works too; half the cases follow an
+/// existing account and half a fresh name.
+#[test]
+fn follow_succeeds_and_sets_follow() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Name)| -> TestResult {
+			let (seed, base, candidate) = arg;
+			let (world, sid, follower) = with_active_session(world, seed.0, &base.0);
+			let accounts = sorted_accounts(&world);
+			let followee = if seed.0 % 2 == 0 {
+				pick(&accounts, seed.0)
+					.cloned()
+					.unwrap_or_else(|| free_username(&world, &candidate.0))
+			} else {
+				free_username(&world, &candidate.0)
+			};
+			load(db, &world);
 
-	let accounts_before = accounts_snapshot(&db);
-	let sessions_before = sessions_snapshot(&db);
-	let posts_before = posts_snapshot(&db);
-	let follows_before = follows_snapshot(&db);
-	let likes_before = likes_snapshot(&db);
-	let order_before = newest_first(&db);
+			let mut expected = world.clone();
+			expected
+				.follows
+				.insert((follower.clone(), followee.clone()));
+			expected.validate().expect("the expected world is valid");
 
-	assert_eq!(
-		unfollow(&db, SID, &followee.0).expect("unfollow"),
-		EngineResult::Success
+			assert_eq!(
+				follow(db, sid, &followee).expect("follow"),
+				EngineResult::Success
+			);
+
+			let after = from_db(db);
+			assert!(
+				after
+					.follows
+					.contains(&(follower.clone(), followee.clone())),
+				"the follow edge is set"
+			);
+			assert_eq!(after.accounts, world.accounts, "follow creates no account");
+			assert_eq!(
+				after.sessions, world.sessions,
+				"follow touches no session row"
+			);
+			assert_eq!(after, expected, "only the follows set moves");
+			TestResult::passed()
+		},
 	);
+}
 
-	assert!(!is_following(&db, &follower.0, &followee.0));
-	assert!(is_following(&db, &other.0, &follower.0));
-	assert_eq!(
-		follows_snapshot(&db),
-		without_line(&follows_before, &follow_line(&follower.0, &followee.0))
+/// `add-follower` (Twitter.agda:371-375) is idempotent: following a user that
+/// is already followed is still `success` and changes nothing. The edge is
+/// forced into the derived world so the case is exercised on every run.
+#[test]
+fn follow_is_idempotent() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name)| -> TestResult {
+			let (seed, base) = arg;
+			let (mut world, sid, follower) = with_active_session(world, seed.0, &base.0);
+			let accounts = sorted_accounts(&world);
+			let followee = pick(&accounts, seed.0)
+				.cloned()
+				.unwrap_or_else(|| free_username(&world, &base.0));
+			world.follows.insert((follower.clone(), followee.clone()));
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				world
+					.follows
+					.contains(&(follower.clone(), followee.clone())),
+				"precondition: the edge is already there"
+			);
+
+			assert_eq!(
+				follow(db, sid, &followee).expect("follow"),
+				EngineResult::Success
+			);
+			assert_eq!(from_db(db), world, "following twice changes nothing");
+			TestResult::passed()
+		},
 	);
-	assert_eq!(accounts_snapshot(&db), accounts_before);
-	assert_eq!(sessions_snapshot(&db), sessions_before);
-	assert_eq!(posts_snapshot(&db), posts_before);
-	assert_eq!(likes_snapshot(&db), likes_before);
-	assert_eq!(newest_first(&db), order_before);
-	TestResult::passed()
+}
+
+/// `follow-user` has no premise on the followee, so following a username with
+/// no account is `success`, stores the edge and creates no account.
+#[test]
+fn follow_unknown_user_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Name)| -> TestResult {
+			let (seed, base, candidate) = arg;
+			let (world, sid, follower) = with_active_session(world, seed.0, &base.0);
+			let followee = free_username(&world, &candidate.0);
+			assert!(
+				!world.accounts.contains_key(&followee),
+				"precondition: the followee has no account"
+			);
+			load(db, &world);
+
+			let mut expected = world.clone();
+			expected
+				.follows
+				.insert((follower.clone(), followee.clone()));
+			expected.validate().expect("the expected world is valid");
+
+			assert_eq!(
+				follow(db, sid, &followee).expect("follow"),
+				EngineResult::Success
+			);
+
+			let after = from_db(db);
+			assert!(
+				after.follows.contains(&(follower, followee.clone())),
+				"the follow edge is set"
+			);
+			assert_eq!(
+				after.accounts, world.accounts,
+				"no account is created for the followee"
+			);
+			assert_eq!(after, expected);
+			TestResult::passed()
+		},
+	);
+}
+
+// ---------------------------------------------------------------------------
+// S2: unfollow -- `unfollow-user` (Twitter.agda:666-675) -- Agda
+// `unfollow-success`.
+// ---------------------------------------------------------------------------
+
+/// `unfollow-user` removes exactly one edge (`remove-follower`) and keeps every
+/// other follow pair, account, session, post and `newest-first` entry.
+#[test]
+fn unfollow_succeeds_and_clears_follow() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Name)| -> TestResult {
+			let (seed, base, candidate) = arg;
+			let (mut world, sid, follower) = with_active_session(world, seed.0, &base.0);
+			let accounts = sorted_accounts(&world);
+			let followee = if seed.0 % 2 == 0 {
+				pick(&accounts, seed.0)
+					.cloned()
+					.unwrap_or_else(|| free_username(&world, &candidate.0))
+			} else {
+				free_username(&world, &candidate.0)
+			};
+			world.follows.insert((follower.clone(), followee.clone()));
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				world
+					.follows
+					.contains(&(follower.clone(), followee.clone())),
+				"precondition: the edge exists"
+			);
+
+			let mut expected = world.clone();
+			expected
+				.follows
+				.remove(&(follower.clone(), followee.clone()));
+
+			assert_eq!(
+				unfollow(db, sid, &followee).expect("unfollow"),
+				EngineResult::Success
+			);
+
+			let after = from_db(db);
+			assert!(
+				!after.follows.contains(&(follower, followee.clone())),
+				"the edge is removed"
+			);
+			assert_eq!(after, expected, "only the follows set moves");
+			TestResult::passed()
+		},
+	);
 }
 
 /// `unfollow-user` has no premise that the edge existed, so unfollowing a user
 /// that was never followed is `success` and changes nothing.
-#[quickcheck]
-fn unfollow_never_followed_succeeds(follower: Name, followee: Name, other: Name) -> TestResult {
-	if follower.0 == followee.0 || follower.0 == other.0 || followee.0 == other.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &follower.0, &other.0);
-	// Precondition: no such edge.
-	assert!(!is_following(&db, &follower.0, &followee.0));
-	let before = world(&db);
-	assert_eq!(
-		unfollow(&db, SID, &followee.0).expect("unfollow"),
-		EngineResult::Success
+#[test]
+fn unfollow_never_followed_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Name)| -> TestResult {
+			let (seed, base, candidate) = arg;
+			let (mut world, sid, follower) = with_active_session(world, seed.0, &base.0);
+			let accounts = sorted_accounts(&world);
+			let followee = if seed.0 % 2 == 0 {
+				pick(&accounts, seed.0)
+					.cloned()
+					.unwrap_or_else(|| free_username(&world, &candidate.0))
+			} else {
+				free_username(&world, &candidate.0)
+			};
+			world.follows.remove(&(follower.clone(), followee.clone()));
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				!world.follows.contains(&(follower, followee.clone())),
+				"precondition: the edge is absent"
+			);
+
+			assert_eq!(
+				unfollow(db, sid, &followee).expect("unfollow"),
+				EngineResult::Success
+			);
+			assert_eq!(from_db(db), world, "unfollowing nothing changes nothing");
+			TestResult::passed()
+		},
 	);
-	assert_eq!(world(&db), before);
-	TestResult::passed()
 }
 
 // ---------------------------------------------------------------------------
-// S3: like -- `like-post` (Twitter.agda:587-613), `failed-like-post` (615-619)
+// S3: like -- `like-post` (Twitter.agda:587-613), `failed-like-post`
+// (615-619) -- Agda `like-success`, `like-denied`.
 // ---------------------------------------------------------------------------
 
 /// `like-post` on a readable post: a public `live` post, or a `followers-only`
-/// `live` post the user follows the author of. The user joins the like list,
-/// the like count gains exactly their contribution, the likes of every other
-/// user are unchanged, the post keeps author, text, visibility, status, parent
-/// and replies, and no other row of the world moves.
-#[quickcheck]
-fn like_readable_post_succeeds(liker: Name, author: Name, third: Name, pick: Pick) -> TestResult {
-	if liker.0 == author.0 || liker.0 == third.0 || author.0 == third.0 {
-		return TestResult::discard();
-	}
-	let private = pick.0 % 2 == 1;
-	let visibility = if private {
-		Visibility::FollowersOnly
-	} else {
-		Visibility::Everyone
-	};
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_account(&db, &third.0);
-	seed_post(&db, TARGET, &author.0, "target", visibility);
-	seed_reply(&db, REPLY_2, &third.0, "under target", visibility, TARGET);
-	seed_like(&db, TARGET, &author.0);
-	seed_like(&db, TARGET, &third.0);
-	if private {
-		seed_follow(&db, &liker.0, &author.0);
-	}
-	// Precondition: `CanReadPost` (Twitter.agda:158-179) holds -- the follow
-	// edge is what makes the `followers-only` case readable.
-	assert_eq!(
-		is_following(&db, &liker.0, &author.0),
-		private,
-		"the follow edge decides whether the private post is readable"
+/// `live` post the user follows the author of (`CanReadPost`,
+/// Twitter.agda:158-179). The user joins the like list, every other user's
+/// membership is unchanged, the post keeps author, text, visibility, status,
+/// parent and replies, and no other row of the world moves.
+#[test]
+fn like_readable_post_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (world, pid) = readable_post(&world, seed.0, &user, &body.0);
+			load(db, &world);
+			assert!(
+				readable_by(&world, &user, pid),
+				"precondition: CanReadPost holds before the command"
+			);
+
+			let mut expected = world.clone();
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			expected.posts.get_mut(&pid).expect("the target post").likes = liked;
+			expected.validate().expect("the expected world is valid");
+
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Success);
+
+			let after = from_db(db);
+			assert_like_delta(&world, &after, pid, &user, true);
+			assert_eq!(after, expected, "nothing but the like list moves");
+			TestResult::passed()
+		},
 	);
+}
 
-	let post_before = post_of(&db, TARGET).expect("target post");
-	let replies_before = replies_of(&db, TARGET);
-	let count_before = like_count(&db, TARGET);
-	let rows_before = row_count(&db, "post_likes");
-	let accounts_before = accounts_snapshot(&db);
-	let sessions_before = sessions_snapshot(&db);
-	let posts_before = posts_snapshot(&db);
-	let follows_before = follows_snapshot(&db);
-	let likes_before = likes_snapshot(&db);
-	let order_before = newest_first(&db);
+/// `like-post` has no premise that the user is absent from the like list, so
+/// liking twice is `success`, adds no duplicate and leaves the world as it was.
+#[test]
+fn like_already_liked_is_idempotent() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) = readable_post(&world, seed.0, &user, &body.0);
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			world.posts.get_mut(&pid).expect("the target post").likes = liked;
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				world.posts[&pid].likes.contains(&user),
+				"precondition: the user already likes the post"
+			);
 
-	assert_eq!(like(&db, SID, TARGET).expect("like"), EngineResult::Success);
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Success);
 
-	assert!(is_liked(&db, TARGET, &liker.0));
-	assert_eq!(like_count(&db, TARGET), count_before + 1);
-	assert_eq!(row_count(&db, "post_likes"), rows_before + 1);
-	assert_eq!(
-		likes_snapshot(&db),
-		with_line(&likes_before, &like_line(TARGET, &liker.0))
+			let after = from_db(db);
+			assert_like_delta(&world, &after, pid, &user, true);
+			assert_eq!(after, world, "liking twice changes nothing");
+			TestResult::passed()
+		},
 	);
-	// The rest of the post is unchanged.
-	assert_eq!(post_of(&db, TARGET).expect("target post"), post_before);
-	assert_eq!(replies_of(&db, TARGET), replies_before);
-	// ... and so is everything else in the world.
-	assert_eq!(accounts_snapshot(&db), accounts_before);
-	assert_eq!(sessions_snapshot(&db), sessions_before);
-	assert_eq!(posts_snapshot(&db), posts_before);
-	assert_eq!(follows_snapshot(&db), follows_before);
-	assert_eq!(newest_first(&db), order_before);
-	TestResult::passed()
 }
 
-/// `like-post` does not require the user to be absent from the like list, so
-/// liking twice is `success`, adds no duplicate row and leaves the count and
-/// the rest of the world as they were.
-#[quickcheck]
-fn like_is_idempotent(liker: Name, author: Name, third: Name) -> TestResult {
-	if liker.0 == author.0 || liker.0 == third.0 || author.0 == third.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_account(&db, &third.0);
-	seed_post(&db, TARGET, &author.0, "target", Visibility::Everyone);
-	seed_like(&db, TARGET, &liker.0);
-	seed_like(&db, TARGET, &third.0);
-	// Precondition: the like is already there.
-	assert!(is_liked(&db, TARGET, &liker.0));
-	let count_before = like_count(&db, TARGET);
-	let rows_before = row_count(&db, "post_likes");
-	let before = world(&db);
+/// `like-post` has no distinctness premise on the author, so the session's user
+/// may like their own post.
+#[test]
+fn like_own_post_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let pid = free_post_id(&world, seed.0);
+			let world = add_post(&world, pid, &user, &body.0);
+			load(db, &world);
+			assert_eq!(
+				world.posts[&pid].author, user,
+				"precondition: the post is the session user's own"
+			);
+			assert!(readable_by(&world, &user, pid));
 
-	assert_eq!(like(&db, SID, TARGET).expect("like"), EngineResult::Success);
+			let mut expected = world.clone();
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			expected.posts.get_mut(&pid).expect("the target post").likes = liked;
+			expected.validate().expect("the expected world is valid");
 
-	assert_eq!(like_count(&db, TARGET), count_before);
-	assert_eq!(row_count(&db, "post_likes"), rows_before);
-	assert_eq!(world(&db), before);
-	TestResult::passed()
-}
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Success);
 
-/// `like-post` has no distinctness premise: an author may like their own post.
-#[quickcheck]
-fn like_own_post_succeeds(liker: Name, other: Name, body: Body) -> TestResult {
-	if liker.0 == other.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_account(&db, &liker.0);
-	seed_account(&db, &other.0);
-	seed_session(&db, SID, &liker.0);
-	seed_post(&db, TARGET, &liker.0, &body.0, Visibility::Everyone);
-	seed_like(&db, TARGET, &other.0);
-	// Precondition: the post is the session user's own.
-	assert_eq!(
-		post_of(&db, TARGET).expect("own post").author,
-		liker.0,
-		"the post belongs to the session's user"
+			let after = from_db(db);
+			assert_like_delta(&world, &after, pid, &user, true);
+			assert_eq!(after, expected);
+			TestResult::passed()
+		},
 	);
-	let count_before = like_count(&db, TARGET);
-	let rows_before = row_count(&db, "post_likes");
-	let likes_before = likes_snapshot(&db);
-	let post_before = post_of(&db, TARGET).expect("own post");
-	let accounts_before = accounts_snapshot(&db);
-	let sessions_before = sessions_snapshot(&db);
-	let posts_before = posts_snapshot(&db);
-	let follows_before = follows_snapshot(&db);
-	let order_before = newest_first(&db);
+}
 
-	assert_eq!(like(&db, SID, TARGET).expect("like"), EngineResult::Success);
+/// `failed-like-post` on a post that does not exist (`can-read-absent`):
+/// `denied`, and the whole world is unchanged.
+#[test]
+fn like_absent_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name)| -> TestResult {
+			let (seed, base) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (world, pid) = unreadable_post(&world, seed.0, &user, "gone", Unreadable::Absent);
+			load(db, &world);
+			assert!(
+				!world.posts.contains_key(&pid),
+				"precondition: the post is absent"
+			);
+			assert!(!readable_by(&world, &user, pid));
 
-	assert!(is_liked(&db, TARGET, &liker.0));
-	assert_eq!(like_count(&db, TARGET), count_before + 1);
-	assert_eq!(row_count(&db, "post_likes"), rows_before + 1);
-	assert_eq!(
-		likes_snapshot(&db),
-		with_line(&likes_before, &like_line(TARGET, &liker.0))
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied like changes nothing");
+			TestResult::passed()
+		},
 	);
-	assert_eq!(post_of(&db, TARGET).expect("own post"), post_before);
-	assert_eq!(accounts_snapshot(&db), accounts_before);
-	assert_eq!(sessions_snapshot(&db), sessions_before);
-	assert_eq!(posts_snapshot(&db), posts_before);
-	assert_eq!(follows_snapshot(&db), follows_before);
-	assert_eq!(newest_first(&db), order_before);
-	TestResult::passed()
 }
 
-/// `failed-like-post` (Twitter.agda:615-619) on a post that does not exist:
-/// `denied`, and nothing at all changes.
-#[quickcheck]
-fn like_denied_absent(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	// Precondition: no post has that id.
-	assert!(post_of(&db, ABSENT).is_none());
-	let before = world(&db);
-	assert_denied(&db, like(&db, SID, ABSENT).expect("like"), &before);
-	TestResult::passed()
+/// `failed-like-post` on a `deleted` post (`CanReadPost` demands `live`,
+/// `can-read-deleted`): `denied`, world unchanged.
+#[test]
+fn like_deleted_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (world, pid) = unreadable_post(&world, seed.0, &user, &body.0, Unreadable::Deleted);
+			load(db, &world);
+			assert_eq!(world.posts[&pid].status, PostStatus::Deleted);
+			assert!(!readable_by(&world, &user, pid));
+
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied like changes nothing");
+			TestResult::passed()
+		},
+	);
 }
 
-/// `failed-like-post` on a `deleted` post (`CanReadPost` demands `live`):
-/// `denied`, and nothing at all changes.
-#[quickcheck]
-fn like_denied_deleted(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_post(&db, TARGET, &author.0, "gone", Visibility::Everyone);
-	seed_delete(&db, TARGET);
-	let before = world(&db);
-	assert_denied(&db, like(&db, SID, TARGET).expect("like"), &before);
-	TestResult::passed()
-}
+/// `failed-like-post` on a `live` `followers-only` post the user does not
+/// follow the author of (`post-is-private` fails): `denied`, world unchanged.
+#[test]
+fn like_private_unfollowed_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (world, pid) = unreadable_post(&world, seed.0, &user, &body.0, Unreadable::Private);
+			load(db, &world);
+			assert_eq!(
+				world.posts[&pid].visibility,
+				Visibility::FollowersOnly,
+				"precondition: the post is followers-only"
+			);
+			assert!(!readable_by(&world, &user, pid));
 
-/// `failed-like-post` on a `followers-only` post the user does not follow
-/// (`post-is-private`, Twitter.agda:161-170): `denied`, world unchanged.
-#[quickcheck]
-fn like_denied_private_not_followed(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_post(&db, TARGET, &author.0, "private", Visibility::FollowersOnly);
-	// Precondition: no follow edge, so `CanReadPost` fails.
-	assert!(!is_following(&db, &liker.0, &author.0));
-	let before = world(&db);
-	assert_denied(&db, like(&db, SID, TARGET).expect("like"), &before);
-	TestResult::passed()
+			assert_eq!(like(db, sid, pid).expect("like"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied like changes nothing");
+			TestResult::passed()
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------
 // S4: unlike -- `unlike-post` (Twitter.agda:621-647), `failed-unlike-post`
-// (Twitter.agda:649-653)
+// (649-653) -- Agda `unlike-success`, `unlike-denied`.
 // ---------------------------------------------------------------------------
 
-/// `unlike-post`: the user leaves the like list (so the AFTER post no longer
-/// lists them, Twitter.agda:625), the like count loses exactly their
-/// contribution, the likes of every other user are unchanged, the post keeps
-/// every other field, and no other row of the world moves.
-#[quickcheck]
-fn unlike_liked_post_removes_like(liker: Name, author: Name, third: Name) -> TestResult {
-	if liker.0 == author.0 || liker.0 == third.0 || author.0 == third.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_account(&db, &third.0);
-	seed_post(&db, TARGET, &author.0, "target", Visibility::Everyone);
-	seed_reply(
-		&db,
-		REPLY_2,
-		&third.0,
-		"under target",
-		Visibility::Everyone,
-		TARGET,
-	);
-	seed_like(&db, TARGET, &liker.0);
-	seed_like(&db, TARGET, &third.0);
-	// Precondition: the like to remove exists.
-	assert!(is_liked(&db, TARGET, &liker.0));
+/// `unlike-post`: the user leaves the like list (`user ∉ Post.likes post`,
+/// Twitter.agda:625), every other user's membership is unchanged, the post
+/// keeps its other fields, and no other row of the world moves.
+#[test]
+fn unlike_liked_post_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) = readable_post(&world, seed.0, &user, &body.0);
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			world.posts.get_mut(&pid).expect("the target post").likes = liked;
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				world.posts[&pid].likes.contains(&user),
+				"precondition: the like exists"
+			);
 
-	let post_before = post_of(&db, TARGET).expect("target post");
-	let replies_before = replies_of(&db, TARGET);
-	let count_before = like_count(&db, TARGET);
-	let rows_before = row_count(&db, "post_likes");
-	let accounts_before = accounts_snapshot(&db);
-	let sessions_before = sessions_snapshot(&db);
-	let posts_before = posts_snapshot(&db);
-	let follows_before = follows_snapshot(&db);
-	let likes_before = likes_snapshot(&db);
-	let order_before = newest_first(&db);
+			let mut expected = world.clone();
+			let unliked = without_like(&world.posts[&pid].likes, &user);
+			expected.posts.get_mut(&pid).expect("the target post").likes = unliked;
 
-	assert_eq!(
-		unlike(&db, SID, TARGET).expect("unlike"),
-		EngineResult::Success
-	);
+			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Success);
 
-	assert!(!is_liked(&db, TARGET, &liker.0));
-	assert_eq!(like_count(&db, TARGET), count_before - 1);
-	assert_eq!(row_count(&db, "post_likes"), rows_before - 1);
-	assert_eq!(
-		likes_snapshot(&db),
-		without_line(&likes_before, &like_line(TARGET, &liker.0))
+			let after = from_db(db);
+			assert_like_delta(&world, &after, pid, &user, false);
+			assert_eq!(after, expected, "nothing but the like list moves");
+			TestResult::passed()
+		},
 	);
-	// The rest of the post is unchanged.
-	assert_eq!(post_of(&db, TARGET).expect("target post"), post_before);
-	assert_eq!(replies_of(&db, TARGET), replies_before);
-	// ... and so is everything else in the world.
-	assert_eq!(accounts_snapshot(&db), accounts_before);
-	assert_eq!(sessions_snapshot(&db), sessions_before);
-	assert_eq!(posts_snapshot(&db), posts_before);
-	assert_eq!(follows_snapshot(&db), follows_before);
-	assert_eq!(newest_first(&db), order_before);
-	TestResult::passed()
 }
 
 /// `unlike-post` has no premise that the like existed, so unliking a post the
 /// user never liked is `success` and changes nothing.
-#[quickcheck]
-fn unlike_never_liked_succeeds(liker: Name, author: Name, third: Name) -> TestResult {
-	if liker.0 == author.0 || liker.0 == third.0 || author.0 == third.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_account(&db, &third.0);
-	seed_post(&db, TARGET, &author.0, "target", Visibility::Everyone);
-	seed_like(&db, TARGET, &third.0);
-	// Precondition: no like by `liker`.
-	assert!(!is_liked(&db, TARGET, &liker.0));
-	let before = world(&db);
-	assert_eq!(
-		unlike(&db, SID, TARGET).expect("unlike"),
-		EngineResult::Success
+#[test]
+fn unlike_never_liked_succeeds() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) = readable_post(&world, seed.0, &user, &body.0);
+			let stripped = without_like(&world.posts[&pid].likes, &user);
+			world.posts.get_mut(&pid).expect("the target post").likes = stripped;
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(
+				!world.posts[&pid].likes.contains(&user),
+				"precondition: the user does not like the post"
+			);
+
+			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Success);
+			assert_eq!(from_db(db), world, "unliking nothing changes nothing");
+			TestResult::passed()
+		},
 	);
-	assert_eq!(world(&db), before);
-	TestResult::passed()
 }
 
-/// `failed-unlike-post` (Twitter.agda:649-653) on a post that does not exist:
-/// `denied`, and nothing at all changes.
-#[quickcheck]
-fn unlike_denied_absent(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	assert!(post_of(&db, ABSENT).is_none());
-	assert!(!is_liked(&db, ABSENT, &liker.0));
-	let before = world(&db);
-	assert_denied(&db, unlike(&db, SID, ABSENT).expect("unlike"), &before);
-	TestResult::passed()
+/// `failed-unlike-post` on a post that does not exist: `denied`, and nothing at
+/// all changes.
+#[test]
+fn unlike_absent_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name)| -> TestResult {
+			let (seed, base) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (world, pid) = unreadable_post(&world, seed.0, &user, "gone", Unreadable::Absent);
+			load(db, &world);
+			assert!(
+				!world.posts.contains_key(&pid),
+				"precondition: the post is absent"
+			);
+			assert!(!readable_by(&world, &user, pid));
+
+			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied unlike changes nothing");
+			TestResult::passed()
+		},
+	);
 }
 
 /// `failed-unlike-post` on a `deleted` post: `denied`, and even the like the
 /// user holds on it stays.
-#[quickcheck]
-fn unlike_denied_deleted(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_post(&db, TARGET, &author.0, "gone", Visibility::Everyone);
-	seed_like(&db, TARGET, &liker.0);
-	seed_delete(&db, TARGET);
-	let before = world(&db);
-	assert_denied(&db, unlike(&db, SID, TARGET).expect("unlike"), &before);
-	// The denied command did not consume the like either.
-	assert!(is_liked(&db, TARGET, &liker.0));
-	TestResult::passed()
+#[test]
+fn unlike_deleted_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) = target_post(&world, seed.0, &user, &body.0);
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			{
+				let post = world.posts.get_mut(&pid).expect("the target post");
+				post.likes = liked;
+				post.status = PostStatus::Deleted;
+			}
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(!readable_by(&world, &user, pid));
+
+			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied unlike changes nothing");
+			assert!(
+				from_db(db).posts[&pid].likes.contains(&user),
+				"the denied command did not consume the like"
+			);
+			TestResult::passed()
+		},
+	);
 }
 
-/// `failed-unlike-post` on a `followers-only` post the user does not follow:
-/// `denied`, world unchanged.
-#[quickcheck]
-fn unlike_denied_private_not_followed(liker: Name, author: Name) -> TestResult {
-	if liker.0 == author.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	seed_post(&db, TARGET, &author.0, "private", Visibility::FollowersOnly);
-	seed_like(&db, TARGET, &liker.0);
-	// Precondition: no follow edge, so `CanReadPost` fails.
-	assert!(!is_following(&db, &liker.0, &author.0));
-	let before = world(&db);
-	assert_denied(&db, unlike(&db, SID, TARGET).expect("unlike"), &before);
-	TestResult::passed()
+/// `failed-unlike-post` on a `live` `followers-only` post the user does not
+/// follow the author of: `denied`, world unchanged.
+#[test]
+fn unlike_private_unfollowed_post_is_denied() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Body)| -> TestResult {
+			let (seed, base, body) = arg;
+			let (world, sid, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) =
+				unreadable_post(&world, seed.0, &user, &body.0, Unreadable::Private);
+			let liked = with_like(&world.posts[&pid].likes, &user);
+			world.posts.get_mut(&pid).expect("the target post").likes = liked;
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			assert!(!readable_by(&world, &user, pid));
+
+			assert_eq!(unlike(db, sid, pid).expect("unlike"), EngineResult::Denied);
+			assert_eq!(from_db(db), world, "a denied unlike changes nothing");
+			TestResult::passed()
+		},
+	);
 }
 
 // ---------------------------------------------------------------------------
 // S5: failed-access -- all four commands on an inactive session
-// (Twitter.agda:464-468)
+// (Twitter.agda:464-468) -- Agda `follow-expired`, `unfollow-expired`,
+// `like-expired`, `unlike-expired`.
 // ---------------------------------------------------------------------------
 
-/// `failed-access`: the four commands extract their session
-/// (`extract-sid`, Twitter.agda:203-207), so a session that is not `active` --
-/// `unused` or `revoked` -- expires the request and leaves the world untouched.
-/// Unlike `read-post nothing`, none of these can fire vacuously.
-#[quickcheck]
-fn social_commands_expire_without_valid_session(
-	liker: Name,
-	author: Name,
-	followee: Name,
-) -> TestResult {
-	if liker.0 == author.0 || liker.0 == followee.0 || author.0 == followee.0 {
-		return TestResult::discard();
-	}
-	let db = database();
-	seed_world(&db, &liker.0, &author.0);
-	// The commands have something to act on, so `Success` would be tempting.
-	seed_follow(&db, &liker.0, &author.0);
-	seed_like(&db, PARENT, &liker.0);
-	let before = world(&db);
+/// `failed-access`: the four commands extract their session (`extract-sid`,
+/// Twitter.agda:203-207), so a session that is not `active` -- `revoked` or
+/// `unused` -- expires the request and leaves the world untouched. The derived
+/// world keeps a readable post and a follow edge, so `success` would be
+/// tempting; unlike `read-post nothing` none of these can fire vacuously.
+#[test]
+fn social_commands_expire_without_valid_session() {
+	check(
+		|db: &Db, world: &WorldState, arg: (Seed, Name, Name)| -> TestResult {
+			let (seed, base, candidate) = arg;
+			let (world, _active, user) = with_active_session(world, seed.0, &base.0);
+			let (mut world, pid) = readable_post(&world, seed.0, &user, "target");
+			let followee = free_username(&world, &candidate.0);
+			world.follows.insert((user.clone(), followee.clone()));
+			let (world, revoked) = with_revoked_session(&world, seed.0);
+			world.validate().expect("the derived world is valid");
+			load(db, &world);
+			let unused = free_session_id(&world, seed.0);
+			assert_eq!(world.session_status(revoked), SessionStatus::Revoked);
+			assert_eq!(world.session_status(unused), SessionStatus::Unused);
 
-	let inactive = [
-		(UNUSED_SID, SessionStatus::Unused),
-		(REVOKED_SID, SessionStatus::Revoked),
-	];
-	for (sid, expected) in inactive {
-		// Precondition: the session is not active.
-		assert_eq!(status_of(&db, sid), expected);
-		assert_expired(&db, follow(&db, sid, &followee.0).expect("follow"), &before);
-		assert_expired(
-			&db,
-			unfollow(&db, sid, &followee.0).expect("unfollow"),
-			&before,
-		);
-		assert_expired(&db, like(&db, sid, PARENT).expect("like"), &before);
-		assert_expired(&db, unlike(&db, sid, PARENT).expect("unlike"), &before);
+			for sid in [revoked, unused] {
+				assert_eq!(
+					follow(db, sid, &followee).expect("follow"),
+					EngineResult::Expired,
+					"follow-expired on {sid:?}"
+				);
+				assert_eq!(from_db(db), world, "an expired follow changes nothing");
+				assert_eq!(
+					unfollow(db, sid, &followee).expect("unfollow"),
+					EngineResult::Expired,
+					"unfollow-expired on {sid:?}"
+				);
+				assert_eq!(from_db(db), world, "an expired unfollow changes nothing");
+				assert_eq!(
+					like(db, sid, pid).expect("like"),
+					EngineResult::Expired,
+					"like-expired on {sid:?}"
+				);
+				assert_eq!(from_db(db), world, "an expired like changes nothing");
+				assert_eq!(
+					unlike(db, sid, pid).expect("unlike"),
+					EngineResult::Expired,
+					"unlike-expired on {sid:?}"
+				);
+				assert_eq!(from_db(db), world, "an expired unlike changes nothing");
+			}
+			TestResult::passed()
+		},
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic unit tests. Each one owns a single database, created here and
+// outside any quickcheck case.
+// ---------------------------------------------------------------------------
+
+/// Two accounts, an active and a revoked session, a public post with a like, a
+/// followers-only post by the same author, a deleted post, and one follow edge
+/// (ada -> grace) that makes the followers-only post readable.
+fn sample_world() -> WorldState {
+	let mut public = post("grace", "public post");
+	public.likes = vec!["grace".to_string()];
+	let private = PostState {
+		visibility: Visibility::FollowersOnly,
+		..post("grace", "private post")
+	};
+	let deleted = PostState {
+		status: PostStatus::Deleted,
+		..post("ada", "deleted post")
+	};
+	let world = WorldState {
+		accounts: BTreeMap::from([
+			("ada".to_string(), account("pw-ada", Visibility::Everyone)),
+			(
+				"grace".to_string(),
+				account("pw-grace", Visibility::Everyone),
+			),
+		]),
+		sessions: HashMap::from([
+			(SessionId(7), SessionStatus::Active("ada".to_string())),
+			(SessionId(8), SessionStatus::Revoked),
+		]),
+		posts: HashMap::from([
+			(PostId(1), public),
+			(PostId(2), private),
+			(PostId(3), deleted),
+		]),
+		follows: BTreeSet::from([("ada".to_string(), "grace".to_string())]),
+		newest_first: vec![PostId(3), PostId(2), PostId(1)],
+	};
+	world.validate().expect("the sample world is valid");
+	world
+}
+
+const ADA_SESSION: SessionId = SessionId(7);
+const REVOKED_SESSION: SessionId = SessionId(8);
+const PUBLIC: PostId = PostId(1);
+const PRIVATE: PostId = PostId(2);
+const DELETED: PostId = PostId(3);
+
+fn loaded_sample() -> (Db, WorldState) {
+	let db = Db::in_memory().expect("create the in-memory database");
+	let world = sample_world();
+	reset(&db);
+	materialise(&db, &world);
+	assert_eq!(from_db(&db), world, "the fixture round-trips");
+	(db, world)
+}
+
+#[test]
+fn follow_and_unfollow_move_exactly_one_edge() {
+	let (db, world) = loaded_sample();
+	let mut following = world.clone();
+	following
+		.follows
+		.insert(("ada".to_string(), "bob".to_string()));
+
+	assert_eq!(
+		follow(&db, ADA_SESSION, "bob").expect("follow"),
+		EngineResult::Success
+	);
+	assert_eq!(from_db(&db), following, "follow adds exactly one edge");
+
+	assert_eq!(
+		unfollow(&db, ADA_SESSION, "bob").expect("unfollow"),
+		EngineResult::Success
+	);
+	assert_eq!(from_db(&db), world, "unfollow takes it back");
+
+	assert_eq!(
+		unfollow(&db, ADA_SESSION, "carol").expect("unfollow"),
+		EngineResult::Success,
+		"unfollowing a user that was never followed is still success"
+	);
+	assert_eq!(from_db(&db), world);
+}
+
+#[test]
+fn like_and_unlike_a_public_post() {
+	let (db, world) = loaded_sample();
+	let mut liked = world.clone();
+	let likes = with_like(&world.posts[&PUBLIC].likes, "ada");
+	liked.posts.get_mut(&PUBLIC).expect("post 1").likes = likes;
+	assert_eq!(
+		liked.posts[&PUBLIC].likes,
+		vec!["ada".to_string(), "grace".to_string()],
+		"the like list is canonical"
+	);
+
+	assert_eq!(
+		like(&db, ADA_SESSION, PUBLIC).expect("like"),
+		EngineResult::Success
+	);
+	assert_eq!(from_db(&db), liked);
+
+	assert_eq!(
+		unlike(&db, ADA_SESSION, PUBLIC).expect("unlike"),
+		EngineResult::Success
+	);
+	assert_eq!(from_db(&db), world);
+}
+
+#[test]
+fn like_a_followers_only_post_needs_the_follow_edge() {
+	let (db, world) = loaded_sample();
+	// ada follows grace, so the followers-only post is readable.
+	assert_eq!(
+		like(&db, ADA_SESSION, PRIVATE).expect("like"),
+		EngineResult::Success
+	);
+	let mut liked = world.clone();
+	liked.posts.get_mut(&PRIVATE).expect("post 2").likes = vec!["ada".to_string()];
+	assert_eq!(from_db(&db), liked);
+
+	// Without the edge the very same post is unreadable: denied, unchanged.
+	let mut unfollowed = liked.clone();
+	unfollowed.follows.clear();
+	reset(&db);
+	materialise(&db, &unfollowed);
+	assert_eq!(
+		like(&db, ADA_SESSION, PRIVATE).expect("like"),
+		EngineResult::Denied
+	);
+	assert_eq!(
+		unlike(&db, ADA_SESSION, PRIVATE).expect("unlike"),
+		EngineResult::Denied
+	);
+	assert_eq!(from_db(&db), unfollowed, "denied commands change nothing");
+}
+
+#[test]
+fn like_is_idempotent_and_counts_once() {
+	let (db, _world) = loaded_sample();
+	assert_eq!(
+		like(&db, ADA_SESSION, PUBLIC).expect("like"),
+		EngineResult::Success
+	);
+	let once = from_db(&db);
+	assert_eq!(
+		once.posts[&PUBLIC].likes,
+		vec!["ada".to_string(), "grace".to_string()]
+	);
+
+	assert_eq!(
+		like(&db, ADA_SESSION, PUBLIC).expect("like"),
+		EngineResult::Success
+	);
+	assert_eq!(from_db(&db), once, "a second like adds nothing");
+}
+
+#[test]
+fn deleted_post_cannot_be_liked() {
+	let (db, world) = loaded_sample();
+	assert_eq!(
+		like(&db, ADA_SESSION, DELETED).expect("like"),
+		EngineResult::Denied
+	);
+	assert_eq!(
+		unlike(&db, ADA_SESSION, DELETED).expect("unlike"),
+		EngineResult::Denied
+	);
+	assert_eq!(from_db(&db), world);
+}
+
+#[test]
+fn social_commands_expire_on_an_inactive_session() {
+	let (db, world) = loaded_sample();
+	for sid in [REVOKED_SESSION, SessionId(999)] {
+		let results = [
+			("follow", follow(&db, sid, "bob").expect("follow")),
+			("unfollow", unfollow(&db, sid, "bob").expect("unfollow")),
+			("like", like(&db, sid, PUBLIC).expect("like")),
+			("unlike", unlike(&db, sid, PUBLIC).expect("unlike")),
+		];
+		for (name, result) in results {
+			assert_eq!(result, EngineResult::Expired, "{name} on {sid:?}");
+			assert_eq!(from_db(&db), world, "{name} on {sid:?} changes nothing");
+		}
 	}
-	TestResult::passed()
 }
