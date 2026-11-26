@@ -507,6 +507,119 @@ logout-unused before sid unused-eq =
     (λ {u} eq → unused≢active (trans (sym unused-eq) eq))
 
 --------------------------------------------------------------------------------
+-- P15: time-passes (Twitter.agda:124) and the `session-timeout` Step (691-702)
+--
+-- `time-passes` has no session argument: instead of expiring one request it
+-- applies `logout`-like revocation to EVERY session at once.  Its Step says
+-- every session that was `active` is `revoked` afterwards and that nothing
+-- else -- no account, no post, no follow, no timeline -- moves.  The engine
+-- performs it as one `UPDATE sessions SET status = 'revoked' WHERE status =
+-- 'active'`, so the after-world is `before` with `session-at` mapped through
+-- `timed-out`, and every other component copied.
+--
+-- `timed-out-world` therefore only has to re-discharge the two invariants
+-- that speak about the session table: `only-used-sids` (Twitter.agda:82-86)
+-- holds because `timed-out` maps `unused` to `unused`, and
+-- `only-valid-sessions` (Twitter.agda:87-91) holds vacuously because
+-- `timed-out` never produces `active`.  `only-used-pids`, `only-valid-posts`,
+-- `only-valid-replies` and the three `no-duplicate-*` invariants are copied
+-- from `before`.
+--------------------------------------------------------------------------------
+
+-- The whole effect of `time-passes` on a single session: an `active` session
+-- times out, a session that is already `unused` or `revoked` is left alone.
+timed-out : SessionStatus → SessionStatus
+timed-out unused     = unused
+timed-out (active _) = revoked
+timed-out revoked    = revoked
+
+-- The "in" half of `only-used-sids` after the timeout: a used session is
+-- still not `unused`, because `timed-out` maps `unused` to `unused` only.
+timed-out-never-unused :
+  ∀ (st : SessionStatus) → st ≢ unused → timed-out st ≢ unused
+timed-out-never-unused unused     ¬unused = ⊥-elim (¬unused refl)
+timed-out-never-unused (active _) _       = revoked≢unused
+timed-out-never-unused revoked    _       = revoked≢unused
+
+-- `only-valid-sessions` is vacuous afterwards: `timed-out` never answers
+-- `active`, so the invariant has no witness to discharge.
+timed-out-never-active :
+  ∀ (st : SessionStatus) {u : String} → timed-out st ≢ active u
+timed-out-never-active unused     = unused≢active
+timed-out-never-active (active _) = revoked≢active
+timed-out-never-active revoked    = revoked≢active
+
+timed-out-used :
+  (before : World) {s : SessionId} →
+  (s ∈ World.used-session-ids before →
+     timed-out (World.session-at before s) ≢ unused)
+  ∧ (s ∉ World.used-session-ids before →
+     timed-out (World.session-at before s) ≡ unused)
+timed-out-used before {s} = in-part , out-part
+  where
+    sess = World.session-at before
+
+    in-part : s ∈ World.used-session-ids before → timed-out (sess s) ≢ unused
+    in-part mem =
+      timed-out-never-unused (sess s) (proj₁ (World.only-used-sids before) mem)
+
+    out-part : s ∉ World.used-session-ids before → timed-out (sess s) ≡ unused
+    out-part ¬mem = cong timed-out (proj₂ (World.only-used-sids before) ¬mem)
+
+timed-out-valid :
+  (before : World) {s : SessionId} {u : String} →
+  timed-out (World.session-at before s) ≡ active u →
+  ∃[ a ] World.account-at before u ≡ just a
+timed-out-valid before {s} {u} eq =
+  ⊥-elim (timed-out-never-active (World.session-at before s) eq)
+
+timed-out-world : (before : World) → World
+timed-out-world before = record
+  { account-at          = World.account-at before
+  ; session-at          = λ sid → timed-out (World.session-at before sid)
+  ; post-at             = World.post-at before
+  ; follows             = World.follows before
+  ; newest-first        = World.newest-first before
+  ; used-post-ids       = World.used-post-ids before
+  ; used-session-ids    = World.used-session-ids before
+  ; only-used-pids      = World.only-used-pids before
+  ; only-used-sids      = timed-out-used before
+  ; only-valid-sessions = timed-out-valid before
+  ; only-valid-posts    = World.only-valid-posts before
+  ; only-valid-replies  = World.only-valid-replies before
+  ; no-duplicate-replies = World.no-duplicate-replies before
+  ; no-duplicate-likes   = World.no-duplicate-likes before
+  ; no-duplicate-posts   = World.no-duplicate-posts before
+  }
+
+-- `session-timeout`: on an arbitrary world, every active session becomes
+-- revoked -- `cong timed-out` at each such session, since `timed-out (active
+-- user)` is `revoked` by definition -- and every other component is copied,
+-- which is why the "everything else unchanged" premise is `refl`.
+time-passes-success :
+  ∀ (before : World) →
+  Step before time-passes (timed-out-world before) success
+time-passes-success before = session-timeout
+  {before = before}
+  {after  = timed-out-world before}
+  (λ {sid} {user} eq → cong timed-out eq)
+  (λ {sid} _ _ _ _ → refl)
+
+-- A second `time-passes` answers `success` again and changes nothing: the
+-- world after one timeout is already a fixed point of `timed-out`, and no
+-- session is `active` any more, so the first premise of `session-timeout` is
+-- vacuous (`timed-out-never-active`).
+time-passes-idempotent :
+  ∀ (before : World) →
+  Step (timed-out-world before) time-passes (timed-out-world before) success
+time-passes-idempotent before = session-timeout
+  {before = timed-out-world before}
+  {after  = timed-out-world before}
+  (λ {sid} {user} eq →
+       ⊥-elim (timed-out-never-active (World.session-at before sid) eq))
+  (λ {sid} _ _ _ _ → refl)
+
+--------------------------------------------------------------------------------
 -- Post tables: a post map with one entry overwritten.
 --------------------------------------------------------------------------------
 
